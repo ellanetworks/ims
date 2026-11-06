@@ -51,6 +51,11 @@ const telnyx = (overrides: Partial<SIPTrunk> = {}): SIPTrunk => ({
     identities: ["sip.telnyx.com"],
     ca_certificate_details: [certificate],
   },
+  effective: {
+    domain: "sip.telnyx.com",
+    inbound_cidrs: ["192.76.120.10/32"],
+    tls_identities: ["sip.telnyx.com"],
+  },
   status: { state: "up", since: "2026-11-01T00:00:00Z" },
   ...overrides,
 });
@@ -65,6 +70,11 @@ const twilio = (): SIPTrunk => ({
   keepalive_interval: 0,
   enabled: false,
   tls: { required: false },
+  effective: {
+    domain: "ims.pstn.twilio.com",
+    inbound_cidrs: [],
+    tls_identities: ["ims.pstn.twilio.com"],
+  },
   status: { state: "unknown" },
 });
 
@@ -338,6 +348,56 @@ describe("SIP Trunks", () => {
         },
       },
     ]);
+  });
+
+  it("shows the values in effect where the trunk leaves the defaults", async () => {
+    serve({
+      trunks: [
+        telnyx({
+          domain: "",
+          inbound_cidrs: [],
+          tls: { required: false, ca_certificates: CA_PEM },
+          effective: {
+            domain: "sip.telnyx.com",
+            inbound_cidrs: ["192.0.2.10/32"],
+            tls_identities: ["sip.telnyx.com", "telnyx.example"],
+          },
+        }),
+      ],
+    });
+
+    renderWithClient(<SIPTrunks />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Telnyx" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Edit Trunk" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "TLS" }));
+    const field = (name: string) =>
+      within(dialog).getByRole("textbox", { name });
+    expect(field("Domain")).toHaveValue("");
+    expect(field("Domain")).toHaveAttribute("placeholder", "sip.telnyx.com");
+    expect(field("Inbound CIDRs")).toHaveAttribute(
+      "placeholder",
+      "192.0.2.10/32",
+    );
+    expect(field("Identities")).toHaveAttribute(
+      "placeholder",
+      "sip.telnyx.com\ntelnyx.example",
+    );
+  });
+
+  it("shows no default where the trunk sets the value", async () => {
+    serve();
+
+    renderWithClient(<SIPTrunks />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Telnyx" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Edit Trunk" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "TLS" }));
+    for (const name of ["Domain", "Inbound CIDRs", "Identities"]) {
+      expect(within(dialog).getByRole("textbox", { name })).not.toHaveAttribute(
+        "placeholder",
+      );
+    }
   });
 
   it("shows the server error and keeps the form", async () => {

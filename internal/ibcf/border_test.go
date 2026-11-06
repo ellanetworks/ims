@@ -31,16 +31,16 @@ func TestConnectionsFromUnknownSource(t *testing.T) {
 	tc := transaction.Config{}
 	tc.Transport.MaxConnections = 4
 
-	b, err := Start(t.Context(), Config{
-		HomeDomain:  home,
-		Internal:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		External:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		ICSCF:       []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
-		Trust:       trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
-		BGCF:        bgcf.New(get, nil),
-		Settings:    get,
-		Transaction: tc,
-	})
+	b, err := launch(t, Config{
+		HomeDomain: home,
+		Internal:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		ICSCF:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
+		SCSCF:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
+		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
+		BGCF:       bgcf.New(get, nil),
+		Settings:   get,
+	}, tc, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestPeersPruned(t *testing.T) {
 	tr := settings.Trunk{ID: "t", Addresses: []settings.TrunkAddress{a}, TLS: settings.TrunkTLS{Pins: [][32]byte{{1}}}}
 	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061"), Domain: "carrier.example"}
 
-	p.note(tr, a, srv)
+	p.note(tr, a, srv, rank{})
 	p.prune([]settings.Trunk{tr})
 
 	if _, ok := p.get(srv.Addr); !ok {
@@ -238,7 +238,7 @@ func TestPeersPruned(t *testing.T) {
 		t.Fatal("peer of a changed address kept")
 	}
 
-	p.note(tr, a, srv)
+	p.note(tr, a, srv, rank{})
 	p.prune(nil)
 
 	if _, ok := p.get(srv.Addr); ok {
@@ -278,11 +278,13 @@ func TestTrunkDialogFlow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := s.ibcf
-			b.peers = newPeers()
+			b.peers.mu.Lock()
+			clear(b.peers.peers)
+			b.peers.mu.Unlock()
 
 			if tc.dialed {
 				b.peers.note(tc.trunk, settings.TrunkAddress{Host: "198.51.100.1", Transport: settings.SIPTransportTLS},
-					sip.Server{Transport: sip.TLS, Addr: ephemeral})
+					sip.Server{Transport: sip.TLS, Addr: ephemeral}, rank{})
 			}
 
 			s.setTrunk(tc.trunk)
@@ -291,5 +293,46 @@ func TestTrunkDialogFlow(t *testing.T) {
 				t.Errorf("flow %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPeersSharedServer(t *testing.T) {
+	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061")}
+	first := settings.TrunkAddress{Host: "a.carrier.example", Transport: settings.SIPTransportTLS}
+	second := settings.TrunkAddress{Host: "b.carrier.example", Transport: settings.SIPTransportTLS}
+	a := settings.Trunk{ID: "a", Addresses: []settings.TrunkAddress{first, second}}
+	b := settings.Trunk{ID: "b", Addresses: []settings.TrunkAddress{first}}
+
+	for _, order := range [][]string{{"a", "b"}, {"b", "a"}} {
+		p := newPeers()
+
+		for _, id := range order {
+			tr, r := a, rank{trunk: 0}
+			if id == "b" {
+				tr, r = b, rank{trunk: 1}
+			}
+
+			p.note(tr, first, srv, r)
+		}
+
+		if pr, _ := p.get(srv.Addr); pr.trunk != "a" {
+			t.Fatalf("noted in order %v: server of trunk %s, want a", order, pr.trunk)
+		}
+
+		other := settings.TrunkAddress{Host: "a.carrier.example"}
+		p.note(b, other, srv, rank{trunk: 1})
+
+		if ok, first := p.note(b, other, srv, rank{trunk: 1}); ok || first {
+			t.Fatalf("repeated refusal: ok %v, logged %v", ok, first)
+		}
+	}
+
+	p := newPeers()
+	p.note(a, second, srv, rank{address: 1})
+	p.note(a, first, srv, rank{address: 0})
+	p.note(a, second, srv, rank{address: 1})
+
+	if pr, _ := p.get(srv.Addr); pr.serverName != "a.carrier.example" {
+		t.Fatalf("server name %s, want the first address's", pr.serverName)
 	}
 }

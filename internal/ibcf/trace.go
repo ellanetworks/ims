@@ -21,7 +21,7 @@ const (
 
 var roleAttr = tracing.RoleKey.String(role)
 
-func (b *IBCF) spanAttributes(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue {
+func (b *IBCF) SpanAttributes(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue {
 	f := req.Flow
 	if !b.isExternal(f.Local) || !f.Remote.IsValid() {
 		return []attribute.KeyValue{roleAttr}
@@ -76,7 +76,7 @@ func serverAddress(l *leg, f sip.Flow) string {
 	return f.Remote.Addr().Unmap().String()
 }
 
-func (b *IBCF) untraced(req *sip.Request) bool {
+func (b *IBCF) Untraced(req *sip.Request) bool {
 	return req.Method == "OPTIONS" && !inDialog(req) && b.isExternal(req.Flow.Local)
 }
 

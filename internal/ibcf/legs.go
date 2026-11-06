@@ -71,12 +71,38 @@ func (l *leg) setFlow(f sip.Flow, server string) {
 }
 
 type legs struct {
-	mu   sync.Mutex
-	legs map[key]*leg
+	mu     sync.Mutex
+	legs   map[key]*leg
+	byAddr map[netip.Addr]map[*call]struct{}
+	addrs  map[*call][]netip.Addr
 }
 
 func newLegs() *legs {
-	return &legs{legs: map[key]*leg{}}
+	return &legs{legs: map[key]*leg{}, byAddr: map[netip.Addr]map[*call]struct{}{}, addrs: map[*call][]netip.Addr{}}
+}
+
+func (r *legs) index(c *call, addrs []netip.Addr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if c.isEnded() {
+		return
+	}
+
+	for _, a := range addrs {
+		a = a.Unmap()
+
+		calls := r.byAddr[a]
+		if calls == nil {
+			calls = map[*call]struct{}{}
+			r.byAddr[a] = calls
+		}
+
+		if _, ok := calls[c]; !ok {
+			calls[c] = struct{}{}
+			r.addrs[c] = append(r.addrs[c], a)
+		}
+	}
 }
 
 func (r *legs) add(k key, l *leg) bool {
@@ -113,22 +139,31 @@ func (r *legs) remove(c *call) {
 			delete(r.legs, k)
 		}
 	}
+
+	for _, a := range r.addrs[c] {
+		delete(r.byAddr[a], c)
+
+		if len(r.byAddr[a]) == 0 {
+			delete(r.byAddr, a)
+		}
+	}
+
+	delete(r.addrs, c)
 }
 
 func (r *legs) resolved(a netip.Addr) bool {
+	a = a.Unmap()
+
 	r.mu.Lock()
 
-	calls := map[*call]bool{}
-
-	for _, l := range r.legs {
-		if l.trunk && l.call.route != nil {
-			calls[l.call] = true
-		}
+	calls := make([]*call, 0, len(r.byAddr[a]))
+	for c := range r.byAddr[a] {
+		calls = append(calls, c)
 	}
 
 	r.mu.Unlock()
 
-	for c := range calls {
+	for _, c := range calls {
 		if t, known := c.owner(); !c.isEnded() && inTrunk(t, known, a) {
 			return true
 		}
@@ -206,7 +241,7 @@ func (b *IBCF) internalFlow(target sip.URI) (sip.Flow, error) {
 		return sip.Flow{}, err
 	}
 
-	local, ok := pick(b.ls().internal, dest.Addr())
+	local, ok := pick(b.cfg.Internal, dest.Addr())
 	if !ok {
 		return sip.Flow{}, fmt.Errorf("ibcf: no internal listener of the family of %s", dest)
 	}

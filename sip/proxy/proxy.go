@@ -777,10 +777,11 @@ func recordRoute(r *sip.Request, in sip.Flow, to Target, rr *RecordRoute) {
 	r.Header.InsertTop(recordRouteField(rr, down, to.Flow.Transport, true, rr.DownstreamParams))
 }
 
+// RFC 3261 section 26.2.2
 func recordRouteField(rr *RecordRoute, addr netip.AddrPort, tr sip.Transport, double bool, extra sip.Params) sip.Field {
 	u := sip.URI{Scheme: "sip", User: rr.User, Host: sip.FormatHost(addr.Addr()), Port: addr.Port()}
 
-	if tr != sip.UDP {
+	if tr != sip.UDP && tr != sip.TLS {
 		u.Params.Set("transport", strings.ToLower(string(tr)))
 	}
 

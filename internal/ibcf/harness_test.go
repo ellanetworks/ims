@@ -330,21 +330,21 @@ func newTracedScene(t *testing.T, trusted bool, tp trace.TracerProvider, configu
 	}
 
 	cfg := Config{
-		HomeDomain:  home,
-		Internal:    []netip.AddrPort{internalAddr},
-		External:    []netip.AddrPort{externalAddr},
-		ICSCF:       []netip.AddrPort{imsAddr},
-		Trust:       trust.New([]netip.Addr{imsAddr.Addr()}, nil),
-		BGCF:        bgcf.New(s.settings, nil),
-		Settings:    s.settings,
-		Transaction: n.Config(transaction.Config{TracerProvider: tp}),
+		HomeDomain: home,
+		Internal:   []netip.AddrPort{internalAddr},
+		External:   []netip.AddrPort{externalAddr},
+		ICSCF:      []netip.AddrPort{imsAddr},
+		SCSCF:      []netip.AddrPort{imsAddr},
+		Trust:      trust.New([]netip.Addr{imsAddr.Addr()}, nil),
+		BGCF:       bgcf.New(s.settings, nil),
+		Settings:   s.settings,
 	}
 
 	if configure != nil {
 		configure(&cfg)
 	}
 
-	b, err := start(t.Context(), cfg, false)
+	b, err := launch(t, cfg, n.Config(transaction.Config{TracerProvider: tp}), false)
 	if err != nil {
 		t.Fatal(err)
 	}

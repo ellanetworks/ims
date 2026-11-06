@@ -2,6 +2,7 @@ package ibcf
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ const (
 const (
 	defaultPtime       = 20 * time.Millisecond
 	policedPacketRate  = 100
+	policedHeadroom    = 1.25
 	bwInfo             = "bw-info"
 	bwIPVersion        = "IpVer"
 	bwMaxPacketRate    = "MaxPRate"
@@ -88,9 +90,13 @@ type bwProp struct {
 }
 
 type bwLine struct {
-	at      int
+	pts   []string
+	dir   string
+	props []bwProp
+}
+
+type bwKey struct {
 	pt, dir string
-	props   []bwProp
 }
 
 func (l *bwLine) get(name string) (string, bool) {
@@ -117,7 +123,12 @@ func (l *bwLine) put(name, value string) {
 func (l *bwLine) String() string {
 	var sb strings.Builder
 
-	sb.WriteString(bwInfo + ":" + l.pt + " " + l.dir + " ")
+	pt := "*"
+	if l.pts != nil {
+		pt = strings.Join(l.pts, ",")
+	}
+
+	sb.WriteString(bwInfo + ":" + pt + " " + l.dir + " ")
 
 	for i, p := range l.props {
 		if i > 0 {
@@ -130,9 +141,39 @@ func (l *bwLine) String() string {
 	return sb.String()
 }
 
+func (l *bwLine) dirs() []string {
+	if l.dir == "sendrecv" {
+		return []string{"send", "recv"}
+	}
+
+	return []string{l.dir}
+}
+
+func (l *bwLine) keys(formats []string) []bwKey {
+	pts := l.pts
+	if pts == nil {
+		pts = formats
+	}
+
+	var keys []bwKey
+
+	for _, pt := range pts {
+		for _, dir := range l.dirs() {
+			keys = append(keys, bwKey{pt: pt, dir: dir})
+		}
+	}
+
+	return keys
+}
+
 // TS 26.114 clause 19.3.2
 func parseBWInfo(v string) (bwLine, bool) {
-	pt, rest, ok := strings.Cut(strings.TrimSpace(v), " ")
+	ptDef, rest, ok := strings.Cut(strings.TrimSpace(v), " ")
+	if !ok {
+		return bwLine{}, false
+	}
+
+	pts, ok := parsePayloadTypes(ptDef)
 	if !ok {
 		return bwLine{}, false
 	}
@@ -148,7 +189,7 @@ func parseBWInfo(v string) (bwLine, bool) {
 		return bwLine{}, false
 	}
 
-	l := bwLine{pt: pt, dir: dir}
+	l := bwLine{pts: pts, dir: dir}
 
 	for _, def := range strings.Split(rest, ";") {
 		name, value, ok := strings.Cut(strings.TrimSpace(def), "=")
@@ -162,27 +203,60 @@ func parseBWInfo(v string) (bwLine, bool) {
 	return l, true
 }
 
+// TS 26.114 clause 19.3.2
+func parsePayloadTypes(def string) ([]string, bool) {
+	if def == "*" {
+		return nil, true
+	}
+
+	pts := strings.Split(def, ",")
+
+	for _, pt := range pts {
+		if len(pt) == 0 || len(pt) > 3 || strings.Trim(pt, "0123456789") != "" {
+			return nil, false
+		}
+	}
+
+	return pts, true
+}
+
+// TS 26.114 clause 19.3.2
 func ipVersion(l *bwLine) int {
-	v, ok := l.get(bwIPVersion)
-	if !ok {
-		return 0
+	if v, ok := l.get(bwIPVersion); ok && strings.TrimSpace(v) == "4" {
+		return 4
 	}
 
-	n, err := strconv.Atoi(v)
-	if err != nil || n != 4 && n != 6 {
-		return 0
-	}
+	return 6
+}
 
-	return n
+type bwRelated struct {
+	v4, v6           bool
+	maxRate, minRate float64
+}
+
+type bwClass struct {
+	keep             bool
+	maxRate, minRate float64
 }
 
 // TS 26.114 clause 19.2.6
 // TS 26.114 clause 19.2.7
 // TS 26.114 clause 19.2.8
+// TS 26.114 clause 19.3.2
 // TS 26.114 clause 19.4
 // TS 29.162 clause 9.1.5
 func recalculate(md *sdp.Media, to4 bool, maxRate, minRate float64) {
-	var lines []*bwLine
+	d, err := md.Desc()
+	if err != nil {
+		return
+	}
+
+	type parsed struct {
+		at   int
+		line bwLine
+	}
+
+	var lines []parsed
 
 	for i, l := range md.Lines {
 		if l.Type != 'a' || !strings.HasPrefix(strings.ToLower(l.Value), bwInfo+":") {
@@ -190,8 +264,37 @@ func recalculate(md *sdp.Media, to4 bool, maxRate, minRate float64) {
 		}
 
 		if b, ok := parseBWInfo(l.Value[len(bwInfo)+1:]); ok {
-			b.at = i
-			lines = append(lines, &b)
+			lines = append(lines, parsed{at: i, line: b})
+		}
+	}
+
+	if len(lines) == 0 {
+		return
+	}
+
+	related := map[bwKey]*bwRelated{}
+
+	for _, p := range lines {
+		for _, k := range p.line.keys(d.Formats) {
+			r := related[k]
+			if r == nil {
+				r = &bwRelated{maxRate: maxRate, minRate: minRate}
+				related[k] = r
+			}
+
+			if ipVersion(&p.line) == 4 {
+				r.v4 = true
+			} else {
+				r.v6 = true
+			}
+
+			if v, ok := rateOf(&p.line, bwMaxPacketRate); ok {
+				r.maxRate = v
+			}
+
+			if v, ok := rateOf(&p.line, bwMinPacketRate); ok {
+				r.minRate = v
+			}
 		}
 	}
 
@@ -200,55 +303,115 @@ func recalculate(md *sdp.Media, to4 bool, maxRate, minRate float64) {
 		target = 4
 	}
 
-	groups := map[string][]*bwLine{}
-	for _, l := range lines {
-		groups[l.pt+" "+l.dir] = append(groups[l.pt+" "+l.dir], l)
-	}
+	replaced := map[int][]string{}
 
-	for _, group := range groups {
-		explicit := map[int]bool{}
+	for _, p := range lines {
+		var (
+			classes []bwClass
+			members [][]bwKey
+		)
 
-		for _, l := range group {
-			if v := ipVersion(l); v != 0 {
-				explicit[v] = true
+		version := ipVersion(&p.line)
+
+		for _, k := range p.line.keys(d.Formats) {
+			r := related[k]
+
+			c := bwClass{keep: true}
+			if (!r.v4 || !r.v6) && version != target {
+				c = bwClass{maxRate: r.maxRate, minRate: r.minRate}
 			}
+
+			i := slices.Index(classes, c)
+			if i < 0 {
+				classes, members = append(classes, c), append(members, nil)
+				i = len(classes) - 1
+			}
+
+			members[i] = append(members[i], k)
 		}
 
-		if explicit[4] && explicit[6] {
+		if len(classes) == 1 {
+			if !classes[0].keep {
+				l := p.line
+				convert(&l, target, classes[0].maxRate, classes[0].minRate)
+				replaced[p.at] = []string{l.String()}
+			}
+
 			continue
 		}
 
-		implied := 6
-		if explicit[4] {
-			implied = 4
-		}
+		var out []string
 
-		groupMax, groupMin := maxRate, minRate
+		for i, c := range classes {
+			for _, part := range split(&p.line, members[i]) {
+				if !c.keep {
+					convert(&part, target, c.maxRate, c.minRate)
+				}
 
-		for _, l := range group {
-			if r, ok := rateOf(l, bwMaxPacketRate); ok {
-				groupMax = r
-			}
-
-			if r, ok := rateOf(l, bwMinPacketRate); ok {
-				groupMin = r
+				out = append(out, part.String())
 			}
 		}
 
-		for _, l := range group {
-			version := ipVersion(l)
-			if version == 0 {
-				version = implied
-			}
+		replaced[p.at] = out
+	}
 
-			if version == target {
-				continue
-			}
+	if len(replaced) == 0 {
+		return
+	}
 
-			convert(l, target, groupMax, groupMin)
-			md.Lines[l.at].Value = l.String()
+	var rebuilt sdp.Lines
+
+	for i, l := range md.Lines {
+		values, ok := replaced[i]
+		if !ok {
+			rebuilt = append(rebuilt, l)
+			continue
+		}
+
+		for _, v := range values {
+			rebuilt = append(rebuilt, sdp.Line{Type: 'a', Value: v})
 		}
 	}
+
+	md.Lines = rebuilt
+}
+
+func split(l *bwLine, keys []bwKey) []bwLine {
+	var (
+		order []string
+		dirs  = map[string][]string{}
+	)
+
+	for _, k := range keys {
+		if _, ok := dirs[k.pt]; !ok {
+			order = append(order, k.pt)
+		}
+
+		dirs[k.pt] = append(dirs[k.pt], k.dir)
+	}
+
+	var (
+		out   []bwLine
+		index = map[string]int{}
+	)
+
+	for _, pt := range order {
+		dir := dirs[pt][0]
+		if len(dirs[pt]) > 1 {
+			dir = "sendrecv"
+		}
+
+		i, ok := index[dir]
+		if !ok {
+			i = len(out)
+			index[dir] = i
+			out = append(out, bwLine{dir: dir, props: slices.Clone(l.props)})
+		}
+
+		out[i].pts = append(out[i].pts, pt)
+	}
+
+	return out
 }
 
 func rateOf(l *bwLine, name string) (float64, bool) {
@@ -316,11 +479,12 @@ func formatBandwidth(v float64) string {
 	return strconv.FormatFloat(math.Round(v*bandwidthPrecision)/bandwidthPrecision, 'f', -1, 64)
 }
 
+// RFC 3550 section 6.2
+// RFC 4566 section 5.8
 // TS 29.162 clause 10.2.9
 // TS 29.235 clause A.7.1.2.2.8.2
-func policed(md *sdp.Media, is4 bool) uint64 {
+func policed(md *sdp.Media) uint64 {
 	as, _ := md.Bandwidth(sdp.BandwidthAS)
-	rate := as * 1000
 
 	codecs, _ := md.Codecs()
 
@@ -330,14 +494,15 @@ func policed(md *sdp.Media, is4 bool) uint64 {
 		codec = max(codec, codecBitrates[strings.ToUpper(c.Encoding)])
 	}
 
-	if codec == 0 {
-		return rate
+	payload := max(as*1000, codec)
+	if payload == 0 {
+		return 0
 	}
 
-	header := uint64(rtpHeader + udpHeader + ipv6Header)
-	if is4 {
-		header = rtpHeader + udpHeader + ipv4Header
-	}
+	rate, _ := packetRates(md)
+	rate = max(rate, policedPacketRate)
 
-	return max(rate, codec+header*8*policedPacketRate)
+	header := float64(rtpHeader+udpHeader+ipv6Header) * 8 * rate
+
+	return uint64(math.Ceil((float64(payload) + header) * policedHeadroom))
 }

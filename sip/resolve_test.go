@@ -522,6 +522,11 @@ type dnsServer struct {
 	rcode     dnsmessage.RCode
 	tcp       atomic.Int32
 	asked     chan string
+	noEDNS    bool
+	plain     atomic.Int32
+	spoof     bool
+	owner     string
+	alias     string
 }
 
 func newDNSServer(t *testing.T, s *dnsServer) *dnsServer {
@@ -571,6 +576,11 @@ func newDNSServer(t *testing.T, s *dnsServer) *dnsServer {
 				return
 			}
 
+			if s.spoof && n >= 2 {
+				_, _ = pc.WriteTo(buf[:2], from)
+				_, _ = pc.WriteTo(s.forged(buf[:n]), from)
+			}
+
 			_, _ = pc.WriteTo(s.answer(buf[:n], s.truncate), from)
 		}
 	}()
@@ -617,6 +627,45 @@ func (s *dnsServer) answer(query []byte, truncate bool) []byte {
 		s.asked <- q.Type.String() + " " + q.Name.String()
 	}
 
+	edns := false
+
+	if err := p.SkipAllQuestions(); err == nil {
+		_ = p.SkipAllAnswers()
+		_ = p.SkipAllAuthorities()
+
+		for {
+			rh, err := p.AdditionalHeader()
+			if err != nil {
+				break
+			}
+
+			edns = edns || rh.Type == dnsmessage.TypeOPT
+			_ = p.SkipAdditional()
+		}
+	}
+
+	if !edns {
+		s.plain.Add(1)
+	}
+
+	if s.noEDNS && edns {
+		b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true, RCode: dnsmessage.RCodeFormatError})
+		_ = b.StartQuestions()
+		_ = b.Question(q)
+		out, _ := b.Finish()
+
+		return out
+	}
+
+	owner := q.Name
+	if s.owner != "" {
+		owner = dnsmessage.MustNewName(s.owner)
+	}
+
+	if s.alias != "" {
+		owner = dnsmessage.MustNewName(s.alias)
+	}
+
 	ttl := s.ttl
 	if ttl == 0 {
 		ttl = 60
@@ -628,7 +677,12 @@ func (s *dnsServer) answer(query []byte, truncate bool) []byte {
 	_ = b.StartAnswers()
 
 	if !truncate {
-		_ = b.CNAMEResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.CNAMEResource{CNAME: q.Name})
+		_ = b.CNAMEResource(dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("unrelated.example."), Class: dnsmessage.ClassINET, TTL: ttl},
+			dnsmessage.CNAMEResource{CNAME: q.Name})
+
+		if s.alias != "" {
+			_ = b.CNAMEResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.CNAMEResource{CNAME: owner})
+		}
 
 		if q.Type == typeNAPTR {
 			for _, rec := range s.records {
@@ -637,13 +691,13 @@ func (s *dnsServer) answer(query []byte, truncate bool) []byte {
 					data = data[:5]
 				}
 
-				_ = b.UnknownResource(dnsmessage.ResourceHeader{Name: q.Name, Type: typeNAPTR, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.UnknownResource{Type: typeNAPTR, Data: data})
+				_ = b.UnknownResource(dnsmessage.ResourceHeader{Name: owner, Type: typeNAPTR, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.UnknownResource{Type: typeNAPTR, Data: data})
 			}
 		}
 
 		if q.Type == dnsmessage.TypeSRV {
 			for _, rec := range s.srv[q.Name.String()] {
-				_ = b.SRVResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.SRVResource{
+				_ = b.SRVResource(dnsmessage.ResourceHeader{Name: owner, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.SRVResource{
 					Priority: rec.Priority, Weight: rec.Weight, Port: rec.Port, Target: dnsmessage.MustNewName(rec.Target),
 				})
 			}
@@ -655,6 +709,33 @@ func (s *dnsServer) answer(query []byte, truncate bool) []byte {
 				dnsmessage.SOAResource{NS: dnsmessage.MustNewName("ns.example.com."), MBox: dnsmessage.MustNewName("admin.example.com."), MinTTL: soa})
 		}
 	}
+
+	out, _ := b.Finish()
+
+	return out
+}
+
+func (s *dnsServer) forged(query []byte) []byte {
+	var p dnsmessage.Parser
+
+	h, err := p.Start(query)
+	if err != nil {
+		return nil
+	}
+
+	q, err := p.Question()
+	if err != nil {
+		return nil
+	}
+
+	q.Class = dnsmessage.ClassCHAOS
+
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true})
+	_ = b.StartQuestions()
+	_ = b.Question(q)
+	_ = b.StartAnswers()
+	_ = b.UnknownResource(dnsmessage.ResourceHeader{Name: q.Name, Type: typeNAPTR, Class: dnsmessage.ClassINET, TTL: 60},
+		dnsmessage.UnknownResource{Type: typeNAPTR, Data: encodeNAPTR(NAPTR{Order: 1, Flags: "s", Service: "SIP+D2U", Replacement: "_sip._udp.evil.example."})})
 
 	out, _ := b.Finish()
 
@@ -675,14 +756,26 @@ func TestSystemNAPTR(t *testing.T) {
 		want      []NAPTR
 		notFound  bool
 		tcp       int32
+		noEDNS    bool
+		plain     int32
+		spoof     bool
+		owner     string
+		alias     string
 	}{
 		{name: "UDP", want: recs},
 		{name: "truncated", truncate: true, want: recs, tcp: 1},
 		{name: "NXDOMAIN", rcode: dnsmessage.RCodeNameError, notFound: true},
 		{name: "malformed", malformed: true, notFound: true},
+		{name: "without EDNS", noEDNS: true, want: recs, plain: 1},
+		{name: "spoofed first", spoof: true, want: recs},
+		{name: "foreign owner", owner: "evil.example.", notFound: true},
+		{name: "alias", alias: "naptr.provider.example.", want: recs},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			s := newDNSServer(t, &dnsServer{records: recs, truncate: tt.truncate, malformed: tt.malformed, rcode: tt.rcode})
+			s := newDNSServer(t, &dnsServer{
+				records: recs, truncate: tt.truncate, malformed: tt.malformed, rcode: tt.rcode,
+				noEDNS: tt.noEDNS, spoof: tt.spoof, owner: tt.owner, alias: tt.alias,
+			})
 
 			d := &systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{s.addr}}
 
@@ -703,6 +796,10 @@ func TestSystemNAPTR(t *testing.T) {
 
 			if n := s.tcp.Load(); n != tt.tcp {
 				t.Errorf("%d TCP queries, want %d", n, tt.tcp)
+			}
+
+			if n := s.plain.Load(); n != tt.plain {
+				t.Errorf("%d queries without EDNS, want %d", n, tt.plain)
 			}
 		})
 	}
@@ -731,13 +828,54 @@ func TestReadResolvConf(t *testing.T) {
 	c := readResolvConf(path)
 
 	want := []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53"), netip.MustParseAddrPort("[2001:db8::53]:53")}
-	if !slices.Equal(c.servers, want) || c.timeout != 3*time.Second || c.attempts != 5 || c.ndots != 2 ||
+	if !slices.Equal(c.servers, want) || c.timeout != 3*time.Second || c.attempts != 5 || c.ndots != 2 || !c.rotate || c.tcp ||
 		!slices.Equal(c.search, []string{"example.com.", "corp.example."}) {
 		t.Errorf("readResolvConf = %+v", c)
 	}
 
 	if c := readResolvConf(filepath.Join(t.TempDir(), "missing")); len(c.servers) != 2 || c.timeout != dnsTimeout || c.attempts != dnsAttempts {
 		t.Errorf("readResolvConf without a file = %+v", c)
+	}
+}
+
+func TestSystemDNSOverTCP(t *testing.T) {
+	s := newDNSServer(t, &dnsServer{records: []NAPTR{{Order: 1, Flags: "s", Service: "SIP+D2T", Replacement: "_sip._tcp.example.com."}}})
+
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("options use-vc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &systemDNS{conf: path, servers: []netip.AddrPort{s.addr}}
+
+	if got, err := d.LookupNAPTR(t.Context(), "example.com."); err != nil || !slices.Equal(got, s.records) {
+		t.Fatalf("LookupNAPTR = %+v, %v", got, err)
+	}
+
+	if n := s.tcp.Load(); n != 1 {
+		t.Errorf("%d TCP queries, want 1", n)
+	}
+}
+
+func TestSystemDNSRotate(t *testing.T) {
+	a := newDNSServer(t, &dnsServer{records: []NAPTR{{Order: 1, Flags: "s", Service: "SIP+D2U", Replacement: "_sip._udp.example.com."}}, asked: make(chan string, 16)})
+	b := newDNSServer(t, &dnsServer{records: a.records, asked: make(chan string, 16)})
+
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("options rotate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &systemDNS{conf: path, servers: []netip.AddrPort{a.addr, b.addr}}
+
+	for _, name := range []string{"one.example.", "two.example."} {
+		if _, err := d.LookupNAPTR(t.Context(), name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(a.asked) != 1 || len(b.asked) != 1 {
+		t.Errorf("servers asked %d and %d times, want once each", len(a.asked), len(b.asked))
 	}
 }
 

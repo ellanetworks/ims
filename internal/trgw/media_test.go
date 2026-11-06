@@ -74,7 +74,14 @@ func TestSeparateRTCPOnSamePortRefused(t *testing.T) {
 func TestForbiddenRemotes(t *testing.T) {
 	public := netip.MustParseAddr("192.0.2.10")
 
-	g := &Gateway{addrs: []Address{{Bind: netip.MustParseAddr("10.0.0.1"), Advertise: public}}}
+	host := []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.1/24"), netip.MustParsePrefix("172.16.5.9/16"),
+		netip.MustParsePrefix("198.51.100.7/32"), netip.MustParsePrefix("2001:db8:1::5/64"),
+	}
+	g := &Gateway{
+		addrs: []Address{{Bind: netip.MustParseAddr("10.0.0.1"), Advertise: public}},
+		host:  newHostAddrs(func() ([]netip.Prefix, error) { return host, nil }),
+	}
 	local := netip.MustParseAddr("10.0.0.1")
 
 	for _, c := range []struct {
@@ -92,8 +99,18 @@ func TestForbiddenRemotes(t *testing.T) {
 		{"ff02::1", false},
 		{"255.255.255.255", false},
 		{"0.0.0.0", false},
+		{"0.1.2.3", false},
 		{"10.0.0.1", false},
 		{"192.0.2.10", false},
+		{"10.0.0.255", false},
+		{"10.0.0.254", true},
+		{"172.16.255.255", false},
+		{"172.16.255.254", true},
+		{"172.16.5.9", false},
+		{"198.51.100.7", false},
+		{"2001:db8:1::5", false},
+		{"2001:db8:1::ff", true},
+		{"192.0.2.255", true},
 	} {
 		if got := g.allowed(local, netip.MustParseAddr(c.addr)); got != c.ok {
 			t.Errorf("remote %s allowed %v, want %v", c.addr, got, c.ok)
@@ -332,4 +349,178 @@ func TestOpenNoPorts(t *testing.T) {
 	if _, err := r.Trunk().Open(v6); !errors.Is(err, ErrNoPorts) {
 		t.Fatalf("Open with the IPv6 pool exhausted: %v", err)
 	}
+}
+
+func TestHostAddressesRefreshed(t *testing.T) {
+	calls := 0
+	h := newHostAddrs(func() ([]netip.Prefix, error) {
+		calls++
+		return []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")}, nil
+	})
+
+	now := time.Now()
+	h.prefixes(now)
+	h.prefixes(now.Add(time.Second))
+
+	if calls != 1 {
+		t.Fatalf("listed the host addresses %d times within the refresh period", calls)
+	}
+
+	h.prefixes(now.Add(hostRefresh))
+
+	if calls != 2 {
+		t.Fatalf("listed the host addresses %d times after the refresh period", calls)
+	}
+}
+
+func TestInterfacePrefixes(t *testing.T) {
+	ps, err := interfacePrefixes()
+	if err != nil {
+		t.Skipf("no interface addresses: %v", err)
+	}
+
+	for _, p := range ps {
+		if p.Addr().Is4() && p.Bits() > 32 || p.Bits() < 0 {
+			t.Errorf("prefix %s", p)
+		}
+	}
+}
+
+func TestRTCPRangePayloadTypeWithoutMux(t *testing.T) {
+	g, _ := newGateway(t, 8)
+	r := allocate(t, g)
+	phone, trunk := newEndpoint(t, loopback), newEndpoint(t, loopback)
+
+	setRemote(t, r.Phone(), phone.remote(SendRecv))
+	setRemote(t, r.Trunk(), trunk.remote(SendRecv))
+
+	pkt := rtpPacket(t, 72, 1, make([]byte, 160))
+	pkt[1] |= 0x80
+
+	relayed(t, phone, trunk, r.Phone(), r.Trunk(), pkt)
+}
+
+func TestPreviousRemoteExpires(t *testing.T) {
+	g, _ := newGateway(t, 8)
+	r := allocate(t, g)
+	old, moved := newEndpoint(t, loopback), newEndpoint(t, loopback)
+	l := r.Trunk()
+
+	setRemote(t, l, old.remote(SendRecv))
+	setRemote(t, l, moved.remote(SendRecv))
+
+	now := time.Now()
+	later := now.Add(time.Hour).UnixNano()
+
+	if ok, _ := l.remote.Load().rtpFrom(addrOf(old.rtp), later); !ok {
+		t.Fatal("the old remote expired before the exchange ended")
+	}
+
+	l.Commit()
+
+	rs := l.remote.Load()
+	if ok, _ := rs.rtpFrom(addrOf(old.rtp), now.UnixNano()); !ok {
+		t.Fatal("the old remote refused within the grace period")
+	}
+
+	expired := now.Add(prevGrace + time.Second).UnixNano()
+
+	if ok, _ := rs.rtpFrom(addrOf(old.rtp), expired); ok || rs.rtcpFrom(addrOf(old.rtcp), expired) {
+		t.Fatal("the old remote accepted after the grace period")
+	}
+
+	if ok, current := rs.rtpFrom(addrOf(moved.rtp), expired); !ok || !current {
+		t.Fatal("the new remote refused")
+	}
+
+	setRemote(t, l, Remote{RTP: addrOf(moved.rtp), RTCP: addrOf(moved.rtcp), Direction: SendOnly})
+
+	if l.remote.Load().prevUntil != rs.prevUntil {
+		t.Fatal("a direction change restarted the grace period of the old remote")
+	}
+}
+
+func TestRevertDropsRejectedRemote(t *testing.T) {
+	g, m := newGateway(t, 8)
+	r := allocate(t, g)
+	phone, trunk, rejected := newEndpoint(t, loopback), newEndpoint(t, loopback), newEndpoint(t, loopback)
+
+	setRemote(t, r.Phone(), phone.remote(SendRecv))
+	setRemote(t, r.Trunk(), trunk.remote(SendRecv))
+	r.Trunk().Commit()
+
+	setRemote(t, r.Trunk(), rejected.remote(SendRecv))
+
+	if err := r.Trunk().Revert(trunk.remote(SendRecv)); err != nil {
+		t.Fatal(err)
+	}
+
+	if rs := r.Trunk().remote.Load(); rs.prev != nil || rs.RTP != addrOf(trunk.rtp) {
+		t.Fatalf("after the revert: remote %s, previous %v", rs.RTP, rs.prev)
+	}
+
+	send(t, rejected.rtp, rtpPacket(t, 104, 1, []byte{1}), r.Trunk().LocalRTP())
+	nothing(t, phone.rtp)
+	waitMetric(t, dropped(m, "trunk", dropUnexpectedSource), 1)
+
+	relayed(t, trunk, phone, r.Trunk(), r.Phone(), rtpPacket(t, 104, 2, []byte{2}))
+}
+
+func TestRevertRestoresPendingPrevious(t *testing.T) {
+	g, _ := newGateway(t, 8)
+	r := allocate(t, g)
+	a, b, c := newEndpoint(t, loopback), newEndpoint(t, loopback), newEndpoint(t, loopback)
+	l := r.Trunk()
+
+	setRemote(t, l, a.remote(SendRecv))
+	setRemote(t, l, b.remote(SendRecv))
+	l.Commit()
+
+	committed := l.remote.Load()
+
+	setRemote(t, l, c.remote(SendRecv))
+
+	if err := l.Revert(b.remote(SendRecv)); err != nil {
+		t.Fatal(err)
+	}
+
+	rs := l.remote.Load()
+	if rs.RTP != addrOf(b.rtp) || rs.prev == nil || rs.prev.RTP != addrOf(a.rtp) || rs.prevUntil != committed.prevUntil {
+		t.Fatalf("after the revert: remote %s, previous %v until %d", rs.RTP, rs.prev, rs.prevUntil)
+	}
+}
+
+func TestDropSecondFamily(t *testing.T) {
+	v6 := ipv6Loopback(t)
+	g, _ := newGateway(t, 8, WithAddresses(Address{Bind: v6}))
+	r := allocate(t, g)
+	l := r.Phone()
+
+	l.Drop(true)
+
+	if _, ok := l.Bound(true); !ok {
+		t.Fatal("dropped the only binding")
+	}
+
+	b6, err := l.Open(v6)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l.Drop(false)
+
+	if _, ok := l.Bound(false); ok {
+		t.Fatal("the IPv6 binding was kept")
+	}
+
+	if _, ok := l.Bound(true); !ok {
+		t.Fatal("the IPv4 binding was dropped")
+	}
+
+	c, err := net.ListenUDP("udp6", net.UDPAddrFromAddrPort(b6.LocalRTP))
+	if err != nil {
+		t.Fatalf("the IPv6 port %s is still bound: %v", b6.LocalRTP, err)
+	}
+
+	_ = c.Close()
 }

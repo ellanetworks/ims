@@ -8,8 +8,6 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
-const OnNetParam = "onnet"
-
 var (
 	ErrNoRoute       = errors.New("no SIP route")
 	ErrNoUsableTrunk = errors.New("no usable SIP trunk on the SIP route")
@@ -94,15 +92,4 @@ func (b *BGCF) Trunks(number string) ([]settings.Trunk, error) {
 	}
 
 	return trunks, nil
-}
-
-func (b *BGCF) Route(u sip.URI) error {
-	number, ok := Number(u)
-	if !ok {
-		return ErrNoRoute
-	}
-
-	_, err := b.Trunks(number)
-
-	return err
 }

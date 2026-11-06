@@ -56,6 +56,7 @@ type Gateway struct {
 	pools        map[netip.Addr]*portPool
 	metrics      *Metrics
 	mediaTimeout time.Duration
+	host         *hostAddrs
 
 	mu     sync.Mutex
 	relays map[*Relay]struct{}
@@ -88,7 +89,7 @@ func New(opts ...Option) (*Gateway, error) {
 
 	g := &Gateway{
 		pools: map[netip.Addr]*portPool{}, metrics: o.metrics, mediaTimeout: o.mediaTimeout,
-		relays: map[*Relay]struct{}{},
+		host: newHostAddrs(interfacePrefixes), relays: map[*Relay]struct{}{},
 	}
 
 	for _, a := range o.addrs {

@@ -116,7 +116,7 @@ func TestEntryRefused(t *testing.T) {
 			tr := s.trunk
 			tr.Enabled = false
 			s.setTrunk(tr)
-		}, code: 503},
+		}, code: 403},
 		{name: "orig", header: []sip.Field{f("Route", "<sip:"+externalAddr.String()+";lr;orig>")}, code: 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

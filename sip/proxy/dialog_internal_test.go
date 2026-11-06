@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -278,5 +279,19 @@ func TestSessionBodyDisposition(t *testing.T) {
 
 	if b, ok := sessionBody(Caller, e); !ok || string(b.Data) != "session" {
 		t.Errorf("session SDP %q, %v", b.Data, ok)
+	}
+}
+
+func TestRecordRouteTransport(t *testing.T) {
+	addr := netip.MustParseAddrPort("192.0.2.1:5061")
+
+	for tr, want := range map[sip.Transport]string{
+		sip.UDP: "<sip:192.0.2.1:5061;lr>",
+		sip.TCP: "<sip:192.0.2.1:5061;transport=tcp;lr>",
+		sip.TLS: "<sip:192.0.2.1:5061;lr>",
+	} {
+		if got := recordRouteField(&RecordRoute{}, addr, tr, false, nil).Value; got != want {
+			t.Errorf("Record-Route over %s = %s, want %s", tr, got, want)
+		}
 	}
 }

@@ -29,6 +29,8 @@ type call struct {
 	route    *route
 	exit     exit
 
+	abandoned chan struct{}
+
 	keys []key
 
 	mu      sync.Mutex
@@ -127,6 +129,7 @@ func (b *IBCF) begin(r *ua.Request, c *call) *b2bua.Call {
 
 func (b *IBCF) release(c *call) {
 	c.mu.Lock()
+	c.abandon()
 	done := c.ended
 	c.ended = true
 	metered := c.metered
@@ -222,12 +225,22 @@ func (c *call) ending(fromTrunk bool, method string) {
 
 	switch {
 	case method == "CANCEL":
+		if caller && !c.outcome.cancelled {
+			c.abandon()
+		}
+
 		c.outcome.cancelled = c.outcome.cancelled || caller
 	case c.outcome.bye == 0 && !c.outcome.network:
 		c.outcome.bye = proxy.Callee
 		if caller {
 			c.outcome.bye = proxy.Caller
 		}
+	}
+}
+
+func (c *call) abandon() {
+	if c.abandoned != nil && !c.ended && !c.outcome.cancelled {
+		close(c.abandoned)
 	}
 }
 
@@ -367,25 +380,42 @@ func crossing(_, _ *b2bua.Leg, _ sip.Message, p sip.BodyPart) bool {
 }
 
 // TS 24.229 clause 5.10.6.3
+// RFC 3261 section 8.2.3
 // RFC 3261 section 21.4.13
-// RFC 5621 section 8.1
+// RFC 5621 section 8.4
+// RFC 3959 section 4
 func screen(req *sip.Request) error {
 	if req.Method == "ACK" || req.Method == "CANCEL" {
 		return nil
 	}
 
-	parts, err := req.Content().Parts()
-	if err != nil {
+	parts, err := req.Content().Split()
+
+	switch {
+	case errors.Is(err, sip.ErrUnsupportedEncoding):
+		return unsupportedEncoding(err)
+	case err != nil:
 		return &sip.StatusError{StatusCode: 400, Err: err}
 	}
 
 	for _, p := range parts {
-		if !p.IsSession() && !crossing(nil, nil, nil, p) && !p.Optional() {
+		switch err := p.Encoding(); {
+		case p.Optional():
+		case errors.Is(err, sip.ErrUnsupportedEncoding):
+			return unsupportedEncoding(err)
+		case err != nil:
+			return &sip.StatusError{StatusCode: 400, Err: err}
+		case !p.IsSession() && !p.IsEarlySession() && !crossing(nil, nil, nil, p):
 			return &sip.StatusError{StatusCode: 415, Header: sip.Header{{Name: "Accept", Value: accepted}}, Err: errBody}
 		}
 	}
 
 	return nil
+}
+
+// RFC 3261 section 8.2.3
+func unsupportedEncoding(err error) error {
+	return &sip.StatusError{StatusCode: 415, Header: sip.Header{{Name: "Accept-Encoding", Value: "identity"}}, Err: err}
 }
 
 func (c *call) fromTrunk(name string, trusted bool) bool {

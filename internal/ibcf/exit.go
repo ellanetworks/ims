@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,8 +27,8 @@ const anonymous = `"Anonymous" <sip:anonymous@anonymous.invalid>`
 func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 	in := r.Message()
 
-	if !slices.Contains(b.cfg.ICSCF, unmap(in.Flow.Remote)) {
-		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the I-CSCF", slog.String("source", in.Flow.Remote.String()))
+	if !slices.Contains(b.cfg.SCSCF, unmap(in.Flow.Remote)) {
+		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the S-CSCF", slog.String("source", in.Flow.Remote.String()))
 
 		_ = r.Reject(403)
 
@@ -85,10 +86,13 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 		return
 	}
 
+	abandoned := make(chan struct{})
 	c := &call{
 		b: b, outbound: true, initial: in, in: r, icid: icidOf(in.Header), cause: trace.SpanContextFromContext(ctx),
-		route: b.newRoute(trunks), exit: x,
+		route: b.newRoute(trunks, abandoned), exit: x, abandoned: abandoned,
 	}
+
+	c.route.resolved = func(addrs []netip.Addr) { b.legs.index(c, addrs) }
 
 	if c.icid != "" {
 		trace.SpanFromContext(ctx).SetAttributes(tracing.ICIDKey.String(c.icid))
@@ -266,6 +270,8 @@ func (b *IBCF) originalCaller(h sip.Header) sip.Address {
 type forwarder struct {
 	number  string
 	private bool
+	cause   string
+	reason  string
 }
 
 // RFC 7044 section 5
@@ -301,8 +307,11 @@ func forwarderOf(h sip.Header) (forwarder, bool) {
 		}
 
 		privacy, err := embedded.Header.Privacy()
+		cause, _ := entries[i].URI.Params.Get("cause")
 
-		return forwarder{number: number, private: err != nil || privacy.Has(sip.PrivacyHistory)}, true
+		return forwarder{
+			number: number, private: err != nil || privacy.Has(sip.PrivacyHistory), cause: cause, reason: embedded.Header.Get("Reason"),
+		}, true
 	}
 
 	return forwarder{}, false
@@ -316,6 +325,7 @@ func forwarderOf(h sip.Header) (forwarder, bool) {
 // SIPconnect 2.0 section 10.2.4
 // SIPconnect 2.0 section 10.2.5
 // SIPconnect 2.0 section 11.1
+// TS 24.604 clause 4.5.2.6.2.2
 // RFC 3325 section 7
 func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Request, error) {
 	in, x, t := c.initial, c.exit, next.trunk
@@ -339,7 +349,12 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 	out.Header.Add("To", "<"+uri.String()+">")
 	out.Header.Add("Call-ID", callID)
 
-	if t.Trusted || !withholds(x.privacy) {
+	withheld := withholds(x.privacy)
+	if x.forwarder != nil {
+		withheld = x.forwarder.private
+	}
+
+	if t.Trusted || !withheld {
 		out.Header.Add("P-Asserted-Identity", x.asserted.String())
 	}
 
@@ -349,8 +364,14 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 		var served sip.URI
 
 		served, privacy = b.served(*x.forwarder, x.privacy, t.Trusted)
+
+		target := uri.Clone()
+		if x.forwarder.cause != "" {
+			target.Params.Set("cause", x.forwarder.cause)
+		}
+
 		out.Header.Add("History-Info", "<"+served.String()+">;index=1")
-		out.Header.Add("History-Info", "<"+uri.String()+">;index=1.1;mp=1")
+		out.Header.Add("History-Info", "<"+target.String()+">;index=1.1;mp=1")
 	}
 
 	if len(privacy) > 0 {
@@ -369,17 +390,27 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 // RFC 7044 section 10.1.2
 // TS 24.229 clause 4.4.4
 // TS 24.229 clause 5.10.8
+// TS 24.604 clause 4.5.2.6.2.2
 func (b *IBCF) served(f forwarder, privacy sip.Privacy, trusted bool) (sip.URI, sip.Privacy) {
 	u := phoneURI(f.number, b.cfg.HomeDomain)
 	asked := !privacy.Has(sip.PrivacyNone) && (privacy.Has(sip.PrivacyHistory) || privacy.Has(sip.PrivacyHeader))
 
+	var embedded sip.Header
+
 	switch {
 	case trusted && f.private:
-		u.SetEmbedded(sip.Envelope{Header: sip.Header{{Name: "Privacy", Value: sip.PrivacyHistory}}})
+		embedded = sip.Header{{Name: "Privacy", Value: sip.PrivacyHistory}}
 	case trusted:
 	case f.private || asked:
-		u = sip.URI{Scheme: "sip", User: "anonymous", Host: "anonymous.invalid"}
-		privacy = withoutHistory(privacy)
+		return sip.URI{Scheme: "sip", User: "anonymous", Host: "anonymous.invalid"}, withoutHistory(privacy)
+	}
+
+	if f.reason != "" {
+		embedded = append(embedded, sip.Field{Name: "Reason", Value: f.reason})
+	}
+
+	if len(embedded) > 0 {
+		u.SetEmbedded(sip.Envelope{Header: embedded})
 	}
 
 	return u, privacy

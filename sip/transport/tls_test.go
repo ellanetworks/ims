@@ -1073,3 +1073,110 @@ func TestClientTLSReservesPort(t *testing.T) {
 		t.Errorf("request from %s, want %s", in.Flow.Remote, local)
 	}
 }
+
+func TestTLSPersistBacksOffWhenClosedAfterAMessage(t *testing.T) {
+	p := newPKI(t)
+
+	l, err := tls.Listen("tcp4", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{p.server.tls}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = l.Close() })
+
+	var accepted atomic.Int64
+
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+
+			accepted.Add(1)
+
+			go func() {
+				_, _ = c.Write([]byte("OPTIONS sip:pbx.example SIP/2.0\r\nContent-Length: 0\r\n\r\n"))
+				_ = c.Close()
+			}()
+		}
+	}()
+
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+
+	stop, err := client.tr.Persist(targets(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: netip.MustParseAddrPort(l.Addr().String())}),
+		transport.KeepAlive{Interval: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(time.Second)
+	stop()
+
+	if n := accepted.Load(); n < 2 || n > 5 {
+		t.Errorf("%d connections in 1s, want a few with backoff", n)
+	}
+}
+
+func TestStopPersistDuringTheHandshake(t *testing.T) {
+	p := newPKI(t)
+
+	var lc net.ListenConfig
+
+	l, err := lc.Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = l.Close() })
+
+	conns := make(chan net.Conn, 4)
+
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+
+			t.Cleanup(func() { _ = c.Close() })
+
+			conns <- c
+		}
+	}()
+
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+
+	stop, err := client.tr.Persist(targets(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: netip.MustParseAddrPort(l.Addr().String())}),
+		transport.KeepAlive{Interval: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw net.Conn
+
+	select {
+	case raw = <-conns:
+	case <-time.After(siptest.Timeout):
+		t.Fatal("no connection")
+	}
+
+	stop()
+
+	server := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{p.server.tls}})
+	_ = server.SetDeadline(time.Now().Add(siptest.Timeout))
+
+	if err := server.HandshakeContext(t.Context()); err == nil {
+		if _, err := server.Read(make([]byte, 16)); !errors.Is(err, io.EOF) {
+			t.Errorf("read after stop: %v, want the connection closed", err)
+		}
+	}
+
+	select {
+	case <-conns:
+		t.Error("reconnected after stop")
+	case <-time.After(200 * time.Millisecond):
+	}
+}

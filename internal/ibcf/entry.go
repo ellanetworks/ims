@@ -130,7 +130,7 @@ func identitiesOf(out *sip.Request) []string {
 
 // TS 24.229 clause 5.10.3.2
 func (b *IBCF) icscf() (sip.Flow, bool) {
-	for _, l := range b.ls().internal {
+	for _, l := range b.cfg.Internal {
 		for _, i := range b.cfg.ICSCF {
 			if l.Addr().Is4() == i.Addr().Unmap().Is4() {
 				return sip.Flow{Transport: sip.UDP, Local: l, Remote: i}, true

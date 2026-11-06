@@ -35,7 +35,7 @@ func systemResolve(ctx context.Context, u sip.URI, transports []sip.Transport) (
 }
 
 type Sender interface {
-	Send(ctx context.Context, req *sip.Request, to sip.Server) (*sip.Response, error)
+	Send(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, req *sip.Request, to sip.Server) (*sip.Response, error)
 	Transports(t settings.Trunk) []sip.Transport
 }
 
@@ -385,7 +385,7 @@ func (m *Monitor) probe(ctx context.Context, t settings.Trunk) bool {
 				return false
 			}
 
-			if m.ping(ctx, t, home, srv) {
+			if m.ping(ctx, t, a, home, srv) {
 				return true
 			}
 		}
@@ -433,11 +433,11 @@ func permitted(servers []sip.Server, allowed []sip.Transport) []sip.Server {
 
 // RFC 3261 section 11
 // RFC 3263 section 4.3
-func (m *Monitor) ping(ctx context.Context, t settings.Trunk, home string, srv sip.Server) bool {
+func (m *Monitor) ping(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, home string, srv sip.Server) bool {
 	sctx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
 	defer cancel()
 
-	res, err := m.cfg.Sender.Send(sctx, newOptions(t, home), srv)
+	res, err := m.cfg.Sender.Send(sctx, t, a, newOptions(t, home), srv)
 
 	switch {
 	case err != nil:

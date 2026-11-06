@@ -44,6 +44,10 @@ type SessionConfig struct {
 	Proxy *proxy.Proxy
 
 	ICSCF []netip.AddrPort
+	IBCF  []netip.AddrPort
+
+	BGCF      *bgcf.BGCF
+	Directory Directory
 
 	Numbering func() Numbering
 
@@ -345,7 +349,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 }
 
 // TS 24.229 clause 5.4.3.2
-func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
+func (s *Sessions) routeOnward(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
 	req := tx.Request()
 
 	if out.Method == "MESSAGE" && out.Content().MediaType() == contentTypeSMS {
@@ -373,9 +377,23 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 		return
 	}
 
-	to, ok := s.icscf(req.Flow)
+	next, pick := "I-CSCF", s.icscf
+
+	switch b := s.breakout(ctx, out, onNet); b {
+	case offNet:
+		next, pick = "IBCF", s.ibcf
+
+		withoutAccessNetworkChargingInfo(&out.Header)
+	case noUsableTrunk:
+		s.log.InfoContext(ctx, "no usable SIP trunk for the number", slog.String("request-uri", out.URI.String()))
+		s.answer(ctx, tx, sip.NewResponse(req, 503, ""))
+
+		return
+	}
+
+	to, ok := pick(req.Flow)
 	if !ok {
-		s.log.WarnContext(ctx, "no I-CSCF listener for an originating request", slog.String("local", req.Flow.Local.String()))
+		s.log.WarnContext(ctx, "no "+next+" listener for an originating request", slog.String("local", req.Flow.Local.String()))
 		s.answer(ctx, tx, sip.NewResponse(req, 500, ""))
 
 		return
@@ -384,10 +402,6 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	route := sip.URI{Scheme: "sip", Host: sip.FormatHost(to.Flow.Remote.Addr()), Port: to.Flow.Remote.Port()}
 	if to.Flow.Transport != sip.UDP {
 		route.Params.Set("transport", strings.ToLower(string(to.Flow.Transport)))
-	}
-
-	if onNet {
-		route.Params.Set(bgcf.OnNetParam, "")
 	}
 
 	route.Params.Set("lr", "")
@@ -1019,6 +1033,26 @@ func (s *Sessions) icscf(in sip.Flow) (proxy.Target, bool) {
 	}
 
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: in.Local, Remote: s.cfg.ICSCF[i]}}, true
+}
+
+func (s *Sessions) ibcf(in sip.Flow) (proxy.Target, bool) {
+	local := in.Local.Addr().Unmap()
+
+	i := slices.IndexFunc(s.cfg.IBCF, func(l netip.AddrPort) bool { return l.Addr().Unmap() == local })
+	if i < 0 {
+		i = slices.IndexFunc(s.cfg.IBCF, func(l netip.AddrPort) bool { return l.Addr().Unmap().Is4() == local.Is4() })
+	}
+
+	if i < 0 {
+		return proxy.Target{}, false
+	}
+
+	tr := sip.UDP
+	if in.Transport == sip.TCP {
+		tr = sip.TCP
+	}
+
+	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: in.Local, Remote: s.cfg.IBCF[i]}}, true
 }
 
 func (s *Sessions) forward(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {

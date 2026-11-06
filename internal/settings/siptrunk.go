@@ -276,6 +276,51 @@ func (a TrunkAddress) same(b TrunkAddress) bool {
 	return strings.EqualFold(a.Host, b.Host) && a.Port == b.Port && a.Transport == b.Transport
 }
 
+const (
+	defaultSIPPort  = 5060
+	defaultSIPSPort = 5061
+)
+
+// RFC 3263 section 4.1
+// RFC 3263 section 4.2
+func (a TrunkAddress) overlaps(b TrunkAddress) bool {
+	if !strings.EqualFold(a.Host, b.Host) || a.Transport != "" && b.Transport != "" && a.Transport != b.Transport {
+		return false
+	}
+
+	pa, pb := a.ports(b.Transport), b.ports(a.Transport)
+
+	return pa == nil || pb == nil || slices.ContainsFunc(pa, func(p int) bool { return slices.Contains(pb, p) })
+}
+
+func (a TrunkAddress) ports(other SIPTransport) []int {
+	switch {
+	case a.Port != 0:
+		return []int{a.Port}
+	case !isIP(a.Host):
+		return nil
+	}
+
+	tr := a.Transport
+	if tr == "" {
+		tr = other
+	}
+
+	switch tr {
+	case SIPTransportTLS:
+		return []int{defaultSIPSPort}
+	case "":
+		return []int{defaultSIPPort, defaultSIPSPort}
+	}
+
+	return []int{defaultSIPPort}
+}
+
+func isIP(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err == nil
+}
+
 func (r SIPRoute) Validate() error {
 	switch {
 	case !validRoutePrefix(r.Prefix):
@@ -369,8 +414,8 @@ func (s Settings) validateSIPTrunks() error {
 			}
 
 			for _, a := range t.Addresses {
-				if slices.ContainsFunc(u.Addresses, a.same) {
-					return conflictf("Address %s is an address of SIP trunk %s", a, u.Name)
+				if slices.ContainsFunc(u.Addresses, a.overlaps) {
+					return conflictf("Address %s reaches the same server as an address of SIP trunk %s", a, u.Name)
 				}
 			}
 

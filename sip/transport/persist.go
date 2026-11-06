@@ -23,8 +23,11 @@ const (
 	maxReconnectBackoff = 30 * time.Second
 )
 
+// RFC 1122 section 4.2.3.5
+const userTimeout = 100 * time.Second
+
 var (
-	errClosedEarly = errors.New("closed before any data or keep-alive interval")
+	errClosedEarly = errors.New("closed before the keep-alive interval")
 	errNoTarget    = errors.New("no server to connect to")
 )
 
@@ -89,13 +92,17 @@ func (t *Transport) persist(ctx context.Context, targets Targets, ka KeepAlive) 
 			err = errNoTarget
 		}
 
-		lost := false
+		stable := false
 
 		for _, f := range flows {
 			f = normalize(f)
 
-			c, ferr := t.persistent(ctx, f, ka)
+			c, ferr := t.persistent(ctx, f)
 			if ctx.Err() != nil {
+				if c != nil {
+					c.close()
+				}
+
 				return
 			}
 
@@ -113,8 +120,8 @@ func (t *Transport) persist(ctx context.Context, targets Targets, ka KeepAlive) 
 				return
 			}
 
-			if c.received.Load() || time.Since(start) >= ka.Interval {
-				lost = true
+			if time.Since(start) >= ka.Interval {
+				stable = true
 
 				t.log.Info("SIP persistent connection lost, reconnecting", slog.String("flow", f.String()))
 
@@ -124,7 +131,7 @@ func (t *Transport) persist(ctx context.Context, targets Targets, ka KeepAlive) 
 			err = fmt.Errorf("%s: %w", f, errClosedEarly)
 		}
 
-		if lost {
+		if stable {
 			backoff = 0
 			continue
 		}
@@ -138,7 +145,7 @@ func (t *Transport) persist(ctx context.Context, targets Targets, ka KeepAlive) 
 	}
 }
 
-func (t *Transport) persistent(ctx context.Context, f sip.Flow, ka KeepAlive) (*conn, error) {
+func (t *Transport) persistent(ctx context.Context, f sip.Flow) (*conn, error) {
 	if f.Transport != sip.TCP && f.Transport != sip.TLS {
 		return nil, ErrUnsupportedTransport
 	}
@@ -151,18 +158,35 @@ func (t *Transport) persistent(ctx context.Context, f sip.Flow, ka KeepAlive) (*
 		return nil, err
 	}
 
-	c, err := t.conn(ctx, f, true, true)
+	c, err := t.pooled(f, true, true)
 	if err != nil {
 		return nil, err
 	}
 
-	if ka.PongTimeout > 0 {
-		if rc, err := c.tcp.SyscallConn(); err == nil {
-			_ = sockopt.UserTimeout(rc, ka.PongTimeout)
+	if _, err := t.await(ctx, c); err != nil {
+		if ctx.Err() != nil {
+			t.abandon(c)
 		}
+
+		return nil, err
+	}
+
+	if rc, err := c.tcp.SyscallConn(); err == nil {
+		_ = sockopt.UserTimeout(rc, userTimeout)
 	}
 
 	return c, nil
+}
+
+func (t *Transport) abandon(c *conn) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	c.close()
+
+	if t.conns[c.flow] == c {
+		delete(t.conns, c.flow)
+	}
 }
 
 // RFC 5626 section 4.4.1

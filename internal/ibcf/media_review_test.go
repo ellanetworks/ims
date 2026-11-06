@@ -429,6 +429,42 @@ func TestRecalculateBandwidthInfo(t *testing.T) {
 			[]string{"a=bw-info:* sendrecv MaxSupBw=40;IpVer=4"},
 		},
 		{
+			"overlapping payload-type lists",
+			[]string{"a=bw-info:96,97 send MaxSupBw=40;IpVer=6", "a=bw-info:96 send MaxSupBw=32;IpVer=4"},
+			true,
+			[]string{"a=bw-info:96 send MaxSupBw=40;IpVer=6", "a=bw-info:97 send MaxSupBw=32;IpVer=4;MaxPRate=50", "a=bw-info:96 send MaxSupBw=32;IpVer=4"},
+		},
+		{
+			"same payload-type set in another order",
+			[]string{"a=bw-info:96,97 send MaxSupBw=40;IpVer=6", "a=bw-info:97,96 send MaxSupBw=32;IpVer=4"},
+			true,
+			[]string{"a=bw-info:96,97 send MaxSupBw=40;IpVer=6", "a=bw-info:97,96 send MaxSupBw=32;IpVer=4"},
+		},
+		{
+			"sendrecv overlapping send",
+			[]string{"a=bw-info:97 sendrecv MaxSupBw=40", "a=bw-info:97 send MaxSupBw=32;IpVer=4"},
+			true,
+			[]string{"a=bw-info:97 send MaxSupBw=40", "a=bw-info:97 recv MaxSupBw=32;IpVer=4;MaxPRate=50", "a=bw-info:97 send MaxSupBw=32;IpVer=4"},
+		},
+		{
+			"wildcard overlapping a payload type",
+			[]string{"a=bw-info:* send MaxSupBw=40", "a=bw-info:97 send MinSupBw=20;IpVer=4"},
+			true,
+			[]string{"a=bw-info:97 send MaxSupBw=40", "a=bw-info:101 send MaxSupBw=32;IpVer=4;MaxPRate=50", "a=bw-info:97 send MinSupBw=20;IpVer=4"},
+		},
+		{
+			"wildcard converted whole",
+			[]string{"a=bw-info:* sendrecv MaxSupBw=40"},
+			true,
+			[]string{"a=bw-info:* sendrecv MaxSupBw=32;IpVer=4;MaxPRate=50"},
+		},
+		{
+			"malformed payload type ignored",
+			[]string{"a=bw-info:9a send MaxSupBw=40"},
+			true,
+			[]string{"a=bw-info:9a send MaxSupBw=40"},
+		},
+		{
 			"unknown direction ignored",
 			[]string{"a=bw-info:97 sideways MaxSupBw=40"},
 			true,
@@ -436,7 +472,7 @@ func TestRecalculateBandwidthInfo(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			body := strings.Join(append([]string{"v=0", "o=- 1 1 IN IP6 ::1", "s=-", "c=IN IP6 ::1", "t=0 0", "m=audio 4000 RTP/AVP 97", "a=rtpmap:97 AMR/8000"}, c.in...), "\r\n") + "\r\n"
+			body := strings.Join(append([]string{"v=0", "o=- 1 1 IN IP6 ::1", "s=-", "c=IN IP6 ::1", "t=0 0", "m=audio 4000 RTP/AVP 97 101", "a=rtpmap:97 AMR/8000", "a=rtpmap:101 telephone-event/8000"}, c.in...), "\r\n") + "\r\n"
 
 			s, err := sdp.Parse([]byte(body))
 			if err != nil {
@@ -466,22 +502,142 @@ func TestPolicedRate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := policed(s.Media[0], true); got != 200000 {
-		t.Errorf("rate %d with b=AS:200, want 200000", got)
+	headers := float64((12 + 8 + 40) * 8 * policedPacketRate)
+	want := func(payload float64) uint64 { return uint64((payload + headers) * policedHeadroom) }
+
+	if got := policed(s.Media[0]); got != want(200000) {
+		t.Errorf("rate %d with b=AS:200, want %d", got, want(200000))
 	}
 
-	s.Media[0].SetBandwidth(sdp.BandwidthAS, 64)
+	s.Media[0].SetBandwidth(sdp.BandwidthAS, 32)
 
-	if got := policed(s.Media[0], true); got != 64000+40*8*policedPacketRate {
-		t.Errorf("rate %d for PCMU under its b=AS, want the codec rate with IPv4 overhead", got)
+	if got := policed(s.Media[0]); got != want(64000) {
+		t.Errorf("rate %d for PCMU under its b=AS, want %d", got, want(64000))
 	}
 
-	s.Media[0].SetDesc(sdp.MediaDesc{Type: "audio", Port: 4000, Proto: "RTP/AVP", Formats: []string{"101"}})
+	s.Media[0].SetDesc(sdp.MediaDesc{Type: "audio", Port: 4000, Proto: "RTP/AVP", Formats: []string{"97", "101"}})
+	s.Media[0].AddAttr("rtpmap", "97 G726-32/8000")
+
+	if got := policed(s.Media[0]); got != want(32000) {
+		t.Errorf("rate %d for an unknown codec with b=AS:32, want %d", got, want(32000))
+	}
+
+	if sent := float64(4000+(12+8+40)*50) * 8; float64(policed(s.Media[0])) < sent {
+		t.Errorf("rate %d below the %v bit/s G726-32 sends over IPv6 at 20 ms", policed(s.Media[0]), sent)
+	}
+
+	s.Media[0].AddAttr("ptime", "5")
+
+	if got, wantFast := policed(s.Media[0]), uint64((32000+float64((12+8+40)*8*200))*policedHeadroom); got != wantFast {
+		t.Errorf("rate %d with a=ptime:5, want %d", got, wantFast)
+	}
+
 	s.Media[0].Del('b')
 
-	if got := policed(s.Media[0], true); got != 0 {
+	if got := policed(s.Media[0]); got != 0 {
 		t.Errorf("rate %d with neither b=AS nor a known codec, want no policing", got)
 	}
+}
+
+func TestConflictsWithRTCP(t *testing.T) {
+	for _, c := range []struct {
+		formats []string
+		want    bool
+	}{
+		{[]string{"0", "8", "96", "101"}, false},
+		{[]string{"63", "96"}, false},
+		{[]string{"96", "72"}, true},
+		{[]string{"64"}, true},
+		{[]string{"95"}, true},
+	} {
+		md := &sdp.Media{}
+		md.SetDesc(sdp.MediaDesc{Type: "audio", Port: 4000, Proto: "RTP/AVP", Formats: c.formats})
+
+		if got := conflictsWithRTCP(md); got != c.want {
+			t.Errorf("formats %v conflict %v, want %v", c.formats, got, c.want)
+		}
+	}
+}
+
+func TestMediaTrunkAnswersOtherFamily(t *testing.T) {
+	ipv6Loopback(t)
+
+	s := mediaScene(t, 0)
+	phone, carrier := newEndpoint(t), newEndpointAt(t, trgwPhone6)
+
+	s.call(phone.audio(1))
+
+	in := s.carrier.next("invite").req
+	_ = in.Accept(sdpOf(carrier.audio(1))...)
+
+	e := s.ims.until("failed")
+	if e.res == nil || e.res.StatusCode != 502 || values(e.res, "Warning") != "" {
+		t.Fatalf("trunk answer in IPv6 to an IPv4 offer: %v", e.res)
+	}
+}
+
+func TestMediaRejectedReofferForgetsAddress(t *testing.T) {
+	s := mediaScene(t, 0)
+	phone, carrier, moved := newEndpoint(t), newEndpoint(t), newEndpoint(t)
+
+	e := establish(t, s, phone.audio(1), carrier.audio(1))
+
+	done := make(chan *sip.Response, 1)
+	_ = e.carrier.s.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(moved.audio(2, "a=sendonly"))}, func(res *sip.Response, _ error) { done <- res })
+
+	r := s.ims.next("request").req
+	_ = r.Respond(ua.Reply{Code: 488})
+
+	s.net.Quiesce()
+
+	if res := <-done; res == nil || res.StatusCode != 488 {
+		t.Fatalf("rejected re-INVITE: %v", res)
+	}
+
+	moved.send(e.toTrunk)
+
+	if phone.got() {
+		t.Fatal("media from the address of the rejected re-offer reached the phone")
+	}
+
+	carrier.send(e.toTrunk)
+	phone.receive(e.toPhone)
+}
+
+func TestMediaFailedReofferReleasesFamily(t *testing.T) {
+	ipv6Loopback(t)
+
+	const lo, hi = 31700, 31709
+
+	s, _ := gatewayScene(t, lo, hi, []netip.Addr{trgwPhone, trgwPhone6})
+	phone, moved, carrier := newEndpoint(t), newEndpointAt(t, trgwPhone6), newEndpoint(t)
+
+	e := establish(t, s, phone.audio(1), carrier.audio(1))
+
+	bad := strings.Replace(moved.audio(2), fmt.Sprintf("m=audio %d ", moved.addr().Port()), "m=audio 65535 ", 1)
+
+	done := make(chan *sip.Response, 1)
+	_ = e.ims.s.Reinvite(context.Background(), ua.Change{Bodies: sdpOf(bad)}, func(res *sip.Response, _ error) { done <- res })
+
+	s.net.Quiesce()
+
+	if res := <-done; res == nil || res.StatusCode < 400 {
+		t.Fatalf("re-INVITE with an unusable IPv6 remote: %v", res)
+	}
+
+	s.carrier.none()
+
+	for port := lo; port <= hi; port++ {
+		c, err := net.ListenUDP("udp6", net.UDPAddrFromAddrPort(netip.AddrPortFrom(trgwPhone6, uint16(port))))
+		if err != nil {
+			t.Fatalf("IPv6 port %d still bound after the failed re-offer: %v", port, err)
+		}
+
+		_ = c.Close()
+	}
+
+	phone.send(e.toPhone)
+	carrier.receive(e.toTrunk)
 }
 
 func TestMediaLegacyHoldKeepsMusic(t *testing.T) {

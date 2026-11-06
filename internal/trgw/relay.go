@@ -71,30 +71,43 @@ func (rm Remote) Known() bool {
 	return rm.RTP.IsValid() && !rm.RTP.Addr().IsUnspecified()
 }
 
+const prevGrace = 5 * time.Second
+
 type remote struct {
 	Remote
-	known bool
-	set   int64
-	prev  *Remote
+	known     bool
+	set       int64
+	prev      *Remote
+	prevUntil int64
+	before    *remote
 }
 
-func (rs *remote) heard() bool {
-	return rs != nil && (rs.known || rs.prev != nil)
+func (rs *remote) live(now int64) *Remote {
+	if rs.prev == nil || rs.prevUntil != 0 && now >= rs.prevUntil {
+		return nil
+	}
+
+	return rs.prev
 }
 
-func (rs *remote) rtpFrom(a netip.AddrPort) (ok, current bool) {
-	switch {
+func (rs *remote) heard(now int64) bool {
+	return rs != nil && (rs.known || rs.live(now) != nil)
+}
+
+func (rs *remote) rtpFrom(a netip.AddrPort, now int64) (ok, current bool) {
+	switch prev := rs.live(now); {
 	case rs.known && a == rs.RTP:
 		return true, true
-	case rs.prev != nil && a == rs.prev.RTP:
+	case prev != nil && a == prev.RTP:
 		return true, false
 	}
 
 	return false, false
 }
 
-func (rs *remote) rtcpFrom(a netip.AddrPort) bool {
-	return rs.known && a == rs.RTCP || rs.prev != nil && a == rs.prev.RTCP
+func (rs *remote) rtcpFrom(a netip.AddrPort, now int64) bool {
+	prev := rs.live(now)
+	return rs.known && a == rs.RTCP || prev != nil && a == prev.RTCP
 }
 
 func (rs *remote) muxed(current bool) bool {
@@ -107,7 +120,7 @@ func (rs *remote) muxed(current bool) bool {
 
 func (rs *remote) settled() *remote {
 	c := *rs
-	c.prev = nil
+	c.prev, c.prevUntil = nil, 0
 
 	return &c
 }
@@ -418,6 +431,23 @@ func (l *Leg) Keep(is4 bool) {
 	l.binds.Store(&set)
 }
 
+func (l *Leg) Drop(is4 bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	set := *l.binds.Load()
+	f := index(is4)
+
+	if set.b[f] == nil || set.b[1-f] == nil || set.keep == f {
+		return
+	}
+
+	set.b[f].close()
+	set.b[f] = nil
+	set.primary, set.keep = 1-f, -1
+	l.binds.Store(&set)
+}
+
 func (l *Leg) arrived(b *binding) {
 	if !b.received.Load() {
 		b.received.Store(true)
@@ -509,24 +539,20 @@ func (l *Leg) Remote() Remote {
 	return Remote{}
 }
 
-// RFC 3264 section 8.3.1
-// RFC 3264 section 8.4
 // RFC 3550 section 11
 // RFC 5761 section 5.1.1
 // RFC 8858 section 4.2
-func (l *Leg) SetRemote(rm Remote) error {
+func (l *Leg) normalize(rm Remote) (Remote, error) {
 	if rm.Direction > Inactive {
-		return fmt.Errorf("trgw: direction %d", rm.Direction)
+		return Remote{}, fmt.Errorf("trgw: direction %d", rm.Direction)
 	}
 
 	if !rm.RTP.IsValid() {
 		if rm.RTCP.IsValid() {
-			return errors.New("trgw: RTCP address without an RTP address")
+			return Remote{}, errors.New("trgw: RTCP address without an RTP address")
 		}
 
-		l.remote.Store(&remote{Remote: rm, set: time.Now().UnixNano()})
-
-		return nil
+		return rm, nil
 	}
 
 	rm.RTP = netip.AddrPortFrom(rm.RTP.Addr().Unmap(), rm.RTP.Port())
@@ -537,44 +563,108 @@ func (l *Leg) SetRemote(rm Remote) error {
 	case rm.RTCP.IsValid():
 		rm.RTCP = netip.AddrPortFrom(rm.RTCP.Addr().Unmap(), rm.RTCP.Port())
 	case rm.RTP.Port() == 0 || rm.RTP.Port() == 65535:
-		return fmt.Errorf("trgw: no RTCP port follows RTP port %d", rm.RTP.Port())
+		return Remote{}, fmt.Errorf("trgw: no RTCP port follows RTP port %d", rm.RTP.Port())
 	default:
 		rm.RTCP = netip.AddrPortFrom(rm.RTP.Addr(), rm.RTP.Port()+1)
 	}
 
 	if !rm.Mux && rm.RTP == rm.RTCP {
-		return fmt.Errorf("trgw: RTP and RTCP share %s without multiplexing", rm.RTP)
+		return Remote{}, fmt.Errorf("trgw: RTP and RTCP share %s without multiplexing", rm.RTP)
 	}
 
-	known := !rm.RTP.Addr().IsUnspecified()
-
-	if known {
+	if rm.Known() {
 		for _, a := range []netip.AddrPort{rm.RTP, rm.RTCP} {
 			if a.Port() == 0 {
-				return fmt.Errorf("trgw: remote %s has no port", a)
+				return Remote{}, fmt.Errorf("trgw: remote %s has no port", a)
 			}
 
 			if err := l.reaches(a.Addr()); err != nil {
-				return err
+				return Remote{}, err
 			}
 		}
 	}
 
-	next := &remote{Remote: rm, known: known, set: time.Now().UnixNano()}
+	return rm, nil
+}
+
+// RFC 3264 section 8.3.1
+// RFC 3264 section 8.4
+func (l *Leg) SetRemote(rm Remote) error {
+	rm, err := l.normalize(rm)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UnixNano()
+	known := rm.Known()
+	next := &remote{Remote: rm, known: known, set: now}
 
 	if old := l.remote.Load(); old != nil {
-		switch {
+		if old.Remote == rm {
+			return nil
+		}
+
+		snapshot := *old
+		snapshot.before = nil
+		next.before = &snapshot
+
+		switch prev := old.live(now); {
+		case !rm.RTP.IsValid():
 		case old.known && (!known || old.RTP != rm.RTP || old.RTCP != rm.RTCP):
 			p := old.Remote
 			next.prev = &p
-		case !old.known && old.prev != nil && (!known || old.prev.RTP != rm.RTP || old.prev.RTCP != rm.RTCP):
-			next.prev = old.prev
+		case prev != nil && (!known || prev.RTP != rm.RTP || prev.RTCP != rm.RTCP):
+			next.prev, next.prevUntil = prev, old.prevUntil
 		}
 	}
 
 	l.remote.Store(next)
 
 	return nil
+}
+
+// RFC 3264 section 8.3.1
+func (l *Leg) Commit() {
+	until := time.Now().Add(prevGrace).UnixNano()
+
+	for {
+		cur := l.remote.Load()
+		if cur == nil || cur.before == nil && (cur.prev == nil || cur.prevUntil != 0) {
+			return
+		}
+
+		next := *cur
+		next.before = nil
+
+		if next.prev != nil && next.prevUntil == 0 {
+			next.prevUntil = until
+		}
+
+		if l.remote.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
+}
+
+// RFC 3264 section 8.3.1
+func (l *Leg) Revert(rm Remote) error {
+	rm, err := l.normalize(rm)
+	if err != nil {
+		return err
+	}
+
+	for {
+		cur := l.remote.Load()
+
+		next := &remote{Remote: rm, known: rm.Known(), set: time.Now().UnixNano()}
+		if cur != nil && cur.before != nil && cur.before.Remote == rm {
+			next = cur.before
+		}
+
+		if l.remote.CompareAndSwap(cur, next) {
+			return nil
+		}
+	}
 }
 
 func (l *Leg) reaches(a netip.Addr) error {
@@ -590,17 +680,29 @@ func (l *Leg) reaches(a netip.Addr) error {
 	return nil
 }
 
+// RFC 1122 section 3.2.1.3
 func (g *Gateway) allowed(local, a netip.Addr) bool {
 	if local.IsLoopback() {
 		return a.IsLoopback()
 	}
 
-	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() ||
+		a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) || a.Is4() && a.As4()[0] == 0 {
 		return false
 	}
 
 	for _, own := range g.addrs {
 		if a == own.Bind || a == own.Advertise {
+			return false
+		}
+	}
+
+	if g.host == nil {
+		return true
+	}
+
+	for _, p := range g.host.prefixes(time.Now()) {
+		if a == p.Addr() || isBroadcast(p, a) {
 			return false
 		}
 	}
@@ -660,13 +762,15 @@ func (r *Relay) relayRTP(src *Leg, b *binding) {
 			continue
 		}
 
+		now := time.Now()
+
 		rs := src.remote.Load()
-		if !rs.heard() {
+		if !rs.heard(now.UnixNano()) {
 			m.dropped[dropNoRemote].Inc()
 			continue
 		}
 
-		ok, current := rs.rtpFrom(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()))
+		ok, current := rs.rtpFrom(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), now.UnixNano())
 		if !ok {
 			m.dropped[dropUnexpectedSource].Inc()
 			continue
@@ -677,14 +781,8 @@ func (r *Relay) relayRTP(src *Leg, b *binding) {
 			continue
 		}
 
-		if rtp.IsRTCP(buf[:n]) {
-			if !rs.muxed(current) {
-				m.dropped[dropMalformed].Inc()
-				continue
-			}
-
+		if rs.muxed(current) && rtp.IsRTCP(buf[:n]) {
 			r.forwardRTCP(m, src, b, dst, buf[:n])
-
 			continue
 		}
 
@@ -697,8 +795,6 @@ func (r *Relay) relayRTP(src *Leg, b *binding) {
 		if current && rs.prev != nil {
 			src.remote.CompareAndSwap(rs, rs.settled())
 		}
-
-		now := time.Now()
 
 		src.arrived(b)
 		src.lastReceived.Store(now.UnixNano())
@@ -756,13 +852,15 @@ func (r *Relay) relayRTCP(src *Leg, b *binding) {
 			continue
 		}
 
+		now := time.Now().UnixNano()
+
 		rs := src.remote.Load()
-		if !rs.heard() {
+		if !rs.heard(now) {
 			m.dropped[dropNoRemote].Inc()
 			continue
 		}
 
-		if !rs.rtcpFrom(netip.AddrPortFrom(from.Addr().Unmap(), from.Port())) {
+		if !rs.rtcpFrom(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), now) {
 			m.dropped[dropUnexpectedSource].Inc()
 			continue
 		}

@@ -28,7 +28,7 @@ Carriers are outside the trust domain, unless a trunk is marked trusted. Ella IM
 
 Only subscribers' calls leave for a SIP trunk. Application Servers can't send calls to a trunk directly.
 
-Little crosses the border. Information internal to the IMS, such as the phone's location, never leaves. Header fields that could make a phone answer by itself or steer a call never come in. Only a trusted carrier can assert the caller's number.
+Little crosses the border. The caller's number leaves, unless the caller hides it from an untrusted carrier. On a forwarded call, so does the number of the subscriber who forwarded it. Information internal to the IMS, such as the phone's location, never leaves. See [SIP Trunks](sip_trunks.md#trust). Header fields that could make a phone answer by itself or steer a call never come in. Only a trusted carrier can assert the caller's number.
 
 With TLS, Ella IMS checks the carrier's certificate on every connection it opens. A trunk with `tls.required` also needs a certificate on the connections the carrier opens, for mutual authentication. Without it, a connection the carrier opens is authenticated by its source address only.
 

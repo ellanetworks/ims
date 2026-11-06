@@ -354,6 +354,13 @@ func TestExitForwarded(t *testing.T) {
 			header:  append(forwardedHistory("?Privacy=history"), f("From", "<sip:"+dave+"@sip.other.example>")),
 			from:    "sip:" + dave + "@" + home + ";user=phone",
 			served:  "sip:anonymous@anonymous.invalid",
+		},
+		{
+			name:    "diversion on a response",
+			trusted: false,
+			header:  append(forwardedHistory("?Reason=SIP%3Bcause%3D486"), f("From", "<sip:"+dave+"@sip.other.example>")),
+			from:    "sip:" + dave + "@" + home + ";user=phone",
+			served:  "sip:" + bob + "@" + home + ";user=phone?Reason=SIP%3Bcause%3D486",
 			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
 		},
 		{
@@ -378,6 +385,7 @@ func TestExitForwarded(t *testing.T) {
 			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "id;history")),
 			from:    "sip:anonymous@anonymous.invalid",
 			served:  "sip:anonymous@anonymous.invalid",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
 			privacy: "id",
 		},
 	} {
@@ -401,7 +409,7 @@ func TestExitForwarded(t *testing.T) {
 				t.Errorf("P-Asserted-Identity %q, want %q", got, tc.pai)
 			}
 
-			want := "<" + tc.served + ">;index=1, <sip:" + carol + "@sip.carrier.example;user=phone>;index=1.1;mp=1"
+			want := "<" + tc.served + ">;index=1, <sip:" + carol + "@sip.carrier.example;user=phone;cause=302>;index=1.1;mp=1"
 			if got := values(m, "History-Info"); got != want {
 				t.Errorf("History-Info %q, want %q", got, want)
 			}
@@ -567,7 +575,7 @@ func TestExitAcceptsConnectionsOfTheResolvedTrunk(t *testing.T) {
 
 	from := netip.AddrPortFrom(carrierAddr.Addr(), 40000)
 
-	if s.ibcf.accept(externalAddr, from) {
+	if s.ibcf.Accept(externalAddr, from) {
 		t.Fatal("connection of a trunk without a call admitted")
 	}
 
@@ -575,11 +583,11 @@ func TestExitAcceptsConnectionsOfTheResolvedTrunk(t *testing.T) {
 
 	in := s.carrier.next("invite").req
 
-	if !s.ibcf.accept(externalAddr, from) {
+	if !s.ibcf.Accept(externalAddr, from) {
 		t.Error("connection of the called trunk refused")
 	}
 
-	if s.ibcf.accept(externalAddr, strangerAddr) {
+	if s.ibcf.Accept(externalAddr, strangerAddr) {
 		t.Error("connection of a stranger admitted")
 	}
 
@@ -589,7 +597,7 @@ func TestExitAcceptsConnectionsOfTheResolvedTrunk(t *testing.T) {
 	s.carrier.next("ended")
 	s.net.Quiesce()
 
-	if s.ibcf.accept(externalAddr, from) {
+	if s.ibcf.Accept(externalAddr, from) {
 		t.Error("connection of the trunk admitted after the call")
 	}
 }

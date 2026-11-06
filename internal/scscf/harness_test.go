@@ -22,6 +22,7 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/diametertest"
 	"github.com/ellanetworks/ims/internal/regmetrics"
@@ -375,6 +376,9 @@ type harness struct {
 	pcscf    *fakePCSCF
 
 	icscf      *siptest.Socket
+	ibcf       *siptest.Socket
+	bgcf       *bgcf.BGCF
+	directory  *fakeDirectory
 	dns        *fakeDNS
 	numbering  Numbering
 	sessions   *Sessions
@@ -477,6 +481,8 @@ func newHarnessTraced(t *testing.T, tp trace.TracerProvider) *harness {
 	h.scscf = siptest.ListenLayer(t, layer, loopback)
 	h.scscfLayer = layer
 	h.icscf = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	h.ibcf = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+	h.directory = &fakeDirectory{}
 
 	h.cfg = Config{
 		HomeDomain:           homeDomain,
@@ -509,10 +515,34 @@ func (h *harness) start() {
 	h.sipProxy = proxy.New(proxy.Config{Layer: h.scscfLayer, Logger: h.cfg.Logger, Port: h.scscf.Port(), Clock: h.sipClock})
 	h.sessions = h.reg.Sessions(SessionConfig{
 		Proxy: h.sipProxy, ICSCF: []netip.AddrPort{h.icscf.Addr()}, Numbering: func() Numbering { return h.numbering },
+		IBCF: []netip.AddrPort{h.ibcf.Addr()}, BGCF: h.bgcf, Directory: h.directory,
 	})
 	h.pcscf.sessions.Store(h.sessions)
 
 	h.reg.Start()
+}
+
+type fakeDirectory struct {
+	mu      sync.Mutex
+	known   map[string]bool
+	err     error
+	queried []string
+}
+
+func (d *fakeDirectory) Serves(_ context.Context, number sip.URI) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.queried = append(d.queried, number.String())
+
+	return d.known[number.String()], d.err
+}
+
+func (d *fakeDirectory) queries() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return slices.Clone(d.queried)
 }
 
 func (h *harness) restart() {

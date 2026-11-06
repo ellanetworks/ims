@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -423,35 +422,43 @@ func TestOriginatingHomeLocalNumber(t *testing.T) {
 func TestOriginatingOnNetNumbers(t *testing.T) {
 	tests := []struct {
 		name, uri, want string
-		onNet           bool
+		offNet          bool
 	}{
-		{"international form", "tel:+447700900123", "tel:+447700900123", false},
-		{"international prefix", "tel:00447700900123;phone-context=" + homeDomain, "tel:+447700900123", false},
-		{"national prefix", "tel:07700900123;phone-context=" + homeDomain, "tel:+447700900123", false},
-		{"bare national number", "tel:7700900123;phone-context=" + homeDomain, "tel:+447700900123", false},
-		{"short code", "sip:11833;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", "tel:+4411833", true},
+		{"international form", "tel:+447700900123", "tel:+447700900123", true},
+		{"international prefix", "tel:00447700900123;phone-context=" + homeDomain, "tel:+447700900123", true},
+		{"national prefix", "tel:07700900123;phone-context=" + homeDomain, "tel:+447700900123", true},
+		{"bare national number", "tel:7700900123;phone-context=" + homeDomain, "tel:+447700900123", true},
+		{"short code", "sip:11833;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", "tel:+4411833", false},
+		{"country code as context", "tel:2079460000;phone-context=+44", "tel:+442079460000", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sh := newSessionHarness(t)
 			sh.numbering = Numbering{CountryCode: "44", NationalPrefix: "0", InternationalPrefix: "00", MinNationalDigits: 7}
+			sh.bgcf = routedBGCF("+44")
 			sh.restart()
 
 			sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", tt.uri, "<"+testMSISDN+">"))
 
-			got, _ := sh.icscf.RecvRequest()
+			next, other := sh.icscf, sh.ibcf
+			if tt.offNet {
+				next, other = sh.ibcf, sh.icscf
+			}
+
+			got, _ := next.RecvRequest()
 			if got.URI.String() != tt.want {
 				t.Fatalf("Request-URI = %s, want %s", got.URI, tt.want)
 			}
 
-			routes, err := got.Header.Routes()
-			if err != nil || len(routes) == 0 {
-				t.Fatalf("Routes = %v, %v, want the I-CSCF", routes, err)
+			if routes, err := got.Header.Routes(); err != nil || len(routes) != 1 || routes[0].URI.HostPort() != next.Addr().String() {
+				t.Fatalf("Routes = %v, %v, want the next hop alone", routes, err)
 			}
 
-			if onNet := routes[0].URI.Params.Has(bgcf.OnNetParam); onNet != tt.onNet {
-				t.Fatalf("Route = %s, want %s %v", routes[0].URI, bgcf.OnNetParam, tt.onNet)
+			other.RecvNone(quiet)
+
+			if q := sh.directory.queries(); tt.offNet != (len(q) == 1) {
+				t.Fatalf("number translations %v, want one %v", q, tt.offNet)
 			}
 		})
 	}

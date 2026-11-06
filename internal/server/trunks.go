@@ -33,13 +33,13 @@ func (r runtimeSettings) Get() settings.Settings {
 
 type ibcfSender struct{ s *Server }
 
-func (i ibcfSender) Send(ctx context.Context, req *sip.Request, to sip.Server) (*sip.Response, error) {
+func (i ibcfSender) Send(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, req *sip.Request, to sip.Server) (*sip.Response, error) {
 	c := i.s.core.Load()
 	if c == nil || c.sip.ibcf == nil {
 		return nil, errNoCore
 	}
 
-	return c.sip.ibcf.Send(ctx, req, to)
+	return c.sip.ibcf.Send(ctx, t, a, req, to)
 }
 
 func (i ibcfSender) Transports(t settings.Trunk) []sip.Transport {

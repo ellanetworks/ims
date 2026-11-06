@@ -119,7 +119,7 @@ func (s *fakeSender) use(f func(ctx context.Context, to sip.Server) (int, error)
 	s.reply = f
 }
 
-func (s *fakeSender) Send(ctx context.Context, req *sip.Request, to sip.Server) (*sip.Response, error) {
+func (s *fakeSender) Send(ctx context.Context, _ settings.Trunk, _ settings.TrunkAddress, req *sip.Request, to sip.Server) (*sip.Response, error) {
 	s.mu.Lock()
 	s.sent = append(s.sent, sent{req: req, to: to})
 	s.active++

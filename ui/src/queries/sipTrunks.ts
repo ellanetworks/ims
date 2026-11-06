@@ -45,10 +45,17 @@ export interface SIPTrunkParams {
   tls?: SIPTrunkTLSParams;
 }
 
+export interface SIPTrunkEffective {
+  domain: string;
+  inbound_cidrs: string[];
+  tls_identities: string[];
+}
+
 export interface SIPTrunk extends SIPTrunkParams {
   id: string;
   enabled: boolean;
   tls?: SIPTrunkTLS;
+  effective: SIPTrunkEffective;
   status: { state: SIPTrunkState; since?: string };
 }
 

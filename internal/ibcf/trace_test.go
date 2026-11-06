@@ -129,7 +129,7 @@ func TestNoTraceContextTowardsTheTrunk(t *testing.T) {
 			sent := make(chan error, 1)
 
 			go func() {
-				_, err := s.ibcf.Send(context.Background(), keepalive(), sip.Server{Transport: s.carrier.tr, Addr: carrierAddr})
+				_, err := s.ibcf.Send(context.Background(), s.trunk, s.trunk.Addresses[0], keepalive(), sip.Server{Transport: s.carrier.tr, Addr: carrierAddr})
 				sent <- err
 			}()
 
@@ -250,7 +250,7 @@ func TestOptionsOfTheTrunkHaveNoSpan(t *testing.T) {
 	sent := make(chan error, 1)
 
 	go func() {
-		_, err := s.ibcf.Send(context.Background(), keepalive(), sip.Server{Transport: sip.UDP, Addr: carrierAddr})
+		_, err := s.ibcf.Send(context.Background(), s.trunk, s.trunk.Addresses[0], keepalive(), sip.Server{Transport: sip.UDP, Addr: carrierAddr})
 		sent <- err
 	}()
 

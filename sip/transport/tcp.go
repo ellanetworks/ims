@@ -38,12 +38,11 @@ type conn struct {
 	slot    bool
 	peers   []*x509.Certificate
 
-	wmu      sync.Mutex
-	active   atomic.Int64
-	limit    atomic.Int64
-	closed   atomic.Bool
-	received atomic.Bool
-	ponged   atomic.Bool
+	wmu    sync.Mutex
+	active atomic.Int64
+	limit  atomic.Int64
+	closed atomic.Bool
+	ponged atomic.Bool
 }
 
 func newConn(f sip.Flow) *conn {
@@ -91,6 +90,15 @@ func (t *Transport) write(c *conn, b []byte) error {
 }
 
 func (t *Transport) conn(ctx context.Context, f sip.Flow, dial, request bool) (*conn, error) {
+	c, err := t.pooled(f, dial, request)
+	if err != nil {
+		return nil, err
+	}
+
+	return t.await(ctx, c)
+}
+
+func (t *Transport) pooled(f sip.Flow, dial, request bool) (*conn, error) {
 	strict := request && f.Transport == sip.TLS
 
 	var v *verifier
@@ -137,6 +145,10 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial, request bool) (*
 		go t.dial(c)
 	}
 
+	return c, nil
+}
+
+func (t *Transport) await(ctx context.Context, c *conn) (*conn, error) {
 	select {
 	case <-c.ready:
 	case <-ctx.Done():
@@ -302,10 +314,10 @@ func (t *Transport) admit(f sip.Flow, nc *net.TCPConn) bool {
 
 	t.mu.Lock()
 
-	if t.maxPerAddr > 0 && t.inbound[a] >= t.maxPerAddr {
+	if limit := t.limitAt(f.Local); limit > 0 && t.inbound[a] >= limit {
 		t.mu.Unlock()
 		t.log.Warn("SIP connection refused: too many connections from the address", slog.String("flow", f.String()),
-			slog.Int("limit", t.maxPerAddr))
+			slog.Int("limit", limit))
 
 		_ = nc.SetLinger(0)
 		_ = nc.Close()
@@ -317,6 +329,14 @@ func (t *Transport) admit(f sip.Flow, nc *net.TCPConn) bool {
 	t.mu.Unlock()
 
 	return true
+}
+
+func (t *Transport) limitAt(local netip.AddrPort) int {
+	if t.maxPerAddr == nil {
+		return 0
+	}
+
+	return t.maxPerAddr(local)
 }
 
 func (t *Transport) release(a netip.Addr) {
@@ -547,7 +567,6 @@ func (r idleReader) Read(p []byte) (int, error) {
 
 		n, err := r.c.nc.Read(p)
 		if n > 0 {
-			r.c.received.Store(true)
 			r.c.touch()
 
 			return n, nil

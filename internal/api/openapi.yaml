@@ -2997,7 +2997,7 @@ components:
                 items:
                   type: string
 
-    SIPTrunkParams:
+    SIPTrunkFields:
       type: object
       required: [name, addresses]
       properties:
@@ -3048,17 +3048,22 @@ components:
           minimum: 0
           maximum: 3600
           default: 30
-          description: Seconds between OPTIONS keepalives, 5 to 3600; 0 sends none.
+          description: Seconds between OPTIONS keepalives, and between keepalives on TLS connections to the carrier, 5 to 3600; 0 sends no OPTIONS, and TLS keepalives every 120 seconds.
         enabled:
           type: boolean
           default: true
           description: Whether the trunk carries calls, in both directions. Absent, true, on update too.
+
+    SIPTrunkParams:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkFields"
+      properties:
         tls:
           $ref: "#/components/schemas/SIPTrunkTLSParams"
+      unevaluatedProperties: false
 
-    SIPTrunkTLSParams:
+    SIPTrunkTLSFields:
       type: object
-      additionalProperties: false
       description: TLS authentication of the carrier, by CA or pin. Absent for a trunk without TLS.
       properties:
         required:
@@ -3083,9 +3088,14 @@ components:
             type: string
             examples: [sip.carrier.example]
 
+    SIPTrunkTLSParams:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkTLSFields"
+      unevaluatedProperties: false
+
     SIPTrunkTLS:
       allOf:
-        - $ref: "#/components/schemas/SIPTrunkTLSParams"
+        - $ref: "#/components/schemas/SIPTrunkTLSFields"
         - type: object
           required: [required, ca_certificates, pins, identities, ca_certificate_details]
           properties:
@@ -3137,7 +3147,7 @@ components:
     SIPTrunk:
       description: The trunk as set. id, effective, status and tls.ca_certificate_details are read-only, and an update refuses them.
       allOf:
-        - $ref: "#/components/schemas/SIPTrunkParams"
+        - $ref: "#/components/schemas/SIPTrunkFields"
         - type: object
           required: [id, inbound_cidrs, domain, trusted, keepalive_interval, enabled, tls, effective, status]
           properties:

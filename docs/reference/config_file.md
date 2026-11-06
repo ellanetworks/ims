@@ -52,7 +52,7 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
         - `max_port` (int, optional): The last port of the voice legs. Default `20999`.
         - `control_port` (int, optional): The port of the floor control channels, outside the voice legs' range. Default `21000`.
 - `ibcf` (object, optional): The IBCF, the border towards [SIP trunks](../explanation/sip_trunks.md). When absent, the IBCF doesn't run and opens no ports.
-    - `port` (int, optional): The SIP port of the IBCF on each of `sip.addresses`, towards the I-CSCF. Default `5085`.
+    - `port` (int, optional): The SIP port of the IBCF on each of `sip.addresses`, towards the I-CSCF and the S-CSCF. Default `5085`.
     - `external` (object): Where carriers reach Ella IMS, on SIP port `5060`, UDP and TCP, and TLS port `5061`.
         - `addresses` (list of objects): One IPv4 address, one IPv6 address, or one of each.
             - `address` (string): The IP address. A specific address, not `0.0.0.0` or `::`, neither in `sip.addresses` nor in `sip.trusted_networks`.

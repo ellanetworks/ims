@@ -68,7 +68,7 @@ type Config struct {
 
 	MaxConnections int
 
-	MaxConnectionsPerAddress int
+	MaxConnectionsPerAddress func(local netip.AddrPort) int
 
 	Accept func(local, remote netip.AddrPort) bool
 
@@ -96,7 +96,7 @@ type Transport struct {
 	control      func(network, address string, c syscall.RawConn) error
 	maxSize      int
 	maxConns     int
-	maxPerAddr   int
+	maxPerAddr   func(local netip.AddrPort) int
 	acceptFunc   func(local, remote netip.AddrPort) bool
 	idleTimeout  time.Duration
 	firstTimeout time.Duration

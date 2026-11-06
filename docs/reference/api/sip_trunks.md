@@ -27,7 +27,7 @@ This path returns the list of SIP trunks, ordered by identifier.
 | `inbound_cidrs`        | array   | Networks that requests from the carrier come from. Empty if not set. |
 | `domain`               | string  | Host of the Request-URI of requests to the carrier. Empty if not set. |
 | `trusted`              | boolean | Whether the carrier is in the trust domain. |
-| `keepalive_interval`   | int     | Seconds between OPTIONS requests to the carrier. `0` for none. |
+| `keepalive_interval`   | int     | Seconds between OPTIONS requests to the carrier, and between keepalives on TLS connections to it. `0`: no OPTIONS requests, and TLS keepalives every 120 seconds. |
 | `enabled`              | boolean | Whether the trunk carries calls, in both directions. |
 | `tls`                  | object  | TLS with the carrier. See [TLS](#tls). |
 | `tls.required`         | boolean | Whether the carrier must use TLS, with a certificate. |
@@ -169,14 +169,14 @@ This path creates a SIP trunk.
 | Field                   | Type    | Required | Description |
 | ----------------------- | ------- | -------- | ----------- |
 | `name`                  | string  | Yes      | 1 to 64 printable characters, without leading or trailing spaces. Unique among trunks, ignoring case. |
-| `addresses`             | array   | Yes      | At least one, each once, none an address of another trunk. See [Addresses and DNS](#addresses-and-dns). |
+| `addresses`             | array   | Yes      | At least one, each once, none reaching the same server as an address of another trunk: the same host, with a port and a transport that can match once their defaults apply. See [Addresses and DNS](#addresses-and-dns). |
 | `addresses[].host`      | string  | Yes      | Domain name, or specific IPv4 or IPv6 address. |
 | `addresses[].port`      | int     | No       | 1–65535. |
 | `addresses[].transport` | string  | No       | `udp`, `tcp` or `tls`. `tls` needs `tls.ca_certificates` or `tls.pins`. |
 | `inbound_cidrs`         | array   | No       | Networks, such as `198.51.100.0/24`, or single addresses. No two may overlap, in this trunk or across trunks. None may overlap `sip.addresses` or `sip.trusted_networks` of the [configuration file](../config_file.md). Not `0.0.0.0/0` or `::/0`. Default: the IP addresses among the hosts of `addresses`. |
 | `domain`                | string  | No       | Domain name, or specific IPv4 or IPv6 address, without brackets. Default: the first domain name among the hosts of `addresses`. Required if every host is an IP address. |
 | `trusted`               | boolean | No       | Default `false`. A trusted trunk never uses UDP: no address may have `udp` as transport. |
-| `keepalive_interval`    | int     | No       | 5–3600 seconds, or `0` for none. Default `30`. |
+| `keepalive_interval`    | int     | No       | 5–3600 seconds, or `0` for no OPTIONS requests. Default `30`. |
 | `enabled`               | boolean | No       | Default `true`. |
 | `tls`                   | object  | No       | Absent for a trunk without TLS. See [TLS](#tls). |
 | `tls.required`          | boolean | No       | Default `false`. Every address must have `tls` as transport. Requires `ibcf.external.tls` in the [configuration file](../config_file.md). |
@@ -204,6 +204,11 @@ The default port is `5060` for `udp` and `tcp`, and `5061` for `tls`. A trusted 
 
 An identity is the host of a `sip` URI or a DNS name in the certificate's subjectAltName, or its common name if it has none.
 
+| TLS connection opened by | Extended key usage of each certificate of the carrier's chain, if present |
+| ------------------------ | ------------------------------------------------------------------------- |
+| Ella IMS | `serverAuth`, `anyExtendedKeyUsage` or `id-kp-sipDomain` |
+| The carrier | `clientAuth`, `anyExtendedKeyUsage` or `id-kp-sipDomain` |
+
 With `tls.required`, the carrier must use TLS, and present a certificate on the TLS connections it opens.
 
 CA certificates and PEM pins must not be expired when added. Ella IMS keeps the fingerprint of a PEM pin only.
@@ -215,7 +220,7 @@ Ella IMS's own certificate is `ibcf.external.tls` in the [configuration file](..
 | Code  | Description |
 | ----- | ----------- |
 | `400` | A field is invalid, an inbound network overlaps the networks of the configuration file, or `tls.required` is set without `ibcf.external.tls`. |
-| `409` | Another trunk has the same name, an address of this trunk, or an inbound network that overlaps one of this trunk's. |
+| `409` | Another trunk has the same name, an address that reaches the same server as one of this trunk's, or an inbound network that overlaps one of this trunk's. |
 
 ### Sample Request
 
@@ -335,7 +340,7 @@ This path replaces a SIP trunk. The request body is that of [Create a SIP Trunk]
 | ----- | ----------- |
 | `400` | A field is invalid, an inbound network overlaps the networks of the configuration file, or `tls.required` is set without `ibcf.external.tls`. |
 | `404` | No trunk has this identifier. |
-| `409` | Another trunk has the same name, an address of this trunk, or an inbound network that overlaps one of this trunk's. |
+| `409` | Another trunk has the same name, an address that reaches the same server as one of this trunk's, or an inbound network that overlaps one of this trunk's. |
 
 ### Sample Request
 

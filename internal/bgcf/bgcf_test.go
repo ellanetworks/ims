@@ -165,24 +165,3 @@ func TestNumber(t *testing.T) {
 		}
 	}
 }
-
-func TestRoute(t *testing.T) {
-	b := newBGCF([]settings.SIPRoute{
-		{ID: "r1", Prefix: "+1", Trunks: []string{"a"}},
-		{ID: "r2", Prefix: "+33", Trunks: []string{"down"}},
-	}, []settings.Trunk{trunk("a", true), trunk("down", true)}, states{"down": settings.TrunkDown})
-
-	for uri, want := range map[string]error{
-		"tel:+16617629239":                        nil,
-		"tel:+33612345678":                        ErrNoUsableTrunk,
-		"tel:+4915112345678":                      ErrNoRoute,
-		"tel:+1911":                               ErrNoRoute,
-		"tel:6617629239;phone-context=+1":         ErrNoRoute,
-		"sip:+16617629239@example.org;user=phone": ErrNoRoute,
-	} {
-		u, _ := sip.ParseURI(uri)
-		if got := b.Route(u); !errors.Is(got, want) {
-			t.Errorf("Route(%s) = %v, want %v", uri, got, want)
-		}
-	}
-}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/b2bua"
@@ -437,4 +438,31 @@ func TestEveryDialFails(t *testing.T) {
 	failedWith(t, alice, 500)
 	b.callEnded(t)
 	settled(t, n, alice, b.party)
+}
+
+func TestCancelStopsTheFailoverBudget(t *testing.T) {
+	n := newNet(t)
+	bob := newParty(t, n, "bob", nil)
+	carol := newParty(t, n, "carol", nil)
+	b := newSerial(t, n, b2bua.RelayConfig{FailoverBudget: time.Hour}, bob.uri(), carol.uri())
+	alice := newParty(t, n, "alice", nil)
+
+	o := alice.invite(b.uri(), "offer-1", alice.handler())
+
+	_ = bob.next("invite").req.Reject(503)
+
+	b.failure(t)
+
+	carol.next("invite")
+
+	_ = o.Cancel(context.Background(), ua.Change{})
+
+	failedWith(t, alice, 487)
+	carol.next("ended")
+	b.callEnded(t)
+	settled(t, n, alice, bob, carol, b.party)
+
+	if d, ok := n.Clock().Next(); ok {
+		t.Fatalf("a timer is still due in %v", d)
+	}
 }

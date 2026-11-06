@@ -42,9 +42,13 @@ A disabled trunk refuses calls in, as well as calls out.
 
 ## Trust
 
-A carrier with an interconnect agreement can be trusted. Ella IMS then accepts the caller's number it asserts, and asserts its subscribers' numbers to it. From an untrusted carrier, the caller's number is only a claim. See [Security](security.md#sip-trunks).
+A carrier with an interconnect agreement can be trusted. Ella IMS then accepts the caller's number it asserts. From an untrusted carrier, the caller's number is only a claim. See [Security](security.md#sip-trunks).
 
-A trunk's inbound CIDRs never overlap the IMS's own networks. A trunk that overlaps them after a change to the configuration file carries no calls, and its state is `unusable`.
+Ella IMS asserts the caller's number to every carrier, trusted or not. A caller who hides their number hides it from an untrusted carrier. A trusted carrier gets the number, with the request to keep it private.
+
+On a forwarded call, the number asserted is that of the subscriber who forwarded the call, and the carrier learns that this subscriber forwarded it. A forwarding subscriber who keeps their history private stays hidden from an untrusted carrier.
+
+A trunk's inbound CIDRs never overlap the IMS's own networks. A trunk that overlaps them after a change to the configuration file carries no calls, and its state is `unusable`. So does a trunk that requires TLS when the configuration file has no certificate for the IBCF.
 
 ## Voice
 
@@ -55,6 +59,8 @@ The voice is relayed as it is, without transcoding. The phone and the carrier mu
 ## Keepalives
 
 Ella IMS sends OPTIONS requests to each trunk with a keepalive interval. A trunk that stops answering is down, and routes skip it until it answers again.
+
+Over TLS, Ella IMS keeps a connection open to each of the carrier's servers, with or without OPTIONS requests.
 
 ## What SIP trunks don't carry
 

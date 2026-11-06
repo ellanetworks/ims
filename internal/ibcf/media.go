@@ -83,6 +83,7 @@ type pending struct {
 	dialog *ua.Session
 	side   int
 	prev   *trgw.Remote
+	police uint64
 	stream *stream
 	mux    bool
 	remove bool
@@ -139,7 +140,7 @@ func (m *media) Offer(x *b2bua.Exchange) ([]byte, error) {
 		st.refs++
 		x.Value = &pending{dialog: x.Dialog, side: from, prev: m.state(x.Dialog).remote[from], stream: st, remove: true}
 
-		return m.rewrite(s, x.Dialog, to, -1)
+		return m.rewrite(s, x.Dialog, to, -1, false)
 	}
 
 	i := m.pick(s)
@@ -148,6 +149,7 @@ func (m *media) Offer(x *b2bua.Exchange) ([]byte, error) {
 	}
 
 	rm := remoteOf(s, i)
+	added := m.stream != nil && rm.Known() && !m.bound(from, rm)
 
 	st, err := m.open(i, from, to, rm)
 	if err != nil {
@@ -156,16 +158,43 @@ func (m *media) Offer(x *b2bua.Exchange) ([]byte, error) {
 
 	st.refs++
 
-	p := &pending{dialog: x.Dialog, side: from, prev: m.state(x.Dialog).remote[from], stream: st, mux: m.mux(x.Dialog, to)}
+	d := m.state(x.Dialog)
+	p := &pending{
+		dialog: x.Dialog, side: from, prev: d.remote[from], police: d.police[to], stream: st,
+		mux: m.mux(x.Dialog, to) && !conflictsWithRTCP(s.Media[i]),
+	}
 
 	if err := m.set(x.Dialog, from, rm); err != nil {
+		if added && m.stream == st {
+			mediaLeg(st.relay, from).Drop(rm.RTP.Addr().Unmap().Is4())
+		}
+
 		m.release(st)
+
 		return nil, m.refuse(err)
 	}
 
 	x.Value = p
 
-	return m.rewrite(s, x.Dialog, to, i)
+	return m.rewrite(s, x.Dialog, to, i, p.mux)
+}
+
+func (m *media) bound(side int, rm trgw.Remote) bool {
+	_, ok := mediaLeg(m.stream.relay, side).Bound(rm.RTP.Addr().Unmap().Is4())
+	return ok
+}
+
+// RFC 5761 section 4
+func conflictsWithRTCP(md *sdp.Media) bool {
+	d, err := md.Desc()
+	if err != nil {
+		return true
+	}
+
+	return slices.ContainsFunc(d.Formats, func(f string) bool {
+		pt, err := strconv.Atoi(f)
+		return err == nil && pt >= 64 && pt <= 95
+	})
 }
 
 // TS 29.162 clause 9.1.1.2
@@ -173,7 +202,7 @@ func (m *media) Offer(x *b2bua.Exchange) ([]byte, error) {
 func (m *media) Answer(x *b2bua.Exchange, dialog *ua.Session, body []byte) ([]byte, error) {
 	s, err := sdp.Parse(body)
 	if err != nil {
-		return nil, err
+		return nil, unusable(x, err)
 	}
 
 	from, to := m.c.side(x.To), m.c.side(x.From)
@@ -183,7 +212,7 @@ func (m *media) Answer(x *b2bua.Exchange, dialog *ua.Session, body []byte) ([]by
 	defer m.mu.Unlock()
 
 	if p != nil && p.remove {
-		return m.rewrite(s, dialog, to, -1)
+		return m.rewrite(s, dialog, to, -1, false)
 	}
 
 	idx := -1
@@ -193,13 +222,25 @@ func (m *media) Answer(x *b2bua.Exchange, dialog *ua.Session, body []byte) ([]by
 		rm.Mux = rm.Mux && p != nil && p.mux
 
 		if err := m.set(dialog, from, rm); err != nil {
-			return nil, m.refuse(err)
+			return nil, unusable(x, err)
 		}
 
 		idx = st.index
 	}
 
-	return m.rewrite(s, dialog, to, idx)
+	return m.rewrite(s, dialog, to, idx, m.mux(dialog, to))
+}
+
+// RFC 3261 section 21.5.1
+// RFC 3261 section 21.5.3
+// RFC 5057 section 5.1
+func unusable(x *b2bua.Exchange, err error) error {
+	code := 500
+	if x.Initial {
+		code = 502
+	}
+
+	return &b2bua.Rejection{Reply: ua.Reply{Code: code}, Err: err}
 }
 
 // RFC 3264 section 8
@@ -227,10 +268,10 @@ func (m *media) End(x *b2bua.Exchange, dialog *ua.Session) {
 		m.base, m.dialogs, m.active, m.confirmed = &dialogMedia{}, map[*ua.Session]*dialogMedia{}, nil, false
 	default:
 		if d := m.known(p.dialog); d != nil && !p.remove {
-			d.remote[p.side] = p.prev
+			d.remote[p.side], d.police[1-p.side] = p.prev, p.police
 
 			if p.dialog == m.active {
-				m.apply(d)
+				m.revert(p.side, d)
 			}
 
 			if m.stream != nil && p.prev != nil && p.prev.Known() && (!m.confirmed || p.dialog == m.active) {
@@ -334,8 +375,24 @@ func (m *media) apply(d *dialogMedia) {
 
 		l := mediaLeg(m.stream.relay, side)
 		_ = l.SetRemote(*rm)
+		l.Commit()
 		l.Police(d.police[side])
 	}
+}
+
+// RFC 3264 section 8.3.1
+func (m *media) revert(side int, d *dialogMedia) {
+	if m.stream == nil {
+		return
+	}
+
+	rm := d.remote[side]
+	if rm == nil {
+		rm = &trgw.Remote{}
+	}
+
+	_ = mediaLeg(m.stream.relay, side).Revert(*rm)
+	mediaLeg(m.stream.relay, 1-side).Police(d.police[1-side])
 }
 
 // TS 23.334 clause 5.21
@@ -351,8 +408,11 @@ func (m *media) settle(dialog *ua.Session) {
 	}
 
 	for side, rm := range d.remote {
+		l := mediaLeg(m.stream.relay, side)
+		l.Commit()
+
 		if rm != nil && rm.Known() {
-			mediaLeg(m.stream.relay, side).Keep(rm.RTP.Addr().Unmap().Is4())
+			l.Keep(rm.RTP.Addr().Unmap().Is4())
 		}
 	}
 }
@@ -678,7 +738,7 @@ func altc(n int, b trgw.Binding) string {
 // RFC 3605 section 2.1
 // RFC 4566 section 5.7
 // RFC 4566 section 5.14
-func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to, idx int) ([]byte, error) {
+func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to, idx int, mux bool) ([]byte, error) {
 	var (
 		addr netip.Addr
 		src  netip.Addr
@@ -713,7 +773,7 @@ func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to, idx int) ([]byte
 			md.AddAttr("rtcp", strconv.Itoa(int(rtcp.Port())))
 		}
 
-		if m.mux(dialog, to) {
+		if mux {
 			md.AddAttr("rtcp-mux", "")
 		}
 
@@ -728,7 +788,7 @@ func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to, idx int) ([]byte
 			interwork(s, md, src.Is4(), addr.Is4())
 		}
 
-		m.police(dialog, to, md, addr.Is4())
+		m.police(dialog, to, md)
 	}
 
 	for _, name := range dropped {
@@ -761,8 +821,8 @@ func (m *media) fallback(side int) netip.Addr {
 }
 
 // TS 29.162 clause 10.2.9
-func (m *media) police(dialog *ua.Session, side int, md *sdp.Media, is4 bool) {
-	rate := policed(md, is4)
+func (m *media) police(dialog *ua.Session, side int, md *sdp.Media) {
+	rate := policed(md)
 	d := m.state(dialog)
 	d.police[side] = rate
 

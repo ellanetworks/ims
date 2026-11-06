@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
@@ -86,7 +87,7 @@ func TestRouteTargets(t *testing.T) {
 		}
 	}
 
-	rt := s.ibcf.newRoute(trunks)
+	rt := s.ibcf.newRoute(trunks, nil)
 
 	var got []string
 
@@ -118,5 +119,52 @@ func TestTrunkRequestURIHost(t *testing.T) {
 		if got := host(domain); got != want {
 			t.Errorf("host(%s) = %s, want %s", domain, got, want)
 		}
+	}
+}
+
+func TestRouteAbandonedDuringResolution(t *testing.T) {
+	s := newScene(t, false)
+
+	resolving := make(chan struct{})
+
+	s.ibcf.cfg.Resolve = func(ctx context.Context, _ sip.URI, _ []sip.Transport) ([]sip.Server, error) {
+		close(resolving)
+		<-ctx.Done()
+
+		return nil, ctx.Err()
+	}
+
+	stop := make(chan struct{})
+	rt := s.ibcf.newRoute([]settings.Trunk{{ID: "a", Addresses: []settings.TrunkAddress{{Host: "sip.carrier.example"}}}}, stop)
+
+	go func() {
+		<-resolving
+		close(stop)
+	}()
+
+	start := time.Now()
+
+	if _, ok := rt.next(t.Context()); ok {
+		t.Fatal("target of an abandoned route")
+	}
+
+	if d := time.Since(start); d >= resolveTimeout {
+		t.Fatalf("abandoned after %s, waiting for the lookup", d)
+	}
+}
+
+func TestRouteBudgetCoversResolution(t *testing.T) {
+	s := newScene(t, false)
+
+	s.ibcf.cfg.Resolve = func(context.Context, sip.URI, []sip.Transport) ([]sip.Server, error) {
+		t.Error("resolved after the failover budget")
+		return nil, nil
+	}
+
+	rt := s.ibcf.newRoute([]settings.Trunk{{ID: "a", Addresses: []settings.TrunkAddress{{Host: "sip.carrier.example"}}}}, nil)
+	rt.deadline = time.Now()
+
+	if _, ok := rt.next(t.Context()); ok {
+		t.Fatal("target after the failover budget")
 	}
 }

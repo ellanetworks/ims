@@ -603,3 +603,31 @@ func TestTrunkEffective(t *testing.T) {
 		}
 	}
 }
+
+func TestTrunkAddressOverlaps(t *testing.T) {
+	telnyx := TrunkAddress{Host: "sip.telnyx.com", Port: 5060, Transport: SIPTransportTCP}
+
+	tests := []struct {
+		name string
+		a, b TrunkAddress
+		want bool
+	}{
+		{"identical", telnyx, telnyx, true},
+		{"no port", telnyx, TrunkAddress{Host: "SIP.telnyx.com", Transport: SIPTransportTCP}, true},
+		{"no transport", telnyx, TrunkAddress{Host: "sip.telnyx.com", Port: 5060}, true},
+		{"neither", telnyx, TrunkAddress{Host: "sip.telnyx.com"}, true},
+		{"other port", telnyx, TrunkAddress{Host: "sip.telnyx.com", Port: 5061}, false},
+		{"other transport", telnyx, TrunkAddress{Host: "sip.telnyx.com", Port: 5060, Transport: SIPTransportUDP}, false},
+		{"other host", telnyx, TrunkAddress{Host: "sip2.telnyx.com"}, false},
+		{"IP and default port", TrunkAddress{Host: "192.0.2.1"}, TrunkAddress{Host: "192.0.2.1", Port: 5060, Transport: SIPTransportUDP}, true},
+		{"IP over TLS and default port", TrunkAddress{Host: "192.0.2.1", Transport: SIPTransportTLS}, TrunkAddress{Host: "192.0.2.1", Port: 5061}, true},
+		{"IP over UDP and the TLS port", TrunkAddress{Host: "192.0.2.1", Transport: SIPTransportUDP}, TrunkAddress{Host: "192.0.2.1", Port: 5061}, false},
+		{"IP and another port", TrunkAddress{Host: "192.0.2.1"}, TrunkAddress{Host: "192.0.2.1", Port: 5080}, false},
+	}
+
+	for _, tt := range tests {
+		if got, rev := tt.a.overlaps(tt.b), tt.b.overlaps(tt.a); got != tt.want || rev != tt.want {
+			t.Errorf("%s: overlaps = %v, %v, want %v", tt.name, got, rev, tt.want)
+		}
+	}
+}

@@ -19,30 +19,44 @@ import (
 
 const reresolve = 10 * time.Minute
 
-var (
-	errNoCertificate = errors.New("ibcf: no TLS certificate to accept connections")
-	errNoTLSTrunk    = errors.New("ibcf: TLS peer of no SIP trunk with TLS settings")
-)
+var errNoTLSTrunk = errors.New("ibcf: TLS peer of no SIP trunk with TLS settings")
+
+var errSharedServer = errors.New("ibcf: TLS server of another SIP trunk")
 
 type peer struct {
 	trunk      string
 	address    settings.TrunkAddress
 	serverName string
+	rank       rank
+}
+
+type rank struct {
+	trunk, address int
+}
+
+func (r rank) before(o rank) bool {
+	return r.trunk < o.trunk || r.trunk == o.trunk && r.address < o.address
+}
+
+type conflict struct {
+	server netip.AddrPort
+	trunk  string
 }
 
 type peers struct {
-	mu    sync.Mutex
-	peers map[netip.AddrPort]peer
+	mu      sync.Mutex
+	peers   map[netip.AddrPort]peer
+	refused map[conflict]bool
 }
 
 func newPeers() *peers {
-	return &peers{peers: map[netip.AddrPort]peer{}}
+	return &peers{peers: map[netip.AddrPort]peer{}, refused: map[conflict]bool{}}
 }
 
 // RFC 5922 section 7.3
-func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) bool {
+func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server, r rank) (ok, first bool) {
 	if srv.Transport != sip.TLS {
-		return true
+		return true, false
 	}
 
 	name := srv.Domain
@@ -57,24 +71,54 @@ func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Serve
 
 	a := unmap(srv.Addr)
 
-	if old, ok := p.peers[a]; ok && old.trunk != t.ID {
-		return false
+	old, known := p.peers[a]
+
+	switch {
+	case !known, r.before(old.rank):
+		p.peers[a] = peer{trunk: t.ID, address: addr, serverName: name, rank: r}
+	case old.trunk != t.ID:
+		k := conflict{server: a, trunk: t.ID}
+		first = !p.refused[k]
+		p.refused[k] = true
+
+		return false, first
 	}
 
-	p.peers[a] = peer{trunk: t.ID, address: addr, serverName: name}
-
-	return true
+	return true, false
 }
 
-func (b *IBCF) noteServer(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) {
-	if !b.peers.note(t, addr, srv) {
-		b.log.Warn("SIP trunks share a TLS server, keeping the first", slog.String("trunk", t.Name), slog.String("server", srv.Addr.String()))
+// SIPconnect 2.0 section 17.2
+func (b *IBCF) noteServer(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) bool {
+	ok, first := b.peers.note(t, addr, srv, b.rankOf(t, addr))
+	if first {
+		b.log.Warn("SIP trunk not sent to a TLS server of another SIP trunk", slog.String("trunk", t.Name),
+			slog.String("server", srv.Addr.String()))
 	}
+
+	return ok
+}
+
+func (b *IBCF) rankOf(t settings.Trunk, addr settings.TrunkAddress) rank {
+	trunks := b.cfg.Settings().Trunks
+
+	r := rank{trunk: len(trunks), address: len(t.Addresses)}
+
+	if i := slices.IndexFunc(trunks, func(o settings.Trunk) bool { return o.ID == t.ID }); i >= 0 {
+		r.trunk = i
+	}
+
+	if i := slices.Index(t.Addresses, addr); i >= 0 {
+		r.address = i
+	}
+
+	return r
 }
 
 func (p *peers) prune(trunks []settings.Trunk) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	clear(p.refused)
 
 	for a, pr := range p.peers {
 		i := slices.IndexFunc(trunks, func(t settings.Trunk) bool { return t.ID == pr.trunk })
@@ -115,7 +159,7 @@ func (b *IBCF) trunkFor(f sip.Flow) (settings.Trunk, bool) {
 
 // SIPconnect 2.0 section 17.2
 // RFC 5922 section 7.3
-func (b *IBCF) tlsClient(f sip.Flow) (transport.TLSOptions, error) {
+func (b *IBCF) TLSClientOptions(f sip.Flow) (transport.TLSOptions, error) {
 	var (
 		t    settings.Trunk
 		ok   bool
@@ -147,42 +191,27 @@ func (b *IBCF) tlsClient(f sip.Flow) (transport.TLSOptions, error) {
 
 // SIPconnect 2.0 section 17.2
 // SIPconnect 2.0 section 17.5
-func (b *IBCF) serverConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-	if b.cfg.Certificate == nil {
-		return nil, errNoCertificate
-	}
+func ServerTLS(cert *tls.Certificate, st func() settings.Settings) *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		remote, err := netip.ParseAddrPort(hello.Conn.RemoteAddr().String())
+		if err != nil {
+			return nil, err
+		}
 
-	remote, err := netip.ParseAddrPort(hello.Conn.RemoteAddr().String())
-	if err != nil {
-		return nil, err
-	}
+		t, ok := trunkAt(st(), remote.Addr())
+		if !ok || !t.TLS.Trusts() {
+			return nil, fmt.Errorf("%w: %s", errNoTLSTrunk, remote)
+		}
 
-	t, ok := b.trunkOf(remote.Addr())
-	if !ok || !t.TLS.Trusts() {
-		return nil, fmt.Errorf("%w: %s", errNoTLSTrunk, remote)
-	}
+		o, err := t.TLS.InboundOptions()
+		if err != nil {
+			return nil, err
+		}
 
-	o, err := t.TLS.InboundOptions()
-	if err != nil {
-		return nil, err
-	}
+		o.Certificates = []tls.Certificate{*cert}
 
-	o.Certificates = []tls.Certificate{*b.cfg.Certificate}
-
-	return transport.NewTLSServerConfig(o)
-}
-
-func (b *IBCF) listenTLS(ctx context.Context, want []netip.AddrPort) error {
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12, GetConfigForClient: b.serverConfig}
-
-	bind := func(a netip.AddrPort) (netip.AddrPort, error) { return b.agent.Layer().ListenTLS(ctx, a, cfg) }
-	if b.cfg.Certificate == nil {
-		bind = func(a netip.AddrPort) (netip.AddrPort, error) { return b.agent.Layer().ClientTLS(ctx, a) }
-	}
-
-	_, err := b.listen(ctx, want, bind, func(x *addrs, a netip.AddrPort) { x.secure = append(x.secure, a) })
-
-	return err
+		return transport.NewTLSServerConfig(o)
+	}}
 }
 
 // SIPconnect 2.0 section 8
@@ -198,7 +227,7 @@ func (b *IBCF) transports(t settings.Trunk) []sip.Transport {
 		out = []sip.Transport{sip.UDP, sip.TCP}
 	}
 
-	if t.TLS.Trusts() && len(b.ls().secure) > 0 {
+	if t.TLS.Trusts() && len(b.cfg.TLS) > 0 {
 		out = append(out, sip.TLS)
 	}
 
@@ -282,7 +311,7 @@ func (p *persister) apply() {
 	trunks := p.b.cfg.Settings().Trunks
 	want := map[persistKey]settings.Trunk{}
 
-	if p.b.cfg.Certificate == nil && len(p.b.ls().secure) > 0 {
+	if p.b.cfg.Certificate == nil && len(p.b.cfg.TLS) > 0 {
 		for _, t := range trunks {
 			if !t.Enabled || !t.TLS.Trusts() {
 				continue
@@ -312,7 +341,7 @@ func (p *persister) apply() {
 
 		ka := transport.KeepAlive{Interval: keepAliveInterval(t), PongTimeout: transport.DefaultPongTimeout}
 
-		stop, err := p.b.agent.Layer().Persist(p.targets(t, k.address), ka)
+		stop, err := p.b.cfg.Layer.Persist(p.targets(t, k.address), ka)
 		if err != nil {
 			p.b.log.Warn("no persistent TLS connection to the SIP trunk", slog.String("trunk", t.Name),
 				slog.String("address", k.address.String()), slog.Any("error", err))
@@ -358,7 +387,10 @@ func (p *persister) targets(t settings.Trunk, a settings.TrunkAddress) transport
 				continue
 			}
 
-			p.b.noteServer(t, a, srv)
+			if !p.b.noteServer(t, a, srv) {
+				continue
+			}
+
 			out = append(out, sip.Flow{Transport: sip.TLS, Local: local, Remote: srv.Addr})
 		}
 

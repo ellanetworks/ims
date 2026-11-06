@@ -358,6 +358,12 @@ func (p *Relay) Stop() {
 		}
 	}
 
+	p.stopTimers()
+
+	p.endAll()
+}
+
+func (p *Relay) stopTimers() {
 	if p.timerC != nil {
 		p.timerC.Stop()
 	}
@@ -365,8 +371,6 @@ func (p *Relay) Stop() {
 	if p.budget != nil {
 		p.budget.Stop()
 	}
-
-	p.endAll()
 }
 
 func (p *Relay) other(l *Leg) *Leg {
@@ -790,13 +794,7 @@ func (p *Relay) respond(ctx context.Context, pr *pair, rp ua.Reply) {
 
 	p.final = true
 
-	if p.timerC != nil {
-		p.timerC.Stop()
-	}
-
-	if p.budget != nil {
-		p.budget.Stop()
-	}
+	p.stopTimers()
 
 	if rp.Code >= 300 || pr == nil {
 		p.end(p.initial, nil)
@@ -881,9 +879,7 @@ func FinalFor(res *sip.Response, err error) ua.Reply {
 func (p *Relay) ended(ctx context.Context, l *Leg, e ua.End) {
 	o := p.other(l)
 
-	if p.timerC != nil {
-		p.timerC.Stop()
-	}
+	p.stopTimers()
 
 	p.endAll()
 

@@ -295,7 +295,7 @@ func TestSIPTrunksRejected(t *testing.T) {
 		{"host bits", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "10.0.0.1/24", 1), 400, "inbound_cidrs must be network addresses: 10.0.0.0/24, not 10.0.0.1/24"},
 		{"overlapping CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "192.76.120.0/24", 1), 409, "Inbound CIDR 192.76.120.0/24 overlaps 192.76.120.10/32 of SIP trunk Telnyx"},
 		{"same CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "64.16.250.10/32", 1), 409, "Inbound CIDR 64.16.250.10/32 overlaps 64.16.250.10/32 of SIP trunk Telnyx"},
-		{"address of another trunk", http.MethodPost, "", strings.Replace(sbcTrunk, `[{"host": "::ffff:10.0.0.5", "port": 5080, "transport": "udp"}]`, `[{"host": "sip.telnyx.com"}]`, 1), 409, "Address sip.telnyx.com is an address of SIP trunk Telnyx"},
+		{"address of another trunk", http.MethodPost, "", strings.Replace(sbcTrunk, `[{"host": "::ffff:10.0.0.5", "port": 5080, "transport": "udp"}]`, `[{"host": "sip.telnyx.com"}]`, 1), 409, "Address sip.telnyx.com reaches the same server as an address of SIP trunk Telnyx"},
 		{"no domain", http.MethodPost, "", strings.Replace(sbcTrunk, `"sbc.example.org"`, `""`, 1), 400, "domain is required when no address has a domain name as host"},
 		{"no domain field", http.MethodPost, "", strings.Replace(sbcTrunk, `, "domain": "sbc.example.org"`, "", 1), 400, "domain is required when no address has a domain name as host"},
 		{"wrapping keepalive", http.MethodPost, "", strings.Replace(sbcTrunk, `"keepalive_interval": 60`, `"keepalive_interval": 36028797018963998`, 1), 400, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds"},

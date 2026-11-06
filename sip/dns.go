@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -32,7 +33,10 @@ const (
 	resolvConfRecheck = 5 * time.Second
 	maxCacheTTL       = 5 * time.Minute
 	maxCacheEntries   = 1024
+	maxCNAMEChain     = 8
 )
+
+var errNoEDNS = errors.New("sip: DNS server does not support EDNS")
 
 var system = &systemDNS{conf: "/etc/resolv.conf"}
 
@@ -46,6 +50,8 @@ type systemDNS struct {
 	loadedAt time.Time
 	stamp    fileStamp
 	cache    map[dnsKey]dnsEntry
+
+	rotation atomic.Uint32
 }
 
 type fileStamp struct {
@@ -82,6 +88,8 @@ type resolvConf struct {
 	ndots    int
 	timeout  time.Duration
 	attempts int
+	rotate   bool
+	tcp      bool
 }
 
 func readResolvConf(path string) resolvConf {
@@ -143,25 +151,38 @@ func (c *resolvConf) parse(line string) bool {
 		return true
 	case "options":
 		for _, o := range f[1:] {
-			name, value, _ := strings.Cut(o, ":")
-
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 0 {
-				continue
-			}
-
-			switch {
-			case name == "ndots":
-				c.ndots = min(n, maxNdots)
-			case name == "timeout" && n > 0:
-				c.timeout = time.Duration(min(n, 30)) * time.Second
-			case name == "attempts" && n > 0:
-				c.attempts = min(n, 5)
-			}
+			c.option(o)
 		}
 	}
 
 	return false
+}
+
+func (c *resolvConf) option(o string) {
+	name, value, _ := strings.Cut(o, ":")
+
+	switch name {
+	case "rotate":
+		c.rotate = true
+		return
+	case "use-vc", "usevc", "tcp":
+		c.tcp = true
+		return
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return
+	}
+
+	switch {
+	case name == "ndots":
+		c.ndots = min(n, maxNdots)
+	case name == "timeout" && n > 0:
+		c.timeout = time.Duration(min(n, 30)) * time.Second
+	case name == "attempts" && n > 0:
+		c.attempts = min(n, 5)
+	}
 }
 
 func (c resolvConf) names(name string) []string {
@@ -353,16 +374,24 @@ func (d *systemDNS) put(key dnsKey, res dnsResult) {
 }
 
 func (d *systemDNS) query(ctx context.Context, conf resolvConf, fqdn string, qtype dnsmessage.Type) (dnsResult, error) {
-	q, err := dnsmessage.NewName(fqdn)
+	name, err := dnsmessage.NewName(fqdn)
 	if err != nil {
 		return dnsResult{}, &net.DNSError{Err: err.Error(), Name: fqdn}
 	}
 
+	q := dnsmessage.Question{Name: name, Type: qtype, Class: dnsmessage.ClassINET}
 	last := &net.DNSError{Err: "no DNS server answered", Name: fqdn, IsTemporary: true}
 
+	first := 0
+	if conf.rotate && len(conf.servers) > 0 {
+		first = int((d.rotation.Add(1) - 1) % uint32(len(conf.servers)))
+	}
+
 	for range conf.attempts {
-		for _, server := range conf.servers {
-			res, err := exchange(ctx, server, q, qtype, conf.timeout)
+		for i := range conf.servers {
+			server := conf.servers[(first+i)%len(conf.servers)]
+
+			res, err := exchange(ctx, server, q, conf)
 			if err == nil {
 				return res, nil
 			}
@@ -378,38 +407,57 @@ func (d *systemDNS) query(ctx context.Context, conf resolvConf, fqdn string, qty
 	return dnsResult{}, last
 }
 
-func exchange(ctx context.Context, server netip.AddrPort, q dnsmessage.Name, qtype dnsmessage.Type, timeout time.Duration) (dnsResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+// RFC 6891 section 7
+func exchange(ctx context.Context, server netip.AddrPort, q dnsmessage.Question, conf resolvConf) (dnsResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, conf.timeout)
 	defer cancel()
 
-	id := uint16(rand.Uint32())
-
-	query, err := dnsQuery(id, q, qtype)
-	if err != nil {
-		return dnsResult{}, err
+	res, err := exchangeOnce(ctx, server, q, conf.tcp, true)
+	if errors.Is(err, errNoEDNS) {
+		return exchangeOnce(ctx, server, q, conf.tcp, false)
 	}
-
-	answer, err := exchangeUDP(ctx, server, query, id)
-	if err != nil {
-		return dnsResult{}, err
-	}
-
-	res, truncated, err := parseAnswer(answer, id, q, qtype)
-	if !truncated {
-		return res, err
-	}
-
-	answer, err = exchangeTCP(ctx, server, query)
-	if err != nil {
-		return dnsResult{}, err
-	}
-
-	res, _, err = parseAnswer(answer, id, q, qtype)
 
 	return res, err
 }
 
-func dnsQuery(id uint16, q dnsmessage.Name, qtype dnsmessage.Type) ([]byte, error) {
+func exchangeOnce(ctx context.Context, server netip.AddrPort, q dnsmessage.Question, tcp, edns bool) (dnsResult, error) {
+	id := uint16(rand.Uint32())
+
+	query, err := dnsQuery(id, q, edns)
+	if err != nil {
+		return dnsResult{}, err
+	}
+
+	if !tcp {
+		answer, err := exchangeUDP(ctx, server, query, func(msg []byte) bool { return matches(msg, id, q) })
+		if err != nil {
+			return dnsResult{}, err
+		}
+
+		res, truncated, err := parseAnswer(answer, q, edns)
+		if !truncated {
+			return res, err
+		}
+	}
+
+	answer, err := exchangeTCP(ctx, server, query)
+	if err != nil {
+		return dnsResult{}, err
+	}
+
+	if !matches(answer, id, q) {
+		return dnsResult{}, errors.New("sip: DNS answer to another query")
+	}
+
+	res, truncated, err := parseAnswer(answer, q, edns)
+	if truncated {
+		return dnsResult{}, errors.New("sip: truncated DNS answer over TCP")
+	}
+
+	return res, err
+}
+
+func dnsQuery(id uint16, q dnsmessage.Question, edns bool) ([]byte, error) {
 	b := dnsmessage.NewBuilder(make([]byte, 0, 512), dnsmessage.Header{ID: id, RecursionDesired: true})
 	b.EnableCompression()
 
@@ -417,8 +465,12 @@ func dnsQuery(id uint16, q dnsmessage.Name, qtype dnsmessage.Type) ([]byte, erro
 		return nil, err
 	}
 
-	if err := b.Question(dnsmessage.Question{Name: q, Type: qtype, Class: dnsmessage.ClassINET}); err != nil {
+	if err := b.Question(q); err != nil {
 		return nil, err
+	}
+
+	if !edns {
+		return b.Finish()
 	}
 
 	if err := b.StartAdditionals(); err != nil {
@@ -437,7 +489,31 @@ func dnsQuery(id uint16, q dnsmessage.Name, qtype dnsmessage.Type) ([]byte, erro
 	return b.Finish()
 }
 
-func exchangeUDP(ctx context.Context, server netip.AddrPort, query []byte, id uint16) ([]byte, error) {
+// RFC 5452 section 9.1
+func matches(msg []byte, id uint16, q dnsmessage.Question) bool {
+	var p dnsmessage.Parser
+
+	h, err := p.Start(msg)
+	if err != nil || h.ID != id || !h.Response {
+		return false
+	}
+
+	questions, err := p.AllQuestions()
+	if err != nil || len(questions) != 1 {
+		return false
+	}
+
+	got := questions[0]
+
+	return got.Type == q.Type && got.Class == q.Class && sameName(got.Name, q.Name)
+}
+
+// RFC 1035 section 2.3.3
+func sameName(a, b dnsmessage.Name) bool {
+	return strings.EqualFold(a.String(), b.String())
+}
+
+func exchangeUDP(ctx context.Context, server netip.AddrPort, query []byte, valid func([]byte) bool) ([]byte, error) {
 	var dialer net.Dialer
 
 	c, err := dialer.DialContext(ctx, "udp", server.String())
@@ -465,7 +541,7 @@ func exchangeUDP(ctx context.Context, server netip.AddrPort, query []byte, id ui
 			return nil, err
 		}
 
-		if n >= 2 && binary.BigEndian.Uint16(buf) == id {
+		if valid(buf[:n]) {
 			return buf[:n], nil
 		}
 	}
@@ -505,7 +581,14 @@ func exchangeTCP(ctx context.Context, server netip.AddrPort, query []byte) ([]by
 	return answer, nil
 }
 
-func parseAnswer(msg []byte, id uint16, q dnsmessage.Name, qtype dnsmessage.Type) (dnsResult, bool, error) {
+type dnsRecord struct {
+	owner dnsmessage.Name
+	ttl   uint32
+	naptr NAPTR
+	srv   net.SRV
+}
+
+func parseAnswer(msg []byte, q dnsmessage.Question, edns bool) (dnsResult, bool, error) {
 	var p dnsmessage.Parser
 
 	h, err := p.Start(msg)
@@ -513,32 +596,29 @@ func parseAnswer(msg []byte, id uint16, q dnsmessage.Name, qtype dnsmessage.Type
 		return dnsResult{}, false, err
 	}
 
-	if h.ID != id || !h.Response {
-		return dnsResult{}, false, errors.New("sip: unexpected DNS message")
-	}
-
 	if h.Truncated {
 		return dnsResult{}, true, nil
 	}
 
-	questions, err := p.AllQuestions()
-	if err != nil {
+	if err := p.SkipAllQuestions(); err != nil {
 		return dnsResult{}, false, err
-	}
-
-	if len(questions) != 1 || !strings.EqualFold(questions[0].Name.String(), q.String()) || questions[0].Type != qtype {
-		return dnsResult{}, false, errors.New("sip: DNS answer to another question")
 	}
 
 	switch h.RCode {
 	case dnsmessage.RCodeSuccess, dnsmessage.RCodeNameError:
+	case dnsmessage.RCodeFormatError:
+		if edns && !hasOPT(&p) {
+			return dnsResult{}, false, errNoEDNS
+		}
+
+		return dnsResult{}, false, fmt.Errorf("sip: DNS %s", h.RCode)
 	default:
 		return dnsResult{}, false, fmt.Errorf("sip: DNS %s", h.RCode)
 	}
 
 	var (
-		res dnsResult
-		ttl uint32
+		records []dnsRecord
+		aliases = map[string]dnsRecord{}
 	)
 
 	for h.RCode == dnsmessage.RCodeSuccess {
@@ -551,22 +631,52 @@ func parseAnswer(msg []byte, id uint16, q dnsmessage.Name, qtype dnsmessage.Type
 			return dnsResult{}, false, err
 		}
 
-		if rh.Type != qtype || rh.Class != dnsmessage.ClassINET {
-			if err := p.SkipAnswer(); err != nil {
-				return dnsResult{}, false, err
-			}
+		switch {
+		case rh.Class != dnsmessage.ClassINET:
+			err = p.SkipAnswer()
+		case rh.Type == dnsmessage.TypeCNAME:
+			var r dnsmessage.CNAMEResource
 
-			continue
+			r, err = p.CNAMEResource()
+			if err == nil {
+				aliases[strings.ToLower(rh.Name.String())] = dnsRecord{owner: r.CNAME, ttl: rh.TTL}
+			}
+		case rh.Type == q.Type:
+			var (
+				rec dnsRecord
+				ok  bool
+			)
+
+			rec, ok, err = record(&p, q.Type)
+			if ok {
+				rec.owner, rec.ttl = rh.Name, rh.TTL
+				records = append(records, rec)
+			}
+		default:
+			err = p.SkipAnswer()
 		}
 
-		ok, err := res.add(&p, qtype)
 		if err != nil {
 			return dnsResult{}, false, err
 		}
+	}
 
-		if ok && (len(res.naptr)+len(res.srv) == 1 || rh.TTL < ttl) {
-			ttl = rh.TTL
+	owner, ttl := canonical(q.Name, aliases)
+
+	var res dnsResult
+
+	for _, rec := range records {
+		if !sameName(rec.owner, owner) {
+			continue
 		}
+
+		if q.Type == dnsmessage.TypeSRV {
+			res.srv = append(res.srv, rec.srv)
+		} else {
+			res.naptr = append(res.naptr, rec.naptr)
+		}
+
+		ttl = min(ttl, rec.ttl)
 	}
 
 	if len(res.naptr)+len(res.srv) > 0 {
@@ -577,29 +687,61 @@ func parseAnswer(msg []byte, id uint16, q dnsmessage.Name, qtype dnsmessage.Type
 	return dnsResult{notFound: true, ttl: negativeTTL(&p)}, false, nil
 }
 
-func (a *dnsAnswer) add(p *dnsmessage.Parser, qtype dnsmessage.Type) (bool, error) {
+// RFC 1035 section 3.3.1
+func canonical(name dnsmessage.Name, aliases map[string]dnsRecord) (dnsmessage.Name, uint32) {
+	ttl := uint32(1<<32 - 1)
+
+	for range maxCNAMEChain {
+		alias, ok := aliases[strings.ToLower(name.String())]
+		if !ok || sameName(alias.owner, name) {
+			break
+		}
+
+		name, ttl = alias.owner, min(ttl, alias.ttl)
+	}
+
+	return name, ttl
+}
+
+func hasOPT(p *dnsmessage.Parser) bool {
+	if p.SkipAllAnswers() != nil || p.SkipAllAuthorities() != nil {
+		return false
+	}
+
+	for {
+		rh, err := p.AdditionalHeader()
+		if err != nil {
+			return false
+		}
+
+		if rh.Type == dnsmessage.TypeOPT {
+			return true
+		}
+
+		if p.SkipAdditional() != nil {
+			return false
+		}
+	}
+}
+
+func record(p *dnsmessage.Parser, qtype dnsmessage.Type) (dnsRecord, bool, error) {
 	if qtype == dnsmessage.TypeSRV {
 		r, err := p.SRVResource()
 		if err != nil {
-			return false, err
+			return dnsRecord{}, false, err
 		}
 
-		a.srv = append(a.srv, net.SRV{Target: r.Target.String(), Port: r.Port, Priority: r.Priority, Weight: r.Weight})
-
-		return true, nil
+		return dnsRecord{srv: net.SRV{Target: r.Target.String(), Port: r.Port, Priority: r.Priority, Weight: r.Weight}}, true, nil
 	}
 
 	r, err := p.UnknownResource()
 	if err != nil {
-		return false, err
+		return dnsRecord{}, false, err
 	}
 
 	rec, ok := decodeNAPTR(r.Data)
-	if ok {
-		a.naptr = append(a.naptr, rec)
-	}
 
-	return ok, nil
+	return dnsRecord{naptr: rec}, ok, nil
 }
 
 func negativeTTL(p *dnsmessage.Parser) time.Duration {

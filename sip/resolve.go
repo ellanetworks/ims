@@ -134,6 +134,7 @@ func (r *Resolver) resolve(ctx context.Context, u URI) ([]Server, error) {
 	return r.addresses(ctx, host, tr, DefaultPortFor(tr))
 }
 
+// RFC 3261 section 26.2.2
 // RFC 3263 section 4.1
 // SIPconnect 2.0 section 8.1
 func uriTransport(u URI, secure bool) (Transport, bool, error) {

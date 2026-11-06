@@ -6,7 +6,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -18,8 +17,7 @@ type session struct {
 	req      *sip.Request
 	identity string
 
-	orig  bool
-	onNet bool
+	orig bool
 
 	deadline time.Time
 }
@@ -63,11 +61,11 @@ func (i *ICSCF) initial(ctx context.Context, tx *transaction.ServerTransaction, 
 	case out.Method == "OPTIONS" && out.URI.User == "" && i.cfg.Proxy.IsLocal(out.URI):
 		i.respond(tx, sip.NewResponse(req, 200, ""))
 	default:
-		i.terminating(ctx, tx, out, slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has(bgcf.OnNetParam) }))
+		i.terminating(ctx, tx, out)
 	}
 }
 
-func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, onNet bool) {
+func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	if !out.URI.IsSIP() && !out.URI.IsTel() {
 		i.respond(tx, sip.NewResponse(tx.Request(), 416, ""))
 		return
@@ -89,7 +87,7 @@ func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 		return
 	}
 
-	s := &session{tx: tx, req: out, identity: identity, onNet: onNet, deadline: i.deadline()}
+	s := &session{tx: tx, req: out, identity: identity, deadline: i.deadline()}
 
 	if out.URI.IsSIP() && i.cfg.PSISubdomain != nil && i.cfg.PSISubdomain(out.URI.Host) {
 		i.spawn(ctx, tx, func(ctx context.Context) { i.toPSISubdomain(ctx, s) })
@@ -154,10 +152,6 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	lia, err := i.locationInfo(ctx, s.identity, s.orig)
 	if err != nil {
 		i.log.DebugContext(ctx, "user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
-
-		if !s.orig && userUnknown(err) && i.breakout(ctx, s) {
-			return
-		}
 
 		i.answer(ctx, s.tx, locationFailure(err))
 

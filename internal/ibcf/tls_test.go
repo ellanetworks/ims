@@ -189,23 +189,23 @@ func newResolvingTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, tru
 	s.st = settings.Settings{Trunks: []settings.Trunk{trunk}, SIPRoutes: []settings.SIPRoute{{ID: "default", Trunks: []string{trunk.ID}}}}
 
 	cfg := Config{
-		HomeDomain:  home,
-		Internal:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		External:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		TLS:         []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		ICSCF:       []netip.AddrPort{s.ims.udp},
-		Trust:       trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
-		BGCF:        bgcf.New(s.settings, nil),
-		Settings:    s.settings,
-		Resolve:     resolve,
-		Transaction: transaction.Config{TracerProvider: tp},
+		HomeDomain: home,
+		Internal:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		TLS:        []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		ICSCF:      []netip.AddrPort{s.ims.udp},
+		SCSCF:      []netip.AddrPort{s.ims.udp},
+		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
+		BGCF:       bgcf.New(s.settings, nil),
+		Settings:   s.settings,
+		Resolve:    resolve,
 	}
 
 	if certificate {
 		cfg.Certificate = &s.ibcfC.Cert
 	}
 
-	b, err := Start(t.Context(), cfg)
+	b, err := launch(t, cfg, transaction.Config{TracerProvider: tp}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,12 @@ func TestPeersKeepFirstTrunk(t *testing.T) {
 	second := settings.Trunk{ID: "second", Addresses: []settings.TrunkAddress{a}}
 	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061"), Domain: "carrier.example"}
 
-	if !p.note(first, a, srv) || p.note(second, a, srv) || !p.note(first, a, srv) {
+	noted := func(tr settings.Trunk, r rank) bool {
+		ok, _ := p.note(tr, a, srv, r)
+		return ok
+	}
+
+	if !noted(first, rank{trunk: 0}) || noted(second, rank{trunk: 1}) || !noted(first, rank{trunk: 0}) {
 		t.Fatal("a second trunk took over a server")
 	}
 

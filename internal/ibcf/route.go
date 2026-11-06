@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
@@ -35,7 +36,10 @@ type target struct {
 // TS 23.228 clause 4.14
 // RFC 3263 section 4.3
 type route struct {
-	b *IBCF
+	b        *IBCF
+	deadline time.Time
+	stop     <-chan struct{}
+	resolved func([]netip.Addr)
 
 	mu      sync.Mutex
 	hops    []hop
@@ -45,8 +49,8 @@ type route struct {
 	known   map[string][]netip.Addr
 }
 
-func (b *IBCF) newRoute(trunks []settings.Trunk) *route {
-	rt := &route{b: b, at: -1, known: map[string][]netip.Addr{}}
+func (b *IBCF) newRoute(trunks []settings.Trunk, stop <-chan struct{}) *route {
+	rt := &route{b: b, deadline: time.Now().Add(failoverBudget), stop: stop, at: -1, known: map[string][]netip.Addr{}}
 
 	for _, t := range trunks {
 		for _, a := range t.Addresses {
@@ -65,20 +69,54 @@ func (r *route) next(ctx context.Context) (target, bool) {
 
 	for r.server >= len(r.servers) {
 		r.at++
-		if r.at >= len(r.hops) {
+		if r.at >= len(r.hops) || !time.Now().Before(r.deadline) {
 			return target{}, false
 		}
 
-		r.servers, r.server = r.resolve(ctx, r.hops[r.at]), 0
+		servers, ok := r.lookup(ctx, r.hops[r.at])
+		if !ok {
+			return target{}, false
+		}
+
+		addrs := make([]netip.Addr, 0, len(servers))
+
+		for _, t := range servers {
+			r.known[t.trunk.ID] = append(r.known[t.trunk.ID], t.server.Addr.Addr())
+			addrs = append(addrs, t.server.Addr.Addr())
+		}
+
+		if r.resolved != nil {
+			r.resolved(addrs)
+		}
+
+		r.servers, r.server = servers, 0
 	}
 
 	return r.servers[r.server], true
 }
 
-func (r *route) resolve(ctx context.Context, h hop) []target {
-	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+func (r *route) lookup(ctx context.Context, h hop) ([]target, bool) {
+	deadline := time.Now().Add(resolveTimeout)
+	if r.deadline.Before(deadline) {
+		deadline = r.deadline
+	}
+
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
+	done := make(chan []target, 1)
+
+	go func() { done <- r.resolve(ctx, h) }()
+
+	select {
+	case out := <-done:
+		return out, true
+	case <-r.stop:
+		return nil, false
+	}
+}
+
+func (r *route) resolve(ctx context.Context, h hop) []target {
 	servers, err := r.b.resolveAddress(ctx, h.trunk, h.addr)
 	if err != nil {
 		r.b.log.WarnContext(ctx, "SIP trunk address not resolved", slog.String("trunk", h.trunk.Name), slog.String("address", h.addr.String()),
@@ -91,13 +129,11 @@ func (r *route) resolve(ctx context.Context, h hop) []target {
 
 	for _, srv := range servers {
 		local, ok := r.b.local(srv.Transport, srv.Addr.Addr())
-		if !ok {
+		if !ok || !r.b.noteServer(h.trunk, h.addr, srv) {
 			continue
 		}
 
-		r.b.noteServer(h.trunk, h.addr, srv)
 		out = append(out, target{hop: h, server: srv, local: local})
-		r.known[h.trunk.ID] = append(r.known[h.trunk.ID], srv.Addr.Addr())
 	}
 
 	return out

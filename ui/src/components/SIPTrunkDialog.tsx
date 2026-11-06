@@ -78,6 +78,19 @@ const validKeepalive = (value: string) =>
 
 const monospace = { fontFamily: "monospace", fontSize: "0.85rem" };
 
+const join = (values: string[] | string | undefined) =>
+  Array.isArray(values) ? values.join("\n") : (values ?? "");
+
+const defaultShown = (
+  set: string[] | string | undefined,
+  effective: string[] | string | undefined,
+) => {
+  const text = join(effective);
+  return join(set) !== "" || text === ""
+    ? {}
+    : { placeholder: text, slotProps: { inputLabel: { shrink: true } } };
+};
+
 function CertificateDetails({
   certificates,
 }: {
@@ -236,6 +249,7 @@ export default function SIPTrunkDialog({
         label="Domain"
         value={domain}
         onChange={(e) => setDomain(e.target.value)}
+        {...defaultShown(trunk?.domain, trunk?.effective.domain)}
       />
       <Stack spacing={1.5}>
         <FormLabel>Addresses</FormLabel>
@@ -313,6 +327,7 @@ export default function SIPTrunkDialog({
         onChange={(e) => setInboundCidrs(e.target.value)}
         multiline
         minRows={2}
+        {...defaultShown(trunk?.inbound_cidrs, trunk?.effective.inbound_cidrs)}
       />
       <TextField
         label="Keepalive Interval (s)"
@@ -387,6 +402,10 @@ export default function SIPTrunkDialog({
               onChange={(e) => setIdentities(e.target.value)}
               multiline
               minRows={2}
+              {...defaultShown(
+                trunk?.tls?.identities,
+                trunk?.effective.tls_identities,
+              )}
             />
           </Stack>
         </AccordionDetails>

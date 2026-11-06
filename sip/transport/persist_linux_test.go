@@ -85,7 +85,7 @@ func TestPersistentConnectionUserTimeout(t *testing.T) {
 
 			_ = rc.Control(func(fd uintptr) { ms, gerr = unix.GetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT) })
 
-			if gerr == nil && ms == 7000 {
+			if gerr == nil && ms == 100000 {
 				return
 			}
 		}
