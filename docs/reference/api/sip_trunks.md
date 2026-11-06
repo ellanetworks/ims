@@ -27,7 +27,7 @@ This path returns the list of SIP trunks, ordered by identifier.
 | `inbound_cidrs`        | array   | Networks that requests from the carrier come from. Empty if not set. |
 | `domain`               | string  | Host of the Request-URI of requests to the carrier. Empty if not set. |
 | `trusted`              | boolean | Whether the carrier is in the trust domain. |
-| `keepalive_interval`   | int     | Seconds between OPTIONS requests to the carrier and, without `ibcf.external.tls` in the configuration file, between keepalives on the TLS connections Ella IMS keeps open to it. `0`: no OPTIONS requests, and those TLS keepalives every 120 seconds. |
+| `keepalive_interval`   | int     | Seconds between OPTIONS requests to the carrier. `0`: none. |
 | `enabled`              | boolean | Whether the trunk carries calls, in both directions. |
 | `tls`                  | object  | TLS with the carrier. See [TLS](#tls). |
 | `tls.required`         | boolean | Whether the carrier must use TLS, with a certificate. |
@@ -38,7 +38,7 @@ This path returns the list of SIP trunks, ordered by identifier.
 | `effective.domain`     | string  | `domain` in use, default included. |
 | `effective.inbound_cidrs` | array | `inbound_cidrs` in use, default included. |
 | `effective.tls_identities` | array | `tls.identities` in use, default included. |
-| `status.state`         | string  | `up`: the carrier answers OPTIONS requests. `down`: it does not; routes skip the trunk. `unknown`: not probed. `unusable`: conflicts with the configuration file, or every TLS server it reaches belongs to a trunk created earlier; the trunk carries no calls. |
+| `status.state`         | string  | `up`: the carrier answers OPTIONS requests. `down`: it does not; routes skip the trunk. `unknown`: not probed. `unusable`: conflicts with the configuration file or another trunk; carries no calls. |
 | `status.since`         | string  | Time of the last state change (RFC 3339). Absent while `unknown`. |
 
 ### Certificate Details

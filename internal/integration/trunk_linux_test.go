@@ -60,6 +60,7 @@ type carrier struct {
 	addr    netip.AddrPort
 	tr      sip.Transport
 	options atomic.Int32
+	probes  atomic.Int32
 	events  chan carrierEvent
 }
 
@@ -74,6 +75,10 @@ func newCarrier(t *testing.T, addr netip.AddrPort) *carrier {
 		Contact: sip.Address{URI: sip.URI{Scheme: "sip", Host: addr.Addr().String(), Port: addr.Port()}},
 		Policy:  ua.ClientPolicy,
 		OnRequest: func(_ context.Context, r *ua.Request) {
+			if r.Message().Method == "OPTIONS" {
+				c.probes.Add(1)
+			}
+
 			_ = r.Respond(ua.Reply{Code: int(c.options.Load())})
 		},
 		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
@@ -505,6 +510,14 @@ var carrier2SIP = netip.MustParseAddrPort("127.0.0.4:5060")
 func (s *scene) trunkState(id string) string {
 	s.t.Helper()
 
+	state, _ := s.trunkStatus(id)
+
+	return state
+}
+
+func (s *scene) trunkStatus(id string) (string, string) {
+	s.t.Helper()
+
 	req, err := http.NewRequestWithContext(s.ctx(), http.MethodGet, "http://"+s.srv.APIAddr().String()+"/api/v1/sip-trunks/"+id, nil)
 	if err != nil {
 		s.t.Fatal(err)
@@ -521,6 +534,7 @@ func (s *scene) trunkState(id string) string {
 		Result struct {
 			Status struct {
 				State string `json:"state"`
+				Since string `json:"since"`
 			} `json:"status"`
 		} `json:"result"`
 	}
@@ -529,7 +543,25 @@ func (s *scene) trunkState(id string) string {
 		s.t.Fatal(err)
 	}
 
-	return got.Result.Status.State
+	return got.Result.Status.State, got.Result.Status.Since
+}
+
+func TestTrunkProbedAfterCoreRestart(t *testing.T) {
+	s := newIBCFScene(t)
+	c := newCarrier(t, carrierSIP)
+
+	id := s.addTrunk("Carrier", c, false, 3600)
+	eventually(t, "the trunk up", func() bool { return s.trunkState(id) == "up" })
+
+	_, since := s.trunkStatus(id)
+	probes := c.probes.Load()
+
+	s.putOperator(`{"mcc": "001", "mnc": "02", "numbering": {"country_code": "1", "national_prefix": "0", "international_prefix": ""}}`)
+	eventually(t, "a probe after the restart", func() bool { return c.probes.Load() > probes })
+
+	if state, after := s.trunkStatus(id); state != "up" || after != since {
+		t.Fatalf("status = %s since %s, want up since %s", state, after, since)
+	}
 }
 
 func TestTrunkFailover(t *testing.T) {
@@ -621,4 +653,15 @@ func TestTrunkInboundCIDRInTrustDomain(t *testing.T) {
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("POST a trunk whose inbound CIDR holds sip.addresses: %d, want 400", res.StatusCode)
 	}
+}
+
+func TestTrunkProbedAtStartup(t *testing.T) {
+	s := newIBCFScene(t)
+	c := newCarrier(t, carrierSIP)
+
+	id := s.addTrunk("Carrier", c, false, 3600)
+	eventually(t, "the trunk up", func() bool { return s.trunkState(id) == "up" })
+
+	s.restartIMS(false)
+	eventually(t, "the trunk up after a restart", func() bool { return s.trunkState(id) == "up" })
 }

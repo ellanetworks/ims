@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/trgw"
+	"github.com/ellanetworks/ims/internal/trunkmon"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 )
@@ -34,21 +35,40 @@ func (r runtimeSettings) Get() settings.Settings {
 type ibcfSender struct{ s *Server }
 
 func (i ibcfSender) Send(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, req *sip.Request, to sip.Server) (*sip.Response, error) {
-	c := i.s.core.Load()
-	if c == nil || c.sip.ibcf == nil {
-		return nil, errNoCore
+	b := i.ibcf()
+	if b == nil {
+		return nil, trunkmon.ErrNotReady
 	}
 
-	return c.sip.ibcf.Send(ctx, t, a, req, to)
+	res, err := b.Send(ctx, t, a, req, to)
+	if err != nil && i.ibcf() != b {
+		return nil, trunkmon.ErrNotReady
+	}
+
+	return res, err
 }
 
-func (i ibcfSender) Transports(t settings.Trunk) []sip.Transport {
-	c := i.s.core.Load()
-	if c == nil || c.sip.ibcf == nil {
-		return nil
+func (i ibcfSender) Transports(t settings.Trunk) ([]sip.Transport, error) {
+	b := i.ibcf()
+	if b == nil {
+		return nil, trunkmon.ErrNotReady
 	}
 
-	return c.sip.ibcf.Transports(t)
+	return b.Transports(t), nil
+}
+
+func (i ibcfSender) ibcf() *ibcf.IBCF {
+	if c := i.s.core.Load(); c != nil {
+		return c.sip.ibcf
+	}
+
+	return nil
+}
+
+func (s *Server) reprobeTrunks() {
+	if s.trunks != nil {
+		s.trunks.Reprobe()
+	}
 }
 
 // TS 24.229 clause 4.4.1

@@ -36,8 +36,10 @@ func systemResolve(ctx context.Context, u sip.URI, transports []sip.Transport) (
 
 type Sender interface {
 	Send(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, req *sip.Request, to sip.Server) (*sip.Response, error)
-	Transports(t settings.Trunk) []sip.Transport
+	Transports(t settings.Trunk) ([]sip.Transport, error)
 }
+
+var ErrNotReady = errors.New("trunkmon: no IBCF to send from")
 
 type Timer interface {
 	Stop() bool
@@ -90,6 +92,8 @@ type probe struct {
 	running  bool
 	started  time.Time
 	failures int
+	again    bool
+	armed    uint64
 }
 
 func Start(cfg Config) (*Monitor, error) {
@@ -153,6 +157,25 @@ func (m *Monitor) TrunkStatus(id string) settings.TrunkStatus {
 	}
 
 	return settings.TrunkStatus{State: settings.TrunkUnknown}
+}
+
+func (m *Monitor) Reprobe() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return
+	}
+
+	for _, p := range m.probes {
+		if p.running {
+			p.again = true
+			continue
+		}
+
+		p.stop()
+		m.begin(p)
+	}
 }
 
 func (m *Monitor) Shutdown(ctx context.Context) error {
@@ -278,14 +301,16 @@ func (m *Monitor) schedule(p *probe, d time.Duration) {
 		return
 	}
 
-	p.timer = m.cfg.Clock.AfterFunc(d, func() { m.fire(p) })
+	p.armed++
+	armed := p.armed
+	p.timer = m.cfg.Clock.AfterFunc(d, func() { m.fire(p, armed) })
 }
 
-func (m *Monitor) fire(p *probe) {
+func (m *Monitor) fire(p *probe, armed uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.closed || m.probes[p.trunk.ID] != p || p.running {
+	if m.closed || m.probes[p.trunk.ID] != p || p.running || p.armed != armed {
 		return
 	}
 
@@ -329,6 +354,14 @@ func (m *Monitor) finish(p *probe, o outcome) {
 
 	p.running = false
 	m.record(p, o)
+
+	if p.again {
+		p.again = false
+		m.begin(p)
+
+		return
+	}
+
 	m.schedule(p, p.started.Add(p.trunk.KeepaliveInterval).Sub(m.cfg.Clock.Now()))
 }
 
@@ -337,6 +370,8 @@ func (m *Monitor) record(p *probe, o outcome) {
 	st := m.states[id].State
 
 	switch o {
+	case unready:
+		return
 	case answered:
 		p.failures = 0
 
@@ -379,6 +414,7 @@ const (
 	silent outcome = iota
 	answered
 	shared
+	unready
 )
 
 // RFC 3263 section 4.3
@@ -386,7 +422,10 @@ const (
 func (m *Monitor) probe(ctx context.Context, t settings.Trunk) outcome {
 	home := m.cfg.Settings.Get().Operator.HomeDomain()
 
-	allowed := m.cfg.Sender.Transports(t)
+	allowed, err := m.cfg.Sender.Transports(t)
+	if err != nil {
+		return unready
+	}
 
 	o := silent
 	tried := false
@@ -408,6 +447,8 @@ func (m *Monitor) probe(ctx context.Context, t settings.Trunk) outcome {
 			}
 
 			switch m.ping(ctx, t, a, home, srv) {
+			case unready:
+				return unready
 			case answered:
 				return answered
 			case shared:
@@ -471,6 +512,8 @@ func (m *Monitor) ping(ctx context.Context, t settings.Trunk, a settings.TrunkAd
 	res, err := m.cfg.Sender.Send(sctx, t, a, newOptions(t, home), srv)
 
 	switch {
+	case errors.Is(err, ErrNotReady):
+		return unready
 	case errors.Is(err, settings.ErrSharedServer):
 		return shared
 	case err != nil:

@@ -3048,7 +3048,7 @@ components:
           minimum: 0
           maximum: 3600
           default: 30
-          description: Seconds between OPTIONS keepalives and, without ibcf.external.tls in the configuration file, between keepalives on the TLS connections kept open to the carrier, 5 to 3600; 0 sends no OPTIONS, and those TLS keepalives every 120 seconds.
+          description: Seconds between OPTIONS requests to the carrier, 5 to 3600; 0 sends none.
         enabled:
           type: boolean
           default: true
@@ -3188,7 +3188,7 @@ components:
         state:
           type: string
           enum: [unknown, up, down, unusable]
-          description: "up: answers OPTIONS. down: does not; routes skip it. unknown: not probed yet or keepalives off. unusable: conflicts with the configuration file, or every TLS server it reaches belongs to a trunk created earlier; carries no calls."
+          description: "up: answers OPTIONS. down: does not; routes skip it. unknown: not probed yet or keepalives off. unusable: conflicts with the configuration file or another trunk; carries no calls."
         since:
           type: string
           format: date-time

@@ -90,7 +90,8 @@ type sent struct {
 }
 
 type fakeSender struct {
-	noTLS  bool
+	noTLS   bool
+	unready atomic.Bool
 	mu     sync.Mutex
 	reply  func(ctx context.Context, to sip.Server) (int, error)
 	sent   []sent
@@ -141,7 +142,11 @@ func (s *fakeSender) Send(ctx context.Context, _ settings.Trunk, _ settings.Trun
 	return sip.NewResponse(req, code, ""), nil
 }
 
-func (s *fakeSender) Transports(t settings.Trunk) []sip.Transport {
+func (s *fakeSender) Transports(t settings.Trunk) ([]sip.Transport, error) {
+	if s.unready.Load() {
+		return nil, ErrNotReady
+	}
+
 	var out []sip.Transport
 
 	switch {
@@ -156,7 +161,7 @@ func (s *fakeSender) Transports(t settings.Trunk) []sip.Transport {
 		out = append(out, sip.TLS)
 	}
 
-	return out
+	return out, nil
 }
 
 func (s *fakeSender) count() int {
@@ -1178,4 +1183,105 @@ func TestSharedServerReleased(t *testing.T) {
 	h.clock.advance(30 * time.Second)
 
 	eventually(t, "up", func() bool { return h.state("a") == settings.TrunkUp })
+}
+
+func TestNotReadyKeepsState(t *testing.T) {
+	for name, unready := range map[string]func(*fakeSender){
+		"no transports": func(s *fakeSender) { s.unready.Store(true) },
+		"send":          func(s *fakeSender) { s.answer(0, ErrNotReady) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			sender := newFakeSender(200)
+			h := start(t, sender, 1, trunk("a", 30*time.Second))
+			h.waitScheduled(1)
+
+			up := h.mon.TrunkStatus("a")
+			if up.State != settings.TrunkUp {
+				t.Fatalf("state = %s, want up", up.State)
+			}
+
+			unready(sender)
+
+			for range 3 {
+				h.clock.advance(30 * time.Second)
+				h.waitScheduled(1)
+			}
+
+			if st := h.mon.TrunkStatus("a"); st != up {
+				t.Fatalf("status = %+v, want %+v", st, up)
+			}
+
+			sender.unready.Store(false)
+			sender.answer(0, context.DeadlineExceeded)
+			h.clock.advance(30 * time.Second)
+			h.waitScheduled(1)
+
+			if s := h.state("a"); s != settings.TrunkDown {
+				t.Fatalf("state = %s, want down after one failure", s)
+			}
+		})
+	}
+}
+
+func TestNotReadyAtStart(t *testing.T) {
+	sender := newFakeSender(200)
+	sender.unready.Store(true)
+
+	h := start(t, sender, 1, trunk("a", 30*time.Second))
+	h.waitScheduled(1)
+
+	if s := h.state("a"); s != settings.TrunkUnknown {
+		t.Fatalf("state = %s, want unknown", s)
+	}
+
+	if n := h.series(); n != 0 {
+		t.Fatalf("%d trunk_up series, want none", n)
+	}
+
+	sender.unready.Store(false)
+	h.mon.Reprobe()
+	h.waitScheduled(1)
+
+	st := h.mon.TrunkStatus("a")
+	if st.State != settings.TrunkUp || !st.Since.Equal(h.clock.Now()) {
+		t.Fatalf("status = %+v, want up since %v", st, h.clock.Now())
+	}
+
+	if d := h.clock.pending(); d[0] != 30*time.Second {
+		t.Fatalf("next probe in %v, want 30s", d[0])
+	}
+}
+
+func TestReprobeDuringProbe(t *testing.T) {
+	release := make(chan struct{})
+	sender := &fakeSender{}
+	sender.use(func(ctx context.Context, _ sip.Server) (int, error) {
+		select {
+		case <-release:
+			return 0, ErrNotReady
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	})
+
+	h := start(t, sender, 1, trunk("a", 30*time.Second))
+	eventually(t, "a probe in flight", func() bool { return sender.count() == 1 })
+
+	h.mon.Reprobe()
+
+	if n := sender.count(); n != 1 {
+		t.Fatalf("%d OPTIONS sent during a probe, want 1", n)
+	}
+
+	sender.answer(200, nil)
+	close(release)
+	h.waitScheduled(1)
+
+	if n := sender.count(); n != 2 {
+		t.Fatalf("%d OPTIONS sent, want 2", n)
+	}
+
+	if s := h.state("a"); s != settings.TrunkUp {
+		t.Fatalf("state = %s, want up", s)
+	}
 }
