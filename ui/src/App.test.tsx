@@ -6,6 +6,7 @@ import { RoleID } from "@/queries/users";
 import { makeToken } from "@/test/jwt";
 import { identity, operator, policy, sip } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
+import { rememberReturnPath, returnPath } from "@/utils/returnPath";
 
 const serve = (role: RoleID | null = RoleID.Admin) => {
   let session = role;
@@ -50,6 +51,7 @@ const renderAt = (path: string) =>
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  sessionStorage.clear();
 });
 
 describe("App", () => {
@@ -76,6 +78,7 @@ describe("App", () => {
       ["Calls", "/calls"],
       ["Push-to-Talk", "/ptt"],
       ["Users", "/users"],
+      ["Single Sign-On", "/single-sign-on"],
     ]);
     expect(screen.getByRole("main")).toBeInTheDocument();
     expect(screen.getByRole("contentinfo")).toBeInTheDocument();
@@ -104,6 +107,40 @@ describe("App", () => {
       "page",
     );
     expect(document.title).toBe("Dashboard · Ella IMS");
+  });
+
+  it("returns to the page asked for before single sign-on", async () => {
+    serve();
+    rememberReturnPath("/operator");
+    renderAt("/");
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Operator" }),
+    ).toBeInTheDocument();
+    expect(returnPath()).toBeUndefined();
+  });
+
+  it("opens the home page when the page asked for is not allowed", async () => {
+    serve(RoleID.ReadOnly);
+    rememberReturnPath("/users");
+    renderAt("/");
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+    ).toBeInTheDocument();
+  });
+
+  it("forgets a page asked for long ago", async () => {
+    serve();
+    sessionStorage.setItem(
+      "ims.returnPath",
+      JSON.stringify({ path: "/operator", at: Date.now() - 11 * 60_000 }),
+    );
+    renderAt("/");
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+    ).toBeInTheDocument();
   });
 
   it("navigates between pages", async () => {

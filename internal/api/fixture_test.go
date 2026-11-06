@@ -38,11 +38,13 @@ func testConfig(t *testing.T, store *db.DB) api.Config {
 	t.Helper()
 
 	return api.Config{
-		Auth:       store,
-		JWTSecret:  testJWTSecret,
-		BcryptCost: bcrypt.MinCost,
-		Now:        func() time.Time { return testNow },
-		Logger:     slog.New(slog.DiscardHandler),
+		Auth:          store,
+		OIDC:          testOIDC(t, store),
+		JWTSecret:     testJWTSecret,
+		OIDCCookieKey: []byte("fedcba9876543210fedcba9876543210"),
+		BcryptCost:    bcrypt.MinCost,
+		Now:           func() time.Time { return testNow },
+		Logger:        slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -159,4 +161,23 @@ func decode[T any](t *testing.T, raw json.RawMessage) T {
 	}
 
 	return v
+}
+
+func (a *testAPI) auditEvents(t *testing.T, action string) []string {
+	t.Helper()
+
+	var details []string
+
+	for line := range strings.Lines(a.logs.String()) {
+		var e struct{ Msg, Action, Actor, Details string }
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+
+		if e.Msg == "audit event" && e.Action == action {
+			details = append(details, e.Actor+": "+e.Details)
+		}
+	}
+
+	return details
 }

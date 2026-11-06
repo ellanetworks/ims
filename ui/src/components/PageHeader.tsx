@@ -6,7 +6,7 @@ interface PageHeaderProps {
   id: string;
   title: string;
   count?: number;
-  description?: string;
+  description?: ReactNode;
   action?: ReactNode;
   parent?: { label: string; to: string };
 }

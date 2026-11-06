@@ -1,5 +1,5 @@
-import type { ReactElement } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { useEffect, type ReactElement } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Layout from "@/components/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/contexts/AuthContext";
 import Calls from "@/pages/Calls";
@@ -10,9 +10,11 @@ import Login from "@/pages/Login";
 import Operator from "@/pages/Operator";
 import Profile from "@/pages/Profile";
 import Registrations from "@/pages/Registrations";
+import SingleSignOn from "@/pages/SingleSignOn";
 import UserDetail from "@/pages/UserDetail";
 import Users from "@/pages/Users";
 import PushToTalk from "@/pages/mcptt/PushToTalk";
+import { forgetReturnPath, returnPath } from "@/utils/returnPath";
 
 export default function App() {
   return (
@@ -52,6 +54,11 @@ const pages: { path: string; element: ReactElement; permission: Permission }[] =
     { path: "/ptt/:tab", element: <PushToTalk />, permission: "mcptt:read" },
     { path: "/users", element: <Users />, permission: "user:admin" },
     {
+      path: "/single-sign-on",
+      element: <SingleSignOn />,
+      permission: "oidc:read",
+    },
+    {
       path: "/users/:email",
       element: <UserDetail />,
       permission: "user:admin",
@@ -70,7 +77,16 @@ function Pages() {
           <Route key={path} path={path} element={element} />
         ))}
       <Route path="/profile" element={<Profile />} />
-      <Route path="*" element={<Navigate to={home} replace />} />
+      <Route path="*" element={<Home home={home} />} />
     </Routes>
   );
+}
+
+function Home({ home }: { home: string }) {
+  const { pathname } = useLocation();
+  const target = (pathname === "/" && returnPath()) || home;
+
+  useEffect(() => forgetReturnPath(), []);
+
+  return <Navigate to={target} replace />;
 }

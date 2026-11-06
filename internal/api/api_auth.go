@@ -56,7 +56,7 @@ func Login(a *auth) http.Handler {
 			return
 		}
 
-		account := strings.ToLower(params.Email)
+		account := lowerASCII(params.Email)
 		if !a.allowAccount(r.Context(), w, account) {
 			return
 		}
@@ -68,7 +68,7 @@ func Login(a *auth) http.Handler {
 		}
 
 		hash := []byte(u.PasswordHash)
-		if err != nil {
+		if err != nil || u.PasswordHash == "" {
 			hash = a.dummyHash()
 		}
 
@@ -78,7 +78,7 @@ func Login(a *auth) http.Handler {
 			return
 		}
 
-		if !ok || err != nil {
+		if !ok || err != nil || u.PasswordHash == "" {
 			a.failures.allow(account)
 			a.audit(r, "auth_login", params.Email, "User failed to log in")
 			writeError(r.Context(), w, http.StatusUnauthorized, "The email or password is incorrect. Try again.", nil, cfg.Logger)
@@ -282,7 +282,7 @@ func Initialize(a *auth) http.Handler {
 		if u.ID, err = cfg.Auth.CreateUser(r.Context(), db.NewUser{
 			Email: u.Email, Role: u.Role,
 			PasswordHash: u.PasswordHash,
-		}); err != nil {
+		}, MaxNumUsers); err != nil {
 			writeError(r.Context(), w, http.StatusInternalServerError, "Failed to create the first user", err, cfg.Logger)
 			return
 		}
@@ -317,7 +317,17 @@ func normalEmail(s string) (string, bool) {
 		return "", false
 	}
 
-	return strings.ToLower(s), true
+	return lowerASCII(s), true
+}
+
+func lowerASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+
+		return r
+	}, s)
 }
 
 func validPassword(p string) (string, bool) {

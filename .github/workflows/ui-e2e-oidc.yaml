@@ -1,0 +1,70 @@
+name: UI E2E OIDC
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-e2e-oidc:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the image
+        uses: actions/download-artifact@v8
+        with:
+          name: ellaims-image-amd64
+
+      - name: Load the image
+        run: |
+          docker load -i ellaims_latest-amd64.tar
+
+      - name: use npm
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix ui
+
+      - name: Install Playwright browsers
+        run: |
+          npx --prefix ui playwright install --with-deps chromium
+
+      - name: Load the IPsec kernel modules
+        run: |
+          sudo modprobe -a esp4 xfrm_user
+
+      - name: Start Ella IMS and Keycloak
+        run: |
+          ui/e2e/oidc/up.sh
+
+      - name: Run OIDC E2E tests
+        working-directory: ui
+        run: |
+          npx playwright test -c e2e/oidc/playwright.config.ts
+
+      - name: Collect logs
+        if: failure()
+        run: |
+          docker compose -f ui/e2e/oidc/compose.yaml logs
+
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-oidc
+          path: |
+            ui/playwright-report/
+            ui/test-results/oidc/
+          retention-days: 7
+
+      - name: Stop Ella IMS and Keycloak
+        if: always()
+        run: |
+          docker compose -f ui/e2e/oidc/compose.yaml down -v

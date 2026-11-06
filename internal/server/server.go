@@ -20,6 +20,7 @@ import (
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/mcptt"
+	"github.com/ellanetworks/ims/internal/oidc"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -154,6 +155,24 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
+	oidcSettings, err := database.GetOIDC(ctx)
+	if err != nil {
+		_ = database.Close()
+
+		s.stopTracing(ctx)
+
+		return err
+	}
+
+	oidcCookieKey, err := database.OIDCCookieKey(ctx)
+	if err != nil {
+		_ = database.Close()
+
+		s.stopTracing(ctx)
+
+		return err
+	}
+
 	live := settings.NewLive(database, initial, func(ctx context.Context, st settings.Settings) error {
 		return checkSettings(ctx, cfg, st)
 	})
@@ -248,7 +267,9 @@ func (s *Server) Start(ctx context.Context) error {
 		Metrics:        s.metrics.registry,
 		Requests:       s.metrics.requests,
 		Auth:           database,
+		OIDC:           oidc.NewLive(database, oidcSettings),
 		JWTSecret:      jwtSecret,
+		OIDCCookieKey:  oidcCookieKey,
 		BcryptCost:     s.BcryptCost,
 		SecureCookie:   tlsConfig != nil,
 		TracerProvider: s.tracerProvider,

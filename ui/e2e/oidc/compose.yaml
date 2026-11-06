@@ -1,0 +1,48 @@
+name: ella-ims-oidc-e2e
+
+configs:
+  ims_config:
+    content: |
+      logging:
+        level: info
+      db:
+        path: ims.db
+      api:
+        address: 0.0.0.0
+        port: 5020
+        tls:
+          cert: /certs/ims.pem
+          key: /certs/ims-key.pem
+      sip:
+        addresses: [127.0.0.1]
+      diameter:
+        address: 127.0.0.1
+
+services:
+  ella-ims:
+    image: ${ELLA_IMS_IMAGE:-ella-ims:latest}
+    configs:
+      - source: ims_config
+        target: /ims.yaml
+    entrypoint: /bin/ims --config /ims.yaml
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ${ELLA_E2E_OIDC_DIR:-../.build/oidc}:/certs:ro
+    ports:
+      - "${ELLA_E2E_OIDC_PORT:-15443}:5020"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: start-dev --import-realm
+    environment:
+      KC_HOSTNAME: https://keycloak:${KEYCLOAK_E2E_PORT:-18443}
+      KC_HTTPS_PORT: ${KEYCLOAK_E2E_PORT:-18443}
+      KC_HTTPS_CERTIFICATE_FILE: /certs/keycloak.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /certs/keycloak-key.pem
+      KC_HTTP_ENABLED: "false"
+    volumes:
+      - ${ELLA_E2E_OIDC_DIR:-../.build/oidc}:/certs:ro
+      - ./realm.json:/opt/keycloak/data/import/realm.json:ro
+    ports:
+      - "${KEYCLOAK_E2E_PORT:-18443}:${KEYCLOAK_E2E_PORT:-18443}"

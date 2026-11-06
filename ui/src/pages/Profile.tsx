@@ -42,10 +42,14 @@ export default function Profile() {
         ) : (
           <Skeleton variant="rounded" height={140} />
         )}
-        <UserPasswordCard
-          description="Changing your password ends your other sessions."
-          onChangePassword={() => setChangingPassword(true)}
-        />
+        {user.data?.password_set === false ? (
+          <UserPasswordCard description="You sign in with single sign-on, and have no password." />
+        ) : (
+          <UserPasswordCard
+            description="Changing your password ends your other sessions."
+            onChangePassword={() => setChangingPassword(true)}
+          />
+        )}
       </Box>
       <Box sx={{ mt: 3 }}>
         {tokens.data ? (

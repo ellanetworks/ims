@@ -15,9 +15,12 @@ func TestSessions(t *testing.T) {
 
 	id := createTestUser(t, d, "a@example.com", RoleAdmin)
 
-	want := Session{UserID: id, TokenHash: []byte("token"), CreatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
+	want := Session{
+		UserID: id, TokenHash: []byte("token"), Method: SessionPassword, CreatedAt: now,
+		ExpiresAt: now.Add(24 * time.Hour),
+	}
 	if _, err := d.CreateSession(ctx, NewSession{
-		UserID: want.UserID, TokenHash: want.TokenHash,
+		UserID: want.UserID, TokenHash: want.TokenHash, Method: want.Method,
 		CreatedAt: want.CreatedAt, ExpiresAt: want.ExpiresAt,
 	}, 10); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -42,7 +45,7 @@ func TestSessions(t *testing.T) {
 	}
 
 	if _, err := d.CreateSession(ctx, NewSession{
-		UserID: id, TokenHash: []byte("token"), CreatedAt: now,
+		UserID: id, TokenHash: []byte("token"), Method: SessionPassword, CreatedAt: now,
 		ExpiresAt: now,
 	}, 10); err == nil {
 		t.Fatal("CreateSession with an existing token hash: no error")
@@ -68,7 +71,7 @@ func TestCreateSessionKeepsTheNewestPerUser(t *testing.T) {
 	other := createTestUser(t, d, "b@example.com", RoleAdmin)
 
 	if _, err := d.CreateSession(ctx, NewSession{
-		UserID: other, TokenHash: []byte("other"), CreatedAt: now,
+		UserID: other, TokenHash: []byte("other"), Method: SessionPassword, CreatedAt: now,
 		ExpiresAt: now.Add(time.Hour),
 	}, 3); err != nil {
 		t.Fatal(err)
@@ -77,7 +80,7 @@ func TestCreateSessionKeepsTheNewestPerUser(t *testing.T) {
 	for i := range 5 {
 		at := now.Add(time.Duration(i) * time.Minute)
 		if _, err := d.CreateSession(ctx, NewSession{
-			UserID: id, TokenHash: []byte{byte(i)}, CreatedAt: at,
+			UserID: id, TokenHash: []byte{byte(i)}, Method: SessionPassword, CreatedAt: at,
 			ExpiresAt: at.Add(time.Hour),
 		}, 3); err != nil {
 			t.Fatal(err)
@@ -107,7 +110,7 @@ func TestDeleteExpiredSessions(t *testing.T) {
 		"expired": now.Add(-time.Second), "expiring": now, "live": now.Add(time.Second),
 	} {
 		if _, err := d.CreateSession(ctx, NewSession{
-			UserID: id, TokenHash: []byte(name), CreatedAt: now.Add(-time.Hour),
+			UserID: id, TokenHash: []byte(name), Method: SessionPassword, CreatedAt: now.Add(-time.Hour),
 			ExpiresAt: expiresAt,
 		}, 10); err != nil {
 			t.Fatal(err)

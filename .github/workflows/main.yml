@@ -30,6 +30,9 @@ jobs:
     uses: ./.github/workflows/ui-test.yaml
   docs-build:
     uses: ./.github/workflows/docs-build.yaml
+  ui-e2e-oidc:
+    needs: [image-build]
+    uses: ./.github/workflows/ui-e2e-oidc.yaml
   android:
     uses: ./.github/workflows/android.yaml
     secrets:
@@ -54,7 +57,7 @@ jobs:
     uses: ./.github/workflows/k8s-smoke.yaml
   image-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, e2e, image-build, k8s-smoke]
+    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, ui-e2e-oidc, e2e, image-build, k8s-smoke]
     permissions:
       contents: read
       packages: write
@@ -69,7 +72,7 @@ jobs:
     uses: ./.github/workflows/android-publish.yaml
   snap-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, e2e, snap-build, snap-strict-test]
+    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, ui-e2e-oidc, e2e, snap-build, snap-strict-test]
     uses: ./.github/workflows/snap-publish.yaml
     secrets:
       SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}

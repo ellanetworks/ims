@@ -12,7 +12,12 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound          = errors.New("not found")
+	ErrLastPasswordAdmin = errors.New("the last admin with a password")
+	ErrTooManyUsers      = errors.New("too many users")
+	ErrNoPassword        = errors.New("the user has no password")
+)
 
 type DB struct {
 	conn    *sql.DB
@@ -335,17 +340,33 @@ var migrations = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		email TEXT NOT NULL UNIQUE COLLATE NOCASE,
 		role_id INTEGER NOT NULL CHECK (role_id IN (1, 2, 3)),
-		password_hash TEXT NOT NULL
+		role_pinned INTEGER NOT NULL DEFAULT 0 CHECK (role_pinned IN (0, 1)),
+		password_hash TEXT CHECK (password_hash != '')
+	);
+	CREATE TABLE user_identities (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+		issuer TEXT NOT NULL CHECK (issuer != ''),
+		subject TEXT NOT NULL CHECK (length(CAST(subject AS BLOB)) BETWEEN 1 AND 255),
+		email TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		last_login_at INTEGER NOT NULL,
+		UNIQUE (issuer, subject),
+		UNIQUE (user_id, issuer)
 	);
 	CREATE TABLE sessions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
 		token_hash BLOB NOT NULL UNIQUE,
+		method TEXT NOT NULL CHECK (method IN ('password', 'oidc')),
+		identity_id INTEGER REFERENCES user_identities (id) ON DELETE CASCADE,
 		created_at INTEGER NOT NULL,
-		expires_at INTEGER NOT NULL
+		expires_at INTEGER NOT NULL,
+		CHECK ((method = 'oidc') = (identity_id IS NOT NULL))
 	);
 	CREATE INDEX sessions_user_id ON sessions (user_id, created_at);
 	CREATE INDEX sessions_expires_at ON sessions (expires_at);
+	CREATE INDEX sessions_identity_id ON sessions (identity_id);
 	CREATE TABLE api_tokens (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		token_id TEXT NOT NULL UNIQUE,
@@ -360,7 +381,38 @@ var migrations = []string{
 	CREATE TABLE jwt_secret (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		secret BLOB NOT NULL CHECK (length(secret) >= 32)
-	);`,
+	);
+	CREATE TABLE oidc (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+		external_url TEXT NOT NULL,
+		issuer TEXT NOT NULL,
+		client_id TEXT NOT NULL,
+		client_secret TEXT NOT NULL,
+		display_name TEXT NOT NULL,
+		scopes TEXT NOT NULL,
+		session_lifetime INTEGER NOT NULL CHECK (session_lifetime > 0),
+		trust_unverified_email INTEGER NOT NULL CHECK (trust_unverified_email IN (0, 1)),
+		ca_certificate TEXT NOT NULL,
+		groups_claim TEXT NOT NULL,
+		CHECK (enabled = 0 OR external_url != '' AND issuer != '' AND client_id != '' AND display_name != ''
+			AND scopes != '')
+	);
+	INSERT INTO oidc VALUES (1, 0, '', '', '', '', '', 'openid email profile', 86400000000000, 0, '', '');
+	CREATE TABLE oidc_group_roles (
+		position INTEGER PRIMARY KEY CHECK (position > 0),
+		group_name TEXT NOT NULL UNIQUE CHECK (group_name != ''),
+		role_id INTEGER NOT NULL CHECK (role_id IN (1, 2, 3))
+	);
+	CREATE TABLE oidc_cookie_key (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		key BLOB NOT NULL CHECK (length(key) >= 32)
+	);
+	CREATE TABLE oidc_used_states (
+		state_hash BLOB PRIMARY KEY CHECK (length(state_hash) = 32),
+		expires_at INTEGER NOT NULL
+	) WITHOUT ROWID;
+	CREATE INDEX oidc_used_states_expires_at ON oidc_used_states (expires_at);`,
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
