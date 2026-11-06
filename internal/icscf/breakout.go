@@ -2,11 +2,13 @@ package icscf
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
 
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 )
@@ -26,10 +28,15 @@ func (i *ICSCF) breakout(ctx context.Context, s *session) bool {
 			slog.String("request-uri", s.req.URI.String()), slog.String("source", s.req.Flow.Remote.String()))
 
 		return false
-	case i.fromIBCF(s.req.Flow):
-		i.log.DebugContext(ctx, "unknown number from the IBCF not routed back to it", slog.String("request-uri", s.req.URI.String()))
-		return false
-	case !i.cfg.BGCF.Routable(s.req.URI):
+	}
+
+	switch err := i.cfg.BGCF.Route(s.req.URI); {
+	case errors.Is(err, bgcf.ErrNoUsableTrunk):
+		i.log.InfoContext(ctx, "no usable SIP trunk for the number", slog.String("request-uri", s.req.URI.String()))
+		i.answer(ctx, s.tx, 503)
+
+		return true
+	case err != nil:
 		i.log.DebugContext(ctx, "no SIP route for the unknown number", slog.String("request-uri", s.req.URI.String()))
 		return false
 	}
@@ -66,14 +73,6 @@ func (i *ICSCF) fromSCSCF(in sip.Flow) bool {
 
 func unmapped(a netip.AddrPort) netip.AddrPort {
 	return netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
-}
-
-func (i *ICSCF) fromIBCF(in sip.Flow) bool {
-	remote := netip.AddrPortFrom(in.Remote.Addr().Unmap(), in.Remote.Port())
-
-	return slices.ContainsFunc(i.cfg.IBCF, func(l netip.AddrPort) bool {
-		return netip.AddrPortFrom(l.Addr().Unmap(), l.Port()) == remote
-	})
 }
 
 func (i *ICSCF) ibcf(in sip.Flow) (proxy.Target, bool) {

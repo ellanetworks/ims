@@ -81,6 +81,8 @@ func (t *Transport) pingConn(ctx context.Context, c *conn, f sip.Flow) error {
 }
 
 func (t *Transport) tcpPong(c *conn) {
+	c.ponged.Store(true)
+
 	t.pongs.mu.Lock()
 	defer t.pongs.mu.Unlock()
 

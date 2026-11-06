@@ -43,6 +43,7 @@ type conn struct {
 	limit    atomic.Int64
 	closed   atomic.Bool
 	received atomic.Bool
+	ponged   atomic.Bool
 }
 
 func newConn(f sip.Flow) *conn {

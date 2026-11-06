@@ -5,9 +5,10 @@ import "time"
 type TrunkState string
 
 const (
-	TrunkUnknown TrunkState = "unknown"
-	TrunkUp      TrunkState = "up"
-	TrunkDown    TrunkState = "down"
+	TrunkUnknown  TrunkState = "unknown"
+	TrunkUp       TrunkState = "up"
+	TrunkDown     TrunkState = "down"
+	TrunkUnusable TrunkState = "unusable"
 )
 
 type TrunkStatus struct {

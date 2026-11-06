@@ -17,7 +17,7 @@ The examples use these addresses:
 ## Prerequisites
 
 - **Ella IMS**: connected to the core network, as in [Integrate with Ella Core](integrate_with_ella_core.md), with the numbering plan set.
-- **SIP trunk**: an IP-authenticated trunk
+- **SIP trunk**: an IP-authenticated trunk.
 - **Numbers**: the carrier's numbers, set as the subscribers' MSISDNs in the HSS.
 
 ## 1. Enable the IBCF
@@ -33,13 +33,13 @@ ibcf:
 
 ## 2. Open the firewall
 
-Allow SIP (UDP and TCP `5060`) from Telnyx's addresses, and voice (UDP `10000`–`19999`) from [Telnyx's media networks](https://sip.telnyx.com), to `203.0.113.5`.
+Allow SIP (TCP `5060`) from Telnyx's addresses, and voice (UDP `10000`–`19999`) from [Telnyx's media networks](https://sip.telnyx.com), to `203.0.113.5`.
 
 ## 3. Configure the carrier
 
 In the carrier portal, create an IP connection:
 
-- Send calls to `203.0.113.5`, port `5060`.
+- Send calls to `203.0.113.5`, port `5060`, over TCP.
 - Enable AMR-WB.
 - Send called numbers in E.164 format, with `+`.
 - Attach an outbound voice profile.
@@ -70,4 +70,4 @@ If it is `down`, check the firewall and the carrier's settings.
 
 From a registered phone, call an outside number in international format, e.g. `+15555550100`. Then call one of your numbers from an outside phone.
 
-Both calls should have audio both ways
+Both calls should have audio both ways.

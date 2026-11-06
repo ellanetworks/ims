@@ -171,7 +171,6 @@ func TestTLSIncomingWithoutClientCertificateBye(t *testing.T) {
 	carrier.secure = to
 	uri := sip.URI{Scheme: "sip", User: alice, Host: to.Addr().String(), Port: to.Port()}
 	uri.Params.Set("user", "phone")
-	uri.Params.Set("transport", "tls")
 
 	req := sip.NewRequest("INVITE", uri)
 	req.Header.Add("From", "<sip:"+carol+"@carrier.example;user=phone>")

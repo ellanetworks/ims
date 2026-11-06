@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"slices"
 	"strconv"
 	"sync"
@@ -172,22 +171,41 @@ type Live struct {
 	check func(context.Context, Settings) error
 
 	current atomic.Pointer[Settings]
+	runtime atomic.Pointer[Settings]
 
 	mu         sync.Mutex
-	trunkGuard func(netip.Prefix) error
+	trunkGuard func(Trunk) error
 	changed    chan struct{}
 	causes     []trace.SpanContext
 }
 
 func NewLive(store Store, initial Settings, check func(context.Context, Settings) error) *Live {
 	l := &Live{store: store, check: check, changed: make(chan struct{})}
-	l.current.Store(&initial)
+	l.publish(&initial)
 
 	return l
 }
 
 func (l *Live) Get() Settings {
 	return *l.current.Load()
+}
+
+func (l *Live) Runtime() Settings {
+	return *l.runtime.Load()
+}
+
+func (l *Live) publish(s *Settings) {
+	rt := *s
+	rt.Trunks = make([]Trunk, 0, len(s.Trunks))
+
+	for _, t := range s.Trunks {
+		if e := t.Effective(); l.checkTrunk(e) == nil {
+			rt.Trunks = append(rt.Trunks, e)
+		}
+	}
+
+	l.current.Store(s)
+	l.runtime.Store(&rt)
 }
 
 func (l *Live) UpdateOperator(ctx context.Context, o Operator) error {
@@ -290,7 +308,7 @@ func (l *Live) CreateTrunk(ctx context.Context, t Trunk) (Trunk, error) {
 			return err
 		}
 
-		if err := l.guardTrunk(t); err != nil {
+		if err := l.checkTrunk(t.Effective()); err != nil {
 			return err
 		}
 
@@ -313,7 +331,7 @@ func (l *Live) UpdateTrunk(ctx context.Context, t Trunk) error {
 			return err
 		}
 
-		if err := l.guardTrunk(t); err != nil {
+		if err := l.checkTrunk(t.Effective()); err != nil {
 			return err
 		}
 
@@ -324,31 +342,34 @@ func (l *Live) UpdateTrunk(ctx context.Context, t Trunk) error {
 	}, func() error { return l.store.UpdateTrunk(ctx, t) })
 }
 
-func (l *Live) SetTrunkGuard(guard func(netip.Prefix) error) {
+func (l *Live) SetTrunkGuard(guard func(Trunk) error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.trunkGuard = guard
+	l.publish(l.current.Load())
 }
 
-func (l *Live) guardTrunk(t Trunk) error {
+func (l *Live) Usable(id string) bool {
+	_, ok := l.Runtime().Trunk(id)
+	return ok
+}
+
+func (l *Live) checkTrunk(t Trunk) error {
 	if l.trunkGuard == nil {
 		return nil
 	}
 
-	for _, p := range t.InboundCIDRs {
-		err := l.trunkGuard(p)
+	err := l.trunkGuard(t)
 
-		switch {
-		case err == nil:
-		case errors.Is(err, ErrInvalid):
-			return err
-		default:
-			return kindError{ErrInvalid, err.Error()}
-		}
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrInvalid):
+		return err
+	default:
+		return kindError{ErrInvalid, err.Error()}
 	}
-
-	return nil
 }
 
 func (l *Live) DeleteTrunk(ctx context.Context, id string) error {
@@ -435,7 +456,7 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save
 		return fmt.Errorf("save settings: %w", err)
 	}
 
-	l.current.Store(&next)
+	l.publish(&next)
 
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		l.causes = append(l.causes[max(0, len(l.causes)+1-maxCauses):], sc)

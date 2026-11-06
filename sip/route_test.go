@@ -21,8 +21,8 @@ func TestNextHop(t *testing.T) {
 		{uri: "tel:+15551234", bad: true},
 		{uri: "sips:b@10.0.0.2", bad: true},
 		{uri: "sip:b@10.0.0.2;transport=sctp", bad: true},
-		{uri: "sip:b@10.0.0.2;transport=tls", tr: TLS, addr: "10.0.0.2:5061"},
-		{uri: "sip:b@10.0.0.2", route: "<sip:10.0.0.3:5071;lr;transport=TLS>", tr: TLS, addr: "10.0.0.3:5071"},
+		{uri: "sip:b@10.0.0.2;transport=tls", tr: UDP, addr: "10.0.0.2:5060"},
+		{uri: "sip:b@10.0.0.2", route: "<sip:10.0.0.3:5071;lr;transport=TLS>", tr: UDP, addr: "10.0.0.3:5071"},
 		{uri: "sip:b@10.0.0.2", route: "<sip:p.example;lr>", bad: true},
 	}
 

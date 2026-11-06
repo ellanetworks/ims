@@ -315,12 +315,12 @@ func (l *Layer) ClientTLS(ctx context.Context, local netip.AddrPort) (netip.Addr
 	return bound, nil
 }
 
-func (l *Layer) Persist(f sip.Flow, ka transport.KeepAlive) (func(), error) {
+func (l *Layer) Persist(targets transport.Targets, ka transport.KeepAlive) (func(), error) {
 	if l.tr == nil {
 		return nil, errors.New("sip/transaction: no transport")
 	}
 
-	return l.tr.Persist(f, ka)
+	return l.tr.Persist(targets, ka)
 }
 
 func (l *Layer) Ping(ctx context.Context, f sip.Flow) error {
@@ -617,7 +617,7 @@ func (l *Layer) admit(m sip.Message) bool {
 
 	var serr *sip.StatusError
 	if req, ok := m.(*sip.Request); ok && errors.As(err, &serr) {
-		l.reject(req, serr.StatusCode)
+		l.reject(req, serr.StatusCode, serr.Header...)
 	}
 
 	return false
@@ -709,12 +709,17 @@ func (l *Layer) answerCancel(tx, target *ServerTransaction) {
 	}
 }
 
-func (l *Layer) reject(req *sip.Request, code int) {
+func (l *Layer) reject(req *sip.Request, code int, fields ...sip.Field) {
 	if req.Method == "ACK" {
 		return
 	}
 
 	res := sip.NewResponse(req, code, "")
+
+	for _, f := range fields {
+		res.Header.Add(f.Name, f.Value)
+	}
+
 	_ = res.Header.SetToTag(sip.NewStatelessTag())
 
 	l.sendStateless(req, res)

@@ -2,8 +2,10 @@ package ibcf
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
+	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/ua"
 )
@@ -297,5 +299,363 @@ func TestExitReinviteFromTrunk(t *testing.T) {
 
 	if res := <-done; res == nil || res.StatusCode != 200 || !hasSDP(res, "answer-2") {
 		t.Fatalf("re-INVITE: %v", res)
+	}
+}
+
+const bob = "+15550002000"
+
+func forwardedHistory(served string) []sip.Field {
+	return []sip.Field{
+		f("History-Info", "<sip:"+bob+"@"+home+";user=phone"+served+">;index=1"),
+		f("History-Info", "<sip:"+carol+"@"+home+";user=phone;cause=302>;index=1.1;mp=1"),
+	}
+}
+
+func TestExitForwarded(t *testing.T) {
+	const dave = "+442071234567"
+
+	for _, tc := range []struct {
+		name    string
+		trusted bool
+		header  []sip.Field
+		from    string
+		served  string
+		pai     string
+		privacy string
+	}{
+		{
+			name:    "caller with an asserted identity",
+			trusted: false,
+			header: append(forwardedHistory(""), f("From", `"Dave" <sip:`+dave+`@sip.other.example;user=phone>`),
+				f("P-Asserted-Identity", "<tel:"+dave+">")),
+			from:   "sip:" + dave + "@" + home + ";user=phone",
+			served: "sip:" + bob + "@" + home + ";user=phone",
+			pai:    "<sip:" + bob + "@" + home + ";user=phone>",
+		},
+		{
+			name:    "caller without an asserted identity",
+			trusted: false,
+			header:  append(forwardedHistory(""), f("From", `"Dave" <sip:`+dave+`@sip.other.example;user=phone>`)),
+			from:    "sip:" + dave + "@" + home + ";user=phone",
+			served:  "sip:" + bob + "@" + home + ";user=phone",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+		},
+		{
+			name:    "with a caller of no number",
+			trusted: true,
+			header:  append(forwardedHistory(""), f("From", "<sip:dave@sip.other.example>")),
+			from:    "sip:dave@sip.other.example",
+			served:  "sip:" + bob + "@" + home + ";user=phone",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+		},
+		{
+			name:    "private forwarder to an untrusted trunk",
+			trusted: false,
+			header:  append(forwardedHistory("?Privacy=history"), f("From", "<sip:"+dave+"@sip.other.example>")),
+			from:    "sip:" + dave + "@" + home + ";user=phone",
+			served:  "sip:anonymous@anonymous.invalid",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+		},
+		{
+			name:    "private forwarder to a trusted trunk",
+			trusted: true,
+			header:  append(forwardedHistory("?Privacy=history"), f("From", "<sip:"+dave+"@sip.other.example>")),
+			from:    "sip:" + dave + "@" + home + ";user=phone",
+			served:  "sip:" + bob + "@" + home + ";user=phone?Privacy=history",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+		},
+		{
+			name:    "history privacy towards an untrusted trunk",
+			trusted: false,
+			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "history")),
+			from:    "sip:" + dave + "@" + home + ";user=phone",
+			served:  "sip:anonymous@anonymous.invalid",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+		},
+		{
+			name:    "caller with identity privacy",
+			trusted: false,
+			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "id;history")),
+			from:    "sip:anonymous@anonymous.invalid",
+			served:  "sip:anonymous@anonymous.invalid",
+			privacy: "id",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newScene(t, tc.trusted)
+
+			s.ims.invite("tel:"+carol, "offer-1", append([]sip.Field{
+				f("Route", "<sip:"+internalAddr.String()+";lr>"),
+				f("P-Charging-Vector", "icid-value=icid-1"),
+			}, tc.header...)...)
+
+			in := s.carrier.next("invite").req
+			m := in.Message()
+
+			from, _ := m.Header.From()
+			if from.URI.String() != tc.from {
+				t.Errorf("From %s, want %s", from.URI, tc.from)
+			}
+
+			if got := values(m, "P-Asserted-Identity"); got != tc.pai {
+				t.Errorf("P-Asserted-Identity %q, want %q", got, tc.pai)
+			}
+
+			want := "<" + tc.served + ">;index=1, <sip:" + carol + "@sip.carrier.example;user=phone>;index=1.1;mp=1"
+			if got := values(m, "History-Info"); got != want {
+				t.Errorf("History-Info %q, want %q", got, want)
+			}
+
+			if got := values(m, "Privacy"); got != tc.privacy {
+				t.Errorf("Privacy %q, want %q", got, tc.privacy)
+			}
+
+			_ = in.Reject(486)
+
+			s.ims.next("failed")
+			s.carrier.next("ended")
+		})
+	}
+}
+
+func TestExitForwardedByNoNumber(t *testing.T) {
+	s := newScene(t, false)
+
+	s.ims.invite("tel:"+carol, "offer-1", f("Route", "<sip:"+internalAddr.String()+";lr>"),
+		f("History-Info", "<sip:bob@"+home+">;index=1"),
+		f("History-Info", "<sip:"+carol+"@"+home+";user=phone>;index=1.1;mp=1"),
+		f("P-Asserted-Identity", "<tel:"+alice+">"))
+
+	if e := s.ims.next("failed"); e.res == nil || e.res.StatusCode != 403 {
+		t.Fatalf("got %+v, want 403", e.res)
+	}
+
+	s.carrier.none()
+}
+
+func TestExitNotForwardedWithHistory(t *testing.T) {
+	s := newScene(t, false)
+
+	s.call("offer-1", f("History-Info", "<sip:"+carol+"@"+home+";user=phone>;index=1"),
+		f("History-Info", "<sip:"+carol+"@"+home+";user=phone>;index=1.1;rc=1"))
+
+	m := s.carrier.next("invite").req.Message()
+
+	if m.Header.Has("History-Info") || values(m, "P-Asserted-Identity") != `"Alice" <sip:`+alice+"@"+home+";user=phone>" {
+		t.Fatalf("trunk INVITE: %s", m)
+	}
+}
+
+func TestExitMaxForwards(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		code  int
+	}{{"0", 483}, {"x", 400}} {
+		s := newScene(t, false)
+
+		req := sip.NewRequest("INVITE", sip.URI{Scheme: "tel", User: carol})
+		for _, h := range []sip.Field{
+			f("Route", "<sip:"+internalAddr.String()+";lr>"),
+			f("From", "<sip:alice@"+home+">;tag=a"),
+			f("To", "<tel:"+carol+">"),
+			f("P-Asserted-Identity", "<tel:"+alice+">"),
+			f("Max-Forwards", tc.value),
+		} {
+			req.Header.Add(h.Name, h.Value)
+		}
+
+		if _, err := s.ims.a.Invite(context.Background(), req, s.ims.handler()); err != nil {
+			t.Fatal(err)
+		}
+
+		if e := s.ims.next("failed"); e.res == nil || e.res.StatusCode != tc.code {
+			t.Fatalf("Max-Forwards %s: got %+v, want %d", tc.value, e.res, tc.code)
+		}
+
+		s.carrier.none()
+	}
+}
+
+func TestExitEarlyMediaOnlyToTrustedTrunks(t *testing.T) {
+	for _, trusted := range []bool{false, true} {
+		s := newScene(t, trusted)
+
+		s.call("offer-1", f("P-Early-Media", "supported"))
+
+		m := s.carrier.next("invite").req.Message()
+		if got := m.Header.Has("P-Early-Media"); got != trusted {
+			t.Errorf("trusted %t: P-Early-Media %q", trusted, values(m, "P-Early-Media"))
+		}
+	}
+}
+
+func TestExitChargingOfTrustedTrunk(t *testing.T) {
+	s := newScene(t, true)
+
+	s.call("offer-1")
+
+	in := s.carrier.next("invite").req
+	_ = in.Progress(ua.Reply{Code: 180, Header: sip.Header{{Name: "P-Charging-Vector", Value: "icid-value=carrier-icid;term-ioi=carrier"}}})
+
+	ring := s.ims.next("progress").res
+	if got := values(ring, "P-Charging-Vector"); got != "icid-value=icid-1;term-ioi=carrier" {
+		t.Errorf("ringing with P-Charging-Vector %q", got)
+	}
+
+	_ = in.Accept(sdpOf("answer-1")...)
+
+	e := s.ims.next("established")
+	if got := values(e.msg, "P-Charging-Vector"); got != "icid-value=icid-1" {
+		t.Errorf("200 with P-Charging-Vector %q", got)
+	}
+}
+
+func TestExitBodies(t *testing.T) {
+	s := newScene(t, false)
+
+	s.call("offer-1")
+
+	in := s.carrier.next("invite").req
+	_ = in.Accept(sdpOf("answer-1")...)
+
+	e := s.ims.next("established")
+	s.ims.next("answer")
+	s.carrier.next("established")
+
+	dtmf := sip.NewBodyPart("application/dtmf-relay", []byte("Signal=1\r\nDuration=160\r\n"))
+	optional := sip.NewBodyPart("application/vnd.3gpp.state-and-event-info+xml", []byte("<x/>"))
+	optional.Header.Add("Content-Disposition", "render;handling=optional")
+
+	done := make(chan *sip.Response, 1)
+	_ = e.s.Send(context.Background(), "INFO", ua.Change{Bodies: []sip.BodyPart{dtmf, optional}},
+		func(res *sip.Response, _ error) { done <- res })
+
+	r := s.carrier.next("request").req
+	if m := r.Message(); m.Header.Get("Content-Type") != "application/dtmf-relay" || string(m.Body) != "Signal=1\r\nDuration=160\r\n" {
+		t.Errorf("INFO to the trunk: %s", m)
+	}
+
+	_ = r.Respond(ua.Reply{Code: 200})
+
+	s.net.Quiesce()
+
+	if res := <-done; res == nil || res.StatusCode != 200 {
+		t.Fatalf("INFO: %v", res)
+	}
+
+	required := sip.NewBodyPart("application/vnd.3gpp.state-and-event-info+xml", []byte("<x/>"))
+
+	_ = e.s.Send(context.Background(), "INFO", ua.Change{Bodies: []sip.BodyPart{required}},
+		func(res *sip.Response, _ error) { done <- res })
+
+	s.net.Quiesce()
+
+	res := <-done
+	if res == nil || res.StatusCode != 415 || values(res, "Accept") != accepted {
+		t.Fatalf("INFO with a required body: %v", res)
+	}
+
+	s.carrier.none()
+}
+
+func TestExitAcceptsConnectionsOfTheResolvedTrunk(t *testing.T) {
+	s := newScene(t, false)
+
+	tr := s.trunk
+	tr.InboundCIDRs = nil
+	s.setTrunk(tr)
+
+	from := netip.AddrPortFrom(carrierAddr.Addr(), 40000)
+
+	if s.ibcf.accept(externalAddr, from) {
+		t.Fatal("connection of a trunk without a call admitted")
+	}
+
+	s.call("offer-1")
+
+	in := s.carrier.next("invite").req
+
+	if !s.ibcf.accept(externalAddr, from) {
+		t.Error("connection of the called trunk refused")
+	}
+
+	if s.ibcf.accept(externalAddr, strangerAddr) {
+		t.Error("connection of a stranger admitted")
+	}
+
+	_ = in.Reject(486)
+
+	s.ims.next("failed")
+	s.carrier.next("ended")
+	s.net.Quiesce()
+
+	if s.ibcf.accept(externalAddr, from) {
+		t.Error("connection of the trunk admitted after the call")
+	}
+}
+
+func TestUnsupportedPrivacy(t *testing.T) {
+	for _, tc := range []struct {
+		privacy  string
+		anchored bool
+		want     string
+	}{
+		{"session;critical", true, ""},
+		{"session;critical", false, "session"},
+		{"session", false, ""},
+		{"id;header;history;critical", false, ""},
+		{"x-other;critical", true, "x-other"},
+	} {
+		p, err := sip.ParsePrivacy(tc.privacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := unsupportedPrivacy(p, tc.anchored); got != tc.want {
+			t.Errorf("%s, anchored %t: %q, want %q", tc.privacy, tc.anchored, got, tc.want)
+		}
+	}
+}
+
+func TestExitNoUsableTrunk(t *testing.T) {
+	s := newScene(t, false)
+
+	tr := s.trunk
+	tr.Enabled = false
+	s.setTrunk(tr)
+
+	s.call("offer-1")
+
+	if e := s.ims.next("failed"); e.res == nil || e.res.StatusCode != 503 {
+		t.Fatalf("got %+v, want 503", e.res)
+	}
+
+	s.carrier.none()
+}
+
+func TestEffectiveTrunk(t *testing.T) {
+	s := newScene(t, false)
+
+	tr := s.trunk
+	tr.InboundCIDRs = nil
+	tr.Domain = "sip.carrier.example"
+
+	s.mu.Lock()
+	s.st.Trunks = []settings.Trunk{tr.Effective()}
+	s.mu.Unlock()
+
+	s.dial(s.carrier, "offer-1")
+
+	in := s.ims.next("invite").req
+	_ = in.Reject(486)
+
+	if e := s.carrier.next("failed"); e.res == nil || e.res.StatusCode != 486 {
+		t.Fatalf("got %+v, want 486", e.res)
+	}
+
+	s.call("offer-1")
+
+	if m := s.carrier.next("invite").req.Message(); m.URI.Host != "sip.carrier.example" {
+		t.Fatalf("Request-URI %s", m.URI)
 	}
 }

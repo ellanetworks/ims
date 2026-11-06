@@ -127,12 +127,12 @@ func TestRecorder(t *testing.T) {
 			name: "to a SIP trunk, failed over to the second",
 			report: func(r *Recorder, icid string) {
 				r.Attempt(attempt(icid))
-				r.Trunk(icid, "first", db.DirectionOffNetOut)
-				r.Trunk(icid, "second", db.DirectionOffNetOut)
+				r.Trunk(icid, Outbound, "first", "First")
+				r.Trunk(icid, Outbound, "second", "Second")
 				r.Ended(icid, End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
-				w.Trunk, w.Direction = "second", db.DirectionOffNetOut
+				w.OutTrunk, w.OutTrunkName = "second", "Second"
 				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 486, db.OutcomeBusy, db.PartyCallee, at(4)
 			},
 		},
@@ -140,13 +140,14 @@ func TestRecorder(t *testing.T) {
 			name: "from a SIP trunk, forwarded to another",
 			report: func(r *Recorder, icid string) {
 				a := attempt(icid)
-				a.Trunk, a.Direction = "in", db.DirectionOffNetIn
+				a.InTrunk, a.InName = "in", "In"
 				r.Attempt(a)
-				r.Trunk(icid, "out", db.DirectionOffNetOut)
+				r.Trunk(icid, Outbound, "out", "")
 				r.Ended(icid, End{Code: 487, By: proxy.Caller, Cause: proxy.EndFailed})
 			},
 			want: func(w *db.CallRecord) {
-				w.Trunk, w.Direction = "in", db.DirectionOffNetIn
+				w.InTrunk, w.InTrunkName = "in", "In"
+				w.OutTrunk, w.OutTrunkName = "out", "out"
 				w.SIPStatus, w.Outcome, w.EndedBy, w.DeliveryStartAt = 487, db.OutcomeCancelled, db.PartyCaller, at(3)
 			},
 		},

@@ -11,9 +11,11 @@ const TRUNK_ID = "0199a4d2-7c1e-7b3a-9f00-000000000001";
 
 const DELETED_TRUNK_ID = "0199a4d2-7c1e-7b3a-9f00-000000000002";
 
+const UNNAMED_TRUNK_ID = "0199a4d2-7c1e-7b3a-9f00-000000000003";
+
 const answered = callRecord({
-  trunk_id: TRUNK_ID,
-  direction: "off-net-out",
+  out_trunk_id: TRUNK_ID,
+  out_trunk_name: "Old Telnyx",
 });
 
 const incoming = callRecord({
@@ -21,8 +23,17 @@ const incoming = callRecord({
   icid: "D4",
   calling_party: ["tel:+15559870004"],
   requested_at: "2026-10-08T11:55:00.000Z",
-  trunk_id: DELETED_TRUNK_ID,
-  direction: "off-net-in",
+  in_trunk_id: DELETED_TRUNK_ID,
+  in_trunk_name: "Bandwidth",
+});
+
+const forwarded = callRecord({
+  id: 5,
+  icid: "E5",
+  calling_party: ["tel:+15559870005"],
+  requested_at: "2026-10-08T11:50:00.000Z",
+  in_trunk_id: UNNAMED_TRUNK_ID,
+  out_trunk_id: TRUNK_ID,
 });
 
 const busy = callRecord({
@@ -133,14 +144,14 @@ afterEach(() => {
 
 describe("Calls", () => {
   it("lists the calls", async () => {
-    serve([ringing, busy, answered, incoming]);
+    serve([ringing, busy, answered, incoming, forwarded]);
 
     renderCalls();
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Calls (4)" }),
+      await screen.findByRole("heading", { level: 1, name: "Calls (5)" }),
     ).toBeInTheDocument();
-    await screen.findByText("Telnyx");
+    await screen.findAllByText("Telnyx");
 
     expect(cells(shown(answered))).toEqual([
       shown(answered),
@@ -151,7 +162,8 @@ describe("Calls", () => {
       "Telnyx",
       "",
     ]);
-    expect(cells(shown(incoming))[5]).toBe(DELETED_TRUNK_ID);
+    expect(cells(shown(incoming))[5]).toBe("Bandwidth");
+    expect(cells(shown(forwarded))[5]).toBe(`${UNNAMED_TRUNK_ID} → Telnyx`);
     expect(cells(shown(busy))).toEqual([
       shown(busy),
       "+15551230003",

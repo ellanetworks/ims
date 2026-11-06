@@ -218,7 +218,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
 	s.metrics = newMetrics(database, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
 		return live.Get().Peers, coreView{s}.Peers()
-	})
+	}, func() []settings.Trunk { return live.Get().Trunks })
 
 	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
 
@@ -226,7 +226,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	if cfg.IBCF != nil {
 		if s.trunks, err = trunkmon.Start(trunkmon.Config{
-			Settings: live,
+			Settings: runtimeSettings{live},
 			Resolve:  ibcf.SystemResolve,
 			Sender:   ibcfSender{s},
 			Metrics:  s.metrics.trunks,
@@ -405,7 +405,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		}
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.settings.Get, s.settings.Changed, s.trunkStates(), s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
+	sipServer, err := startSIP(ctx, cfg, st, s.settings.Runtime, s.settings.Changed, s.trunkStates(), s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
 		s.metrics, s.IPsec, sipFailed, s.ases, s.tracerProvider, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)

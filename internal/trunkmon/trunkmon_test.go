@@ -857,11 +857,11 @@ type fakeDNS struct {
 }
 
 func (d fakeDNS) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
-	return d.naptr[name], nil
+	return d.naptr[strings.TrimSuffix(name, ".")], nil
 }
 
 func (d fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
-	key := name
+	key := strings.TrimSuffix(name, ".")
 	if service != "" {
 		key = "_" + service + "._" + proto + "." + name
 	}
@@ -874,7 +874,7 @@ func (d fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (stri
 }
 
 func (d fakeDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
-	if a, ok := d.hosts[host]; ok {
+	if a, ok := d.hosts[strings.TrimSuffix(host, ".")]; ok {
 		return []netip.Addr{a}, nil
 	}
 
@@ -1008,7 +1008,13 @@ func TestTransportsPerTrunk(t *testing.T) {
 			settings.TrunkTLS{},
 			settings.TrunkAddress{Host: "198.51.100.7", Transport: settings.SIPTransportTCP},
 			"TCP 198.51.100.7:5060",
-			[]sip.Transport{sip.UDP, sip.TCP},
+			[]sip.Transport{sip.TCP},
+		},
+		{
+			"explicit TLS on a host with UDP first", false, pinned,
+			settings.TrunkAddress{Host: "both.example", Transport: settings.SIPTransportTLS},
+			"TLS 192.0.2.13:5061",
+			[]sip.Transport{sip.TLS},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

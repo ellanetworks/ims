@@ -2,6 +2,7 @@ package ibcf
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -78,7 +79,7 @@ func (r *route) resolve(ctx context.Context, h hop) []target {
 	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 
-	servers, err := r.b.resolveTrunk(ctx, h.trunk, addressURI(h.addr))
+	servers, err := r.b.resolveAddress(ctx, h.trunk, h.addr)
 	if err != nil {
 		r.b.log.WarnContext(ctx, "SIP trunk address not resolved", slog.String("trunk", h.trunk.Name), slog.String("address", h.addr.String()),
 			slog.Any("error", err))
@@ -94,7 +95,7 @@ func (r *route) resolve(ctx context.Context, h hop) []target {
 			continue
 		}
 
-		r.b.peers.note(h.trunk, h.addr, srv)
+		r.b.noteServer(h.trunk, h.addr, srv)
 		out = append(out, target{hop: h, server: srv, local: local})
 		r.known[h.trunk.ID] = append(r.known[h.trunk.ID], srv.Addr.Addr())
 	}
@@ -110,7 +111,20 @@ func (r *route) addresses(trunk string) []netip.Addr {
 }
 
 func (b *IBCF) resolveTrunk(ctx context.Context, t settings.Trunk, u sip.URI) ([]sip.Server, error) {
-	allowed := b.transports(t)
+	return b.resolveVia(ctx, u, b.transports(t))
+}
+
+// SIPconnect 2.0 section 8.1
+// SIPconnect 2.0 section 17.1.1.2
+// RFC 3263 section 4.1
+func (b *IBCF) resolveAddress(ctx context.Context, t settings.Trunk, a settings.TrunkAddress) ([]sip.Server, error) {
+	return b.resolveVia(ctx, addressURI(a), addressTransports(b.transports(t), a))
+}
+
+func (b *IBCF) resolveVia(ctx context.Context, u sip.URI, allowed []sip.Transport) ([]sip.Server, error) {
+	if len(allowed) == 0 {
+		return nil, errNoTransport
+	}
 
 	servers, err := b.resolve(ctx, u, allowed)
 	if err != nil {
@@ -123,15 +137,25 @@ func (b *IBCF) resolveTrunk(ctx context.Context, t settings.Trunk, u sip.URI) ([
 	}), nil
 }
 
+var errNoTransport = errors.New("ibcf: no transport the SIP trunk address allows")
+
+func addressTransports(allowed []sip.Transport, a settings.TrunkAddress) []sip.Transport {
+	if a.Transport == "" {
+		return allowed
+	}
+
+	tr := sip.Transport(strings.ToUpper(string(a.Transport)))
+	if !slices.Contains(allowed, tr) {
+		return nil
+	}
+
+	return []sip.Transport{tr}
+}
+
 // RFC 3263 section 4.1
 // RFC 3263 section 4.2
 func addressURI(a settings.TrunkAddress) sip.URI {
-	u := sip.URI{Scheme: "sip", Host: host(a.Host), Port: uint16(a.Port)}
-	if a.Transport != "" {
-		u.Params.Set("transport", strings.ToLower(string(a.Transport)))
-	}
-
-	return u
+	return sip.URI{Scheme: "sip", Host: host(a.Host), Port: uint16(a.Port)}
 }
 
 func host(h string) string {

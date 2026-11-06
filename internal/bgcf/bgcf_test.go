@@ -52,15 +52,24 @@ func TestTrunks(t *testing.T) {
 		name   string
 		number string
 		want   []string
+		err    error
 	}{
-		{"longest prefix", "+16617629239", []string{"c", "b"}},
-		{"shorter overlapping prefix", "+15551234567", []string{"b", "a"}},
-		{"default route", "+4915112345678", []string{"a"}},
-		{"disabled and down trunks skipped, order kept", "+442079460000", []string{"b", "unknown"}},
-		{"no usable trunk", "+33612345678", nil},
-		{"not a global number", "16617629239", nil},
-		{"empty number", "", nil},
-		{"plus alone", "+", nil},
+		{"longest prefix", "+16617629239", []string{"c", "b"}, nil},
+		{"shorter overlapping prefix", "+15551234567", []string{"b", "a"}, nil},
+		{"default route", "+4915112345678", []string{"a"}, nil},
+		{"disabled and down trunks skipped, order kept", "+442079460000", []string{"b", "unknown"}, nil},
+		{"no usable trunk", "+33612345678", nil, ErrNoUsableTrunk},
+		{"not a global number", "16617629239", nil, nil},
+		{"empty number", "", nil, nil},
+		{"plus alone", "+", nil, nil},
+		{"emergency code under a country code", "+1911", nil, nil},
+		{"short code under a country code", "+44112", nil, nil},
+		{"six digits", "+441234", nil, nil},
+		{"seven digits", "+4412345", []string{"b", "unknown"}, nil},
+		{"fifteen digits", "+491511234567890", []string{"a"}, nil},
+		{"sixteen digits", "+4915112345678901", nil, nil},
+		{"twenty digits", "+12345678901234567890", nil, nil},
+		{"leading zero", "+0123456789", nil, nil},
 	}
 
 	b := newBGCF(routes, trunks, st)
@@ -70,8 +79,13 @@ func TestTrunks(t *testing.T) {
 			got, err := b.Trunks(tt.number)
 
 			if tt.want == nil {
-				if !errors.Is(err, ErrNoRoute) {
-					t.Fatalf("Trunks(%q) = %v, %v, want ErrNoRoute", tt.number, ids(got), err)
+				want := tt.err
+				if want == nil {
+					want = ErrNoRoute
+				}
+
+				if !errors.Is(err, want) {
+					t.Fatalf("Trunks(%q) = %v, %v, want %v", tt.number, ids(got), err, want)
 				}
 
 				return
@@ -103,8 +117,8 @@ func TestTrunksLongestPrefixWithoutUsableTrunk(t *testing.T) {
 		{ID: "r1", Prefix: "+1", Trunks: []string{"down"}},
 	}, []settings.Trunk{trunk("a", true), trunk("down", true)}, states{"down": settings.TrunkDown})
 
-	if got, err := b.Trunks("+16617629239"); !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("Trunks = %v, %v, want ErrNoRoute rather than the default route", ids(got), err)
+	if got, err := b.Trunks("+16617629239"); !errors.Is(err, ErrNoUsableTrunk) {
+		t.Fatalf("Trunks = %v, %v, want ErrNoUsableTrunk rather than the default route", ids(got), err)
 	}
 }
 
@@ -121,8 +135,8 @@ func TestTrunksFollowLiveSettings(t *testing.T) {
 
 	s.Trunks = []settings.Trunk{trunk("a", false)}
 
-	if _, err := b.Trunks("+16617629239"); !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("Trunks after disabling the trunk = %v, want ErrNoRoute", err)
+	if _, err := b.Trunks("+16617629239"); !errors.Is(err, ErrNoUsableTrunk) {
+		t.Fatalf("Trunks after disabling the trunk = %v, want ErrNoUsableTrunk", err)
 	}
 }
 
@@ -152,18 +166,23 @@ func TestNumber(t *testing.T) {
 	}
 }
 
-func TestRoutable(t *testing.T) {
-	b := newBGCF([]settings.SIPRoute{{ID: "r1", Prefix: "+1", Trunks: []string{"a"}}}, []settings.Trunk{trunk("a", true)}, nil)
+func TestRoute(t *testing.T) {
+	b := newBGCF([]settings.SIPRoute{
+		{ID: "r1", Prefix: "+1", Trunks: []string{"a"}},
+		{ID: "r2", Prefix: "+33", Trunks: []string{"down"}},
+	}, []settings.Trunk{trunk("a", true), trunk("down", true)}, states{"down": settings.TrunkDown})
 
-	for uri, want := range map[string]bool{
-		"tel:+16617629239":                        true,
-		"tel:+4915112345678":                      false,
-		"tel:6617629239;phone-context=+1":         false,
-		"sip:+16617629239@example.org;user=phone": false,
+	for uri, want := range map[string]error{
+		"tel:+16617629239":                        nil,
+		"tel:+33612345678":                        ErrNoUsableTrunk,
+		"tel:+4915112345678":                      ErrNoRoute,
+		"tel:+1911":                               ErrNoRoute,
+		"tel:6617629239;phone-context=+1":         ErrNoRoute,
+		"sip:+16617629239@example.org;user=phone": ErrNoRoute,
 	} {
 		u, _ := sip.ParseURI(uri)
-		if got := b.Routable(u); got != want {
-			t.Errorf("Routable(%s) = %v, want %v", uri, got, want)
+		if got := b.Route(u); !errors.Is(got, want) {
+			t.Errorf("Route(%s) = %v, want %v", uri, got, want)
 		}
 	}
 }

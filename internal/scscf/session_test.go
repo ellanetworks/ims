@@ -475,6 +475,8 @@ func TestNormaliseOnNet(t *testing.T) {
 		{"short code", uk, "tel:11833;phone-context=" + homeDomain, true},
 		{"six-digit service code", uk, "tel:118118;phone-context=" + homeDomain, true},
 		{"country code as context", uk, "tel:2079460000;phone-context=+44", true},
+		{"national prefix under a country code context", uk, "tel:02071234567;phone-context=+44", true},
+		{"international prefix under a country code context", uk, "tel:00447700900123;phone-context=+44", true},
 		{"US 10-digit dialling", us, "tel:6617629239;phone-context=" + homeDomain, false},
 		{"US 11-digit dialling", us, "tel:16617629239;phone-context=" + homeDomain, false},
 		{"bare digits never break out", never, "tel:7700900123;phone-context=" + homeDomain, true},

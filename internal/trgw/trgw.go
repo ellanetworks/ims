@@ -137,6 +137,15 @@ func (g *Gateway) Addresses() []Address {
 	return append([]Address(nil), g.addrs...)
 }
 
+func (g *Gateway) Advertised(bind netip.Addr) (netip.Addr, bool) {
+	p := g.pools[bind.Unmap()]
+	if p == nil {
+		return netip.Addr{}, false
+	}
+
+	return p.advertise, true
+}
+
 type Allocation struct {
 	TrunkID        string
 	PhoneAddress   netip.Addr
@@ -177,9 +186,11 @@ func (g *Gateway) Allocate(ctx context.Context, a Allocation) (*Relay, error) {
 		return nil, ErrClosed
 	}
 
-	r := &Relay{gw: g, trunk: a.TrunkID, onTimeout: a.OnMediaTimeout, done: make(chan struct{})}
+	r := &Relay{gw: g, trunk: a.TrunkID, onTimeout: a.OnMediaTimeout, timeout: g.mediaTimeout, done: make(chan struct{})}
 
 	for i, p := range pools {
+		r.legs[i] = newLeg(r, i)
+
 		rtp, rtcp, err := p.open()
 		if err == nil {
 			err = ctx.Err()
@@ -187,24 +198,24 @@ func (g *Gateway) Allocate(ctx context.Context, a Allocation) (*Relay, error) {
 
 		if err != nil {
 			if rtp != nil {
-				_ = rtp.Close()
-				_ = rtcp.Close()
-
-				p.release(localAddr(rtp).Port())
+				newBinding(p, rtp, rtcp).close()
 			}
 
 			for _, l := range r.legs[:i] {
-				l.close()
+				l.closeAll()
 			}
 
 			return nil, err
 		}
 
-		r.legs[i] = newLeg(i, p, rtp, rtcp)
+		f := familyOf(p.addr)
+		set := bindingSet{primary: f, keep: -1}
+		set.b[f] = newBinding(p, rtp, rtcp)
+		r.legs[i].binds.Store(&set)
 	}
 
 	r.metrics = g.metrics.open(a.TrunkID)
-	r.start(g.mediaTimeout)
+	r.start()
 
 	g.mu.Lock()
 	if g.closed {

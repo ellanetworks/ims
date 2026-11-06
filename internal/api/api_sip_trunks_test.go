@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
@@ -62,6 +63,9 @@ func TestSIPTrunks(t *testing.T) {
 			SIPTrunkTLSParams:    SIPTrunkTLSParams{Pins: []string{}, Identities: []string{}},
 			CACertificateDetails: []CertificateSummary{},
 		},
+		Effective: SIPTrunkEffective{
+			Domain: "sip.telnyx.com", InboundCIDRs: []string{"192.76.120.10/32", "64.16.250.10/32"}, TLSIdentities: []string{},
+		},
 		Status: SIPTrunkStatus{State: settings.TrunkUnknown},
 	}
 	if telnyx.ID == "" || !reflect.DeepEqual(telnyx, want) {
@@ -107,20 +111,86 @@ func TestSIPTrunks(t *testing.T) {
 func TestSIPTrunkDefaults(t *testing.T) {
 	cfg := Config{Settings: newFakeSettings()}
 
-	got := createTrunk(t, cfg, `{"name": "Carrier", "addresses": [{"host": "sip.carrier.example", "transport": "tls"},
+	body := `{"name": "Carrier", "addresses": [{"host": "sip.carrier.example", "transport": "tls"},
 		{"host": "192.0.2.10", "transport": "tls"}, {"host": "2001:db8::10", "transport": "tls"}], "trusted": true,
-		"tls": {"pins": ["`+strings.Repeat("ab", 32)+`"]}}`)
+		"tls": {"pins": ["` + strings.Repeat("ab", 32) + `"]}}`
 
-	if !*got.Enabled || got.Domain != "sip.carrier.example" ||
-		!reflect.DeepEqual(got.InboundCIDRs, []string{"192.0.2.10/32", "2001:db8::10/128"}) ||
-		!reflect.DeepEqual(got.TLS.Identities, []string{"sip.carrier.example"}) ||
+	got := createTrunk(t, cfg, body)
+
+	if !*got.Enabled || got.Domain != "" || len(got.InboundCIDRs) != 0 || len(got.TLS.Identities) != 0 ||
 		!reflect.DeepEqual(got.TLS.Pins, []string{strings.TrimSuffix(strings.Repeat("AB:", 32), ":")}) {
-		t.Fatalf("created = %+v, want it enabled with the defaults resolved", got)
+		t.Fatalf("created = %+v, want it enabled with only what was set", got)
+	}
+
+	want := SIPTrunkEffective{
+		Domain: "sip.carrier.example", InboundCIDRs: []string{"192.0.2.10/32", "2001:db8::10/128"}, TLSIdentities: []string{"sip.carrier.example"},
+	}
+	if !reflect.DeepEqual(got.Effective, want) {
+		t.Fatalf("effective = %+v, want %+v", got.Effective, want)
 	}
 
 	stored, _ := cfg.Settings.Get().Trunk(got.ID)
-	if stored.Domain != "sip.carrier.example" || len(stored.InboundCIDRs) != 2 || len(stored.TLS.Identities) != 1 || !stored.Enabled {
-		t.Fatalf("stored = %+v, want the defaults stored", stored)
+	if stored.Domain != "" || len(stored.InboundCIDRs) != 0 || len(stored.TLS.Identities) != 0 || !stored.Enabled {
+		t.Fatalf("stored = %+v, want no defaults stored", stored)
+	}
+
+	moved := strings.Replace(body, "192.0.2.10", "192.0.2.20", 1)
+
+	code, resp := serve(t, cfg, http.MethodPut, "/api/v1/sip-trunks/"+got.ID, moved)
+	if updated := decodeResult[SIPTrunk](t, resp); code != http.StatusOK ||
+		!reflect.DeepEqual(updated.Effective.InboundCIDRs, []string{"192.0.2.20/32", "2001:db8::10/128"}) {
+		t.Fatalf("PUT = %d %s, want the default inbound CIDRs to follow the addresses", code, resp)
+	}
+}
+
+func TestSIPTrunkGuard(t *testing.T) {
+	live := newFakeSettings()
+	cfg := Config{Settings: live}
+
+	telnyx := createTrunk(t, cfg, telnyxTrunk)
+
+	live.SetTrunkGuard(func(t settings.Trunk) error {
+		if t.TLS.Required {
+			return settings.Invalidf("tls.required needs ibcf.external.tls in the configuration file")
+		}
+
+		if t.ID == telnyx.ID {
+			return settings.Invalidf("inbound_cidrs overlap the trust domain")
+		}
+
+		return nil
+	})
+
+	_, body := serve(t, cfg, http.MethodGet, "/api/v1/sip-trunks/"+telnyx.ID, "")
+	if got := decodeResult[SIPTrunk](t, body); got.Status.State != settings.TrunkUnusable {
+		t.Fatalf("state = %s, want unusable", got.Status.State)
+	}
+
+	required := `{"name": "Carrier", "addresses": [{"host": "sip.carrier.example", "transport": "tls"}],
+		"tls": {"required": true, "pins": ["` + strings.Repeat("ab", 32) + `"]}}`
+
+	code, body := serve(t, cfg, http.MethodPost, "/api/v1/sip-trunks", required)
+	if code != http.StatusBadRequest || decodeError(t, body) != "tls.required needs ibcf.external.tls in the configuration file" {
+		t.Fatalf("POST = %d %s, want 400", code, body)
+	}
+}
+
+func TestSIPTrunkRoundTrip(t *testing.T) {
+	cfg := Config{Settings: newFakeSettings()}
+
+	created := createTrunk(t, cfg, telnyxTrunk)
+
+	params := created.SIPTrunkParams
+	params.TLS = &created.TLS.SIPTrunkTLSParams
+
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, resp := serve(t, cfg, http.MethodPut, "/api/v1/sip-trunks/"+created.ID, string(body))
+	if updated := decodeResult[SIPTrunk](t, resp); code != http.StatusOK || !reflect.DeepEqual(updated, created) {
+		t.Fatalf("PUT of the GET fields = %d %s, want %+v", code, resp, created)
 	}
 }
 
@@ -225,6 +295,7 @@ func TestSIPTrunksRejected(t *testing.T) {
 		{"host bits", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "10.0.0.1/24", 1), 400, "inbound_cidrs must be network addresses: 10.0.0.0/24, not 10.0.0.1/24"},
 		{"overlapping CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "192.76.120.0/24", 1), 409, "Inbound CIDR 192.76.120.0/24 overlaps 192.76.120.10/32 of SIP trunk Telnyx"},
 		{"same CIDR", http.MethodPost, "", strings.Replace(sbcTrunk, "10.0.0.0/24", "64.16.250.10/32", 1), 409, "Inbound CIDR 64.16.250.10/32 overlaps 64.16.250.10/32 of SIP trunk Telnyx"},
+		{"address of another trunk", http.MethodPost, "", strings.Replace(sbcTrunk, `[{"host": "::ffff:10.0.0.5", "port": 5080, "transport": "udp"}]`, `[{"host": "sip.telnyx.com"}]`, 1), 409, "Address sip.telnyx.com is an address of SIP trunk Telnyx"},
 		{"no domain", http.MethodPost, "", strings.Replace(sbcTrunk, `"sbc.example.org"`, `""`, 1), 400, "domain is required when no address has a domain name as host"},
 		{"no domain field", http.MethodPost, "", strings.Replace(sbcTrunk, `, "domain": "sbc.example.org"`, "", 1), 400, "domain is required when no address has a domain name as host"},
 		{"wrapping keepalive", http.MethodPost, "", strings.Replace(sbcTrunk, `"keepalive_interval": 60`, `"keepalive_interval": 36028797018963998`, 1), 400, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds"},

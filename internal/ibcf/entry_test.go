@@ -59,7 +59,7 @@ func TestEntryCall(t *testing.T) {
 	_ = in.Progress(ua.Reply{Code: 180, Header: sip.Header{{Name: "P-Asserted-Identity", Value: "<sip:alice@" + home + ">"}}})
 
 	ring := s.carrier.next("progress").res
-	if ring.Header.Has("P-Asserted-Identity") || ring.Header.Has("P-Charging-Vector") {
+	if values(ring, "P-Asserted-Identity") != "<sip:alice@"+home+">" || ring.Header.Has("P-Charging-Vector") {
 		t.Errorf("ringing towards the trunk: %s", ring)
 	}
 
@@ -116,7 +116,7 @@ func TestEntryRefused(t *testing.T) {
 			tr := s.trunk
 			tr.Enabled = false
 			s.setTrunk(tr)
-		}, code: 403},
+		}, code: 503},
 		{name: "orig", header: []sip.Field{f("Route", "<sip:"+externalAddr.String()+";lr;orig>")}, code: 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,5 +236,78 @@ func TestEntryOptions(t *testing.T) {
 	res := <-done
 	if res == nil || res.StatusCode != 200 || !strings.Contains(values(res, "Allow"), "INVITE") {
 		t.Fatalf("OPTIONS: %v", res)
+	}
+}
+
+func TestEntryBodies(t *testing.T) {
+	isup := []byte{0x01, 0x00, 0x49}
+
+	for _, tc := range []struct {
+		name        string
+		disposition string
+		code        int
+	}{
+		{"required", "", 415},
+		{"optional", "signal;handling=optional", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newScene(t, false)
+
+			req := sip.NewRequest("INVITE", sip.URI{Scheme: "sip", User: alice, Host: externalAddr.Addr().String(), Port: externalAddr.Port(), Params: sip.Params{{Name: "user", Value: "phone"}}})
+			req.Header.Add("From", "<sip:"+carol+"@sip.carrier.example;user=phone>")
+			req.Header.Add("To", "<sip:"+alice+"@"+externalAddr.String()+";user=phone>")
+
+			part := sip.NewBodyPart("application/isup;version=itu-t92+", isup)
+			if tc.disposition != "" {
+				part.Header.Add("Content-Disposition", tc.disposition)
+			}
+
+			req.SetBodies(ua.SDP([]byte("offer-1")), part)
+
+			if _, err := s.carrier.a.Invite(context.Background(), req, s.carrier.handler()); err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.code != 0 {
+				e := s.carrier.next("failed")
+				if e.res == nil || e.res.StatusCode != tc.code || values(e.res, "Accept") != accepted {
+					t.Fatalf("got %v, want %d with Accept", e.res, tc.code)
+				}
+
+				s.ims.none()
+
+				return
+			}
+
+			m := s.ims.next("invite").req.Message()
+			if m.Header.Get("Content-Type") != "application/sdp" || !hasSDP(m, "offer-1") {
+				t.Fatalf("INVITE to the I-CSCF: %s", m)
+			}
+		})
+	}
+}
+
+func TestEntryIdentityOfTheCallee(t *testing.T) {
+	for _, tc := range []struct {
+		privacy string
+		pai     bool
+	}{{"", true}, {"id", false}, {"none", true}} {
+		s := newScene(t, false)
+
+		s.dial(s.carrier, "offer-1")
+
+		in := s.ims.next("invite").req
+
+		h := sip.Header{{Name: "P-Asserted-Identity", Value: "<tel:" + alice + ">"}}
+		if tc.privacy != "" {
+			h.Add("Privacy", tc.privacy)
+		}
+
+		_ = in.Progress(ua.Reply{Code: 180, Header: h})
+
+		ring := s.carrier.next("progress").res
+		if got := ring.Header.Has("P-Asserted-Identity"); got != tc.pai {
+			t.Errorf("Privacy %q: P-Asserted-Identity %q", tc.privacy, values(ring, "P-Asserted-Identity"))
+		}
 	}
 }

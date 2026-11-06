@@ -25,6 +25,12 @@ func (s *Server) trunkStates() settings.TrunkStates {
 	return s.trunks
 }
 
+type runtimeSettings struct{ *settings.Live }
+
+func (r runtimeSettings) Get() settings.Settings {
+	return r.Runtime()
+}
+
 type ibcfSender struct{ s *Server }
 
 func (i ibcfSender) Send(ctx context.Context, req *sip.Request, to sip.Server) (*sip.Response, error) {
@@ -46,12 +52,20 @@ func (i ibcfSender) Transports(t settings.Trunk) []sip.Transport {
 }
 
 // TS 24.229 clause 4.4.1
+// SIPconnect 2.0 section 17.5
 func (s *Server) guardTrunks(ctx context.Context, live *settings.Live) {
 	domain := trust.New(s.Config.SIP.Addresses, s.Config.SIP.TrustedNetworks)
+	certificate := s.Config.IBCF != nil && s.Config.IBCF.External.Certificate()
 
-	guard := func(p netip.Prefix) error {
-		if domain.Overlaps(p) {
-			return fmt.Errorf("inbound_cidrs %s overlaps sip.addresses or sip.trusted_networks, the trust domain of the IMS", p)
+	guard := func(t settings.Trunk) error {
+		for _, p := range t.InboundCIDRs {
+			if domain.Overlaps(p) {
+				return settings.Invalidf("inbound_cidrs %s overlaps sip.addresses or sip.trusted_networks of the configuration file", p)
+			}
+		}
+
+		if t.TLS.Required && !certificate {
+			return settings.Invalidf("tls.required needs ibcf.external.tls in the configuration file")
 		}
 
 		return nil
@@ -60,11 +74,8 @@ func (s *Server) guardTrunks(ctx context.Context, live *settings.Live) {
 	live.SetTrunkGuard(guard)
 
 	for _, t := range live.Get().Trunks {
-		for _, p := range t.InboundCIDRs {
-			if err := guard(p); err != nil {
-				s.Logger.WarnContext(ctx, "a SIP trunk accepts requests from the trust domain: change its inbound CIDRs",
-					slog.String("trunk", t.Name), slog.Any("error", err))
-			}
+		if err := guard(t.Effective()); err != nil {
+			s.Logger.WarnContext(ctx, "SIP trunk not used: change it", slog.String("trunk", t.Name), slog.Any("error", err))
 		}
 	}
 }

@@ -489,7 +489,7 @@ func (d dns) LookupSRV(_ context.Context, service, proto, name string) (string, 
 }
 
 func (d dns) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
-	if host == "scscf1.ims.example.com" {
+	if strings.TrimSuffix(host, ".") == "scscf1.ims.example.com" {
 		return []netip.Addr{d.core.Addr()}, nil
 	}
 

@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -32,10 +33,18 @@ var (
 	ErrUnauthorizedConnection = errors.New("sip/transport: inbound TLS connection not authorized for requests")
 )
 
-var oidSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
+var (
+	oidSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
+	oidSIPDomain      = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 20}
+)
 
 // SIPconnect 2.0 section 8.1.2
-var cipherSuites = []uint16{
+var clientCipherSuites = []uint16{
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+}
+
+var serverCipherSuites = []uint16{
 	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -71,7 +80,7 @@ func NewTLSClientConfig(o TLSOptions) (*tls.Config, error) {
 		return nil, err
 	}
 
-	cfg := baseConfig()
+	cfg := baseConfig(clientCipherSuites)
 	cfg.ServerName = o.ServerName
 	cfg.InsecureSkipVerify = true
 	cfg.VerifyConnection = v.verify
@@ -100,9 +109,9 @@ func NewTLSServerConfig(o TLSOptions) (*tls.Config, error) {
 		return nil, errors.New("sip/transport: TLS server trusting a CA without client identities to check")
 	}
 
-	v := verifier{opts: o, identities: o.Identities, usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, optional: !o.RequireClientCertificate}
+	v := verifier{opts: o, identities: o.Identities, usage: x509.ExtKeyUsageClientAuth, optional: !o.RequireClientCertificate}
 
-	cfg := baseConfig()
+	cfg := baseConfig(serverCipherSuites)
 	cfg.Certificates = o.Certificates
 	cfg.VerifyConnection = v.verify
 
@@ -120,36 +129,36 @@ func NewTLSServerConfig(o TLSOptions) (*tls.Config, error) {
 	return cfg, nil
 }
 
-func clientVerifier(o TLSOptions, usages ...x509.ExtKeyUsage) (verifier, error) {
+// RFC 5922 section 7.1
+// RFC 5922 section 7.3
+func clientVerifier(o TLSOptions, usage x509.ExtKeyUsage) (verifier, error) {
 	if !o.trusted() {
 		return verifier{}, errors.New("sip/transport: TLS client without a CA or a pinned certificate")
 	}
 
 	ids := o.Identities
-	if len(ids) == 0 && o.ServerName != "" {
-		if _, err := netip.ParseAddr(o.ServerName); err != nil {
-			ids = []string{o.ServerName}
-		}
+	if _, err := netip.ParseAddr(o.ServerName); err != nil && isDNSName(o.ServerName) {
+		ids = []string{o.ServerName}
 	}
 
 	if o.Roots != nil && len(ids) == 0 {
 		return verifier{}, errors.New("sip/transport: TLS client trusting a CA without an identity to check")
 	}
 
-	return verifier{opts: o, identities: ids, usages: usages}, nil
+	return verifier{opts: o, identities: ids, usage: usage}, nil
 }
 
-func baseConfig() *tls.Config {
+func baseConfig(suites []uint16) *tls.Config {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,
-		CipherSuites: slices.Clone(cipherSuites),
+		CipherSuites: slices.Clone(suites),
 	}
 }
 
 type verifier struct {
 	opts       TLSOptions
 	identities []string
-	usages     []x509.ExtKeyUsage
+	usage      x509.ExtKeyUsage
 	optional   bool
 }
 
@@ -167,7 +176,7 @@ func (t *Transport) reuseVerifier(f sip.Flow) *verifier {
 		return nil
 	}
 
-	v, err := clientVerifier(o, x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
+	v, err := clientVerifier(o, x509.ExtKeyUsageClientAuth)
 	if err != nil {
 		return nil
 	}
@@ -175,6 +184,9 @@ func (t *Transport) reuseVerifier(f sip.Flow) *verifier {
 	return &v
 }
 
+// SIPconnect 2.0 section 17.2
+// RFC 5922 section 7.3
+// RFC 5922 section 7.4
 func (v verifier) verify(cs tls.ConnectionState) error {
 	if len(cs.PeerCertificates) == 0 {
 		if v.optional {
@@ -186,11 +198,12 @@ func (v verifier) verify(cs tls.ConnectionState) error {
 
 	leaf := cs.PeerCertificates[0]
 
-	if err := v.trust(leaf, cs.PeerCertificates[1:]); err != nil {
+	pinned, err := v.trust(leaf, cs.PeerCertificates[1:])
+	if err != nil {
 		return err
 	}
 
-	if len(v.identities) > 0 && !MatchIdentity(CertificateIdentities(leaf), v.identities) {
+	if !pinned && len(v.identities) > 0 && !MatchIdentity(CertificateIdentities(leaf), v.identities) {
 		return fmt.Errorf("%w: %v, want %v", ErrIdentityMismatch, CertificateIdentities(leaf), v.identities)
 	}
 
@@ -199,11 +212,13 @@ func (v verifier) verify(cs tls.ConnectionState) error {
 
 // SIPconnect 2.0 section 17.2
 // RFC 5280 section 6
-func (v verifier) trust(leaf *x509.Certificate, chain []*x509.Certificate) error {
-	opts := x509.VerifyOptions{KeyUsages: v.usages}
+func (v verifier) trust(leaf *x509.Certificate, chain []*x509.Certificate) (bool, error) {
+	opts := x509.VerifyOptions{KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}
+
+	pinned := v.pinned(leaf)
 
 	switch {
-	case v.pinned(leaf):
+	case pinned:
 		opts.Roots = x509.NewCertPool()
 		opts.Roots.AddCert(leaf)
 	case v.opts.Roots != nil:
@@ -214,14 +229,36 @@ func (v verifier) trust(leaf *x509.Certificate, chain []*x509.Certificate) error
 			opts.Intermediates.AddCert(c)
 		}
 	default:
-		return fmt.Errorf("%w: %s is not pinned", ErrUntrustedCertificate, leaf.Subject)
+		return false, fmt.Errorf("%w: %s is not pinned", ErrUntrustedCertificate, leaf.Subject)
 	}
 
-	if _, err := leaf.Verify(opts); err != nil {
-		return fmt.Errorf("%w: %w", ErrUntrustedCertificate, err)
+	chains, err := leaf.Verify(opts)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", ErrUntrustedCertificate, err)
 	}
 
-	return nil
+	if !slices.ContainsFunc(chains, func(chain []*x509.Certificate) bool {
+		return !slices.ContainsFunc(chain, func(c *x509.Certificate) bool { return !permits(c, v.usage) })
+	}) {
+		return false, fmt.Errorf("%w: %s: x509: certificate specifies an incompatible key usage", ErrUntrustedCertificate, leaf.Subject)
+	}
+
+	return pinned, nil
+}
+
+// RFC 5280 section 4.2.1.12
+// RFC 5924 section 5
+// TS 33.310 clause 6.1.3a
+func permits(c *x509.Certificate, usage x509.ExtKeyUsage) bool {
+	if len(c.ExtKeyUsage) == 0 && len(c.UnknownExtKeyUsage) == 0 {
+		return true
+	}
+
+	if slices.Contains(c.ExtKeyUsage, x509.ExtKeyUsageAny) || slices.Contains(c.ExtKeyUsage, usage) {
+		return true
+	}
+
+	return slices.ContainsFunc(c.UnknownExtKeyUsage, oidSIPDomain.Equal)
 }
 
 func (v verifier) pinned(leaf *x509.Certificate) bool {
@@ -367,29 +404,33 @@ func (t *Transport) ClientTLS(ctx context.Context, local netip.AddrPort) (netip.
 		return netip.AddrPort{}, fmt.Errorf("sip/transport: TLS from %s: a specific IP address is required", local)
 	}
 
+	var hold io.Closer
+
 	if local.Port() == 0 {
-		tl, err := listen.TCP(ctx, local, t.control)
+		bound, h, err := sockopt.Reserve(local)
 		if err != nil {
 			return netip.AddrPort{}, fmt.Errorf("sip/transport: TLS from %s: %w", local, err)
 		}
 
-		local = unmap(tl.Addr().(*net.TCPAddr).AddrPort())
-
-		_ = tl.Close()
+		local, hold = unmap(bound), h
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.closed {
-		return netip.AddrPort{}, ErrClosed
-	}
+	if t.closed || t.secure[local] != nil {
+		if hold != nil {
+			_ = hold.Close()
+		}
 
-	if _, ok := t.secure[local]; ok {
+		if t.closed {
+			return netip.AddrPort{}, ErrClosed
+		}
+
 		return netip.AddrPort{}, fmt.Errorf("sip/transport: already using %s for TLS", local)
 	}
 
-	t.secure[local] = &listener{local: local}
+	t.secure[local] = &listener{local: local, hold: hold}
 
 	return local, nil
 }

@@ -55,8 +55,15 @@ type CertificateSummary struct {
 type SIPTrunk struct {
 	ID string `json:"id"`
 	SIPTrunkParams
-	TLS    SIPTrunkTLS    `json:"tls"`
-	Status SIPTrunkStatus `json:"status"`
+	TLS       SIPTrunkTLS       `json:"tls"`
+	Effective SIPTrunkEffective `json:"effective"`
+	Status    SIPTrunkStatus    `json:"status"`
+}
+
+type SIPTrunkEffective struct {
+	Domain        string   `json:"domain"`
+	InboundCIDRs  []string `json:"inbound_cidrs"`
+	TLSIdentities []string `json:"tls_identities"`
 }
 
 type SIPTrunkStatus struct {
@@ -72,7 +79,7 @@ func ListSIPTrunks(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := SIPTrunkList{Items: []SIPTrunk{}}
 		for _, t := range cfg.Settings.Get().Trunks {
-			resp.Items = append(resp.Items, trunkResponse(t, cfg.SIPTrunks))
+			resp.Items = append(resp.Items, trunkResponse(t, cfg))
 		}
 
 		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
@@ -87,7 +94,7 @@ func GetSIPTrunk(cfg Config) http.Handler {
 			return
 		}
 
-		writeResponse(r.Context(), w, trunkResponse(t, cfg.SIPTrunks), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, trunkResponse(t, cfg), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -108,7 +115,7 @@ func CreateSIPTrunk(cfg Config) http.Handler {
 			return
 		}
 
-		writeResponse(r.Context(), w, trunkResponse(t, cfg.SIPTrunks), http.StatusCreated, cfg.Logger)
+		writeResponse(r.Context(), w, trunkResponse(t, cfg), http.StatusCreated, cfg.Logger)
 	})
 }
 
@@ -130,7 +137,7 @@ func UpdateSIPTrunk(cfg Config) http.Handler {
 			return
 		}
 
-		writeResponse(r.Context(), w, trunkResponse(t, cfg.SIPTrunks), http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, trunkResponse(t, cfg), http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -204,7 +211,7 @@ func trunkSettings(params SIPTrunkParams) (settings.Trunk, error) {
 		t.TLS = tls
 	}
 
-	return t.WithDefaults(), nil
+	return t, nil
 }
 
 func trunkTLSSettings(params SIPTrunkTLSParams) (settings.TrunkTLS, error) {
@@ -251,7 +258,7 @@ func parseInboundCIDR(s string) (netip.Prefix, error) {
 	return p, nil
 }
 
-func trunkResponse(t settings.Trunk, states settings.TrunkStates) SIPTrunk {
+func trunkResponse(t settings.Trunk, cfg Config) SIPTrunk {
 	keepalive := int(t.KeepaliveInterval / time.Second)
 
 	resp := SIPTrunk{
@@ -265,7 +272,8 @@ func trunkResponse(t settings.Trunk, states settings.TrunkStates) SIPTrunk {
 			KeepaliveInterval: &keepalive,
 			Enabled:           &t.Enabled,
 		},
-		Status: trunkStatus(t, states),
+		Effective: trunkEffective(t.Effective()),
+		Status:    trunkStatus(t, cfg),
 	}
 
 	for _, a := range t.Addresses {
@@ -342,8 +350,24 @@ func certificateSummaries(ders [][]byte) []CertificateSummary {
 	return out
 }
 
-func trunkStatus(t settings.Trunk, states settings.TrunkStates) SIPTrunkStatus {
-	st := settings.StatusOf(states, t.ID)
+func trunkEffective(t settings.Trunk) SIPTrunkEffective {
+	e := SIPTrunkEffective{Domain: t.Domain, InboundCIDRs: []string{}, TLSIdentities: []string{}}
+
+	for _, p := range t.InboundCIDRs {
+		e.InboundCIDRs = append(e.InboundCIDRs, p.String())
+	}
+
+	e.TLSIdentities = append(e.TLSIdentities, t.TLS.Identities...)
+
+	return e
+}
+
+func trunkStatus(t settings.Trunk, cfg Config) SIPTrunkStatus {
+	if !cfg.Settings.Usable(t.ID) {
+		return SIPTrunkStatus{State: settings.TrunkUnusable}
+	}
+
+	st := settings.StatusOf(cfg.SIPTrunks, t.ID)
 	status := SIPTrunkStatus{State: st.State}
 
 	if !st.Since.IsZero() {

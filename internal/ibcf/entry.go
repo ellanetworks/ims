@@ -2,13 +2,13 @@ package ibcf
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
 
 	"github.com/ellanetworks/ims/internal/callrecords"
-	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -27,8 +27,13 @@ func (b *IBCF) entry(ctx context.Context, r *ua.Request) {
 	in := r.Message()
 
 	t, ok := b.trunkFor(in.Flow)
-	if !ok || !t.Enabled {
+
+	switch {
+	case !ok:
 		_ = r.Reject(403)
+		return
+	case !t.Enabled:
+		_ = r.Reject(503)
 		return
 	}
 
@@ -59,8 +64,13 @@ func (b *IBCF) entry(ctx context.Context, r *ua.Request) {
 	fromTag := sip.NewTag()
 
 	out, err := b.toIMS(in, t, number, icscf.Local, fromTag)
-	if err != nil {
+
+	switch {
+	case errors.Is(err, errLoop):
 		_ = r.Reject(483)
+		return
+	case err != nil:
+		_ = r.Reject(400)
 		return
 	}
 
@@ -95,7 +105,7 @@ func (b *IBCF) entry(ctx context.Context, r *ua.Request) {
 	identities := identitiesOf(out)
 	b.cfg.Records.Attempt(callrecords.Attempt{
 		ICID: c.icid, CallID: in.Header.CallID(), RequestURI: in.URI.String(), Asserted: identities,
-		Trunk: t.ID, Direction: db.DirectionOffNetIn,
+		InTrunk: t.ID, InName: t.Name,
 	})
 	b.cfg.Records.Routed(c.icid, callrecords.Routing{Asserted: identities, RequestURI: out.URI.String()})
 

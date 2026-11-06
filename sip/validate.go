@@ -8,6 +8,7 @@ import (
 
 type StatusError struct {
 	StatusCode int
+	Header     Header
 	Err        error
 }
 

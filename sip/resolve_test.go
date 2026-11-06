@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,12 +24,16 @@ type fakeDNS struct {
 	naptr    map[string][]NAPTR
 	naptrErr error
 	srv      map[string][]*net.SRV
+	srvErr   map[string]error
 	hosts    map[string][]netip.Addr
 
 	queries []string
+	raw     []string
 }
 
 func (d *fakeDNS) LookupNAPTR(_ context.Context, name string) ([]NAPTR, error) {
+	d.raw = append(d.raw, name)
+	name = strings.TrimSuffix(name, ".")
 	d.queries = append(d.queries, "NAPTR "+name)
 
 	if d.naptrErr != nil {
@@ -44,12 +49,19 @@ func (d *fakeDNS) LookupNAPTR(_ context.Context, name string) ([]NAPTR, error) {
 }
 
 func (d *fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
+	d.raw = append(d.raw, name)
+	name = strings.TrimSuffix(name, ".")
+
 	q := name
 	if service != "" || proto != "" {
 		q = "_" + service + "._" + proto + "." + name
 	}
 
 	d.queries = append(d.queries, "SRV "+q)
+
+	if err := d.srvErr[q]; err != nil {
+		return "", nil, err
+	}
 
 	recs, ok := d.srv[q]
 	if !ok {
@@ -60,6 +72,8 @@ func (d *fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (str
 }
 
 func (d *fakeDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	d.raw = append(d.raw, host)
+	host = strings.TrimSuffix(host, ".")
 	d.queries = append(d.queries, "A "+host)
 
 	addrs, ok := d.hosts[host]
@@ -112,9 +126,12 @@ func TestResolve(t *testing.T) {
 			queries: []string{"NAPTR as1.example.com", "SRV _sips._tcp.as1.example.com", "A as1.example.com"},
 		},
 		{uri: "sip:as1.example.com;transport=sctp", bad: true},
-		{uri: "sip:10.0.0.7;transport=tls", want: []string{"TLS 10.0.0.7:5061"}},
-		{uri: "sip:tls.example.com;transport=TLS", want: []string{"TLS 10.0.0.1:5091", "TLS [2001:db8::1]:5091"}, queries: []string{"SRV _sips._tcp.tls.example.com", "A as1.example.com"}},
-		{uri: "sip:plain.example.com;transport=tls", want: []string{"TLS 10.0.0.3:5061"}, queries: []string{"SRV _sips._tcp.plain.example.com", "A plain.example.com"}},
+		{uri: "sip:10.0.0.7;transport=tls", want: []string{"UDP 10.0.0.7:5060"}},
+		{uri: "sips:10.0.0.7;transport=tls", want: []string{"TLS 10.0.0.7:5061"}},
+		{
+			uri: "sip:plain.example.com;transport=TLS", want: []string{"UDP 10.0.0.3:5060"},
+			queries: []string{"NAPTR plain.example.com", "SRV _sip._udp.plain.example.com", "SRV _sip._tcp.plain.example.com", "A plain.example.com"},
+		},
 		{uri: "tel:+15551230001", bad: true},
 	} {
 		t.Run(tt.uri, func(t *testing.T) {
@@ -198,10 +215,11 @@ func naptrZone() *fakeDNS {
 			"_sip._tcp.dead.example.com":     {{Target: "sbc2.example.net.", Port: 5090}},
 		},
 		hosts: map[string][]netip.Addr{
-			"sbc1.example.com":    {netip.MustParseAddr("192.0.2.1")},
-			"sbc2.example.net":    {netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2")},
-			"carrier.example.com": {netip.MustParseAddr("192.0.2.9")},
-			"sctp.example.com":    {netip.MustParseAddr("192.0.2.8")},
+			"sbc1.example.com":     {netip.MustParseAddr("192.0.2.1")},
+			"sbc2.example.net":     {netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2")},
+			"carrier.example.com":  {netip.MustParseAddr("192.0.2.9")},
+			"sctp.example.com":     {netip.MustParseAddr("192.0.2.8")},
+			"failover.example.com": {netip.MustParseAddr("192.0.2.3")},
 		},
 	}
 }
@@ -231,14 +249,14 @@ func TestResolveNAPTR(t *testing.T) {
 			want: []string{"TLS 192.0.2.1:5061"},
 		},
 		{
-			name: "next NAPTR when the preferred one has no target", uri: "sip:failover.example.com",
-			want: []string{"UDP 192.0.2.1:5060"},
+			name: "no NAPTR of a higher order after a match", uri: "sip:failover.example.com",
+			want: []string{"UDP 192.0.2.3:5060"},
 			queries: []string{
 				"NAPTR failover.example.com",
 				"SRV _sip._tcp.gone.example.com", "A gone.example.com",
 				"SRV _sip._tcp.root.example.com",
-				"SRV _sip._udp.missing.example.com",
-				"SRV _sip._udp.carrier.example.com", "A sbc1.example.com",
+				"SRV _sip._udp.failover.example.com", "SRV _sip._tcp.failover.example.com",
+				"A failover.example.com",
 			},
 		},
 		{
@@ -496,10 +514,14 @@ func TestDecodeNAPTR(t *testing.T) {
 type dnsServer struct {
 	addr      netip.AddrPort
 	records   []NAPTR
+	srv       map[string][]net.SRV
+	soa       atomic.Uint32
+	ttl       uint32
 	malformed bool
 	truncate  bool
 	rcode     dnsmessage.RCode
 	tcp       atomic.Int32
+	asked     chan string
 }
 
 func newDNSServer(t *testing.T, s *dnsServer) *dnsServer {
@@ -591,21 +613,46 @@ func (s *dnsServer) answer(query []byte, truncate bool) []byte {
 		return nil
 	}
 
+	if s.asked != nil {
+		s.asked <- q.Type.String() + " " + q.Name.String()
+	}
+
+	ttl := s.ttl
+	if ttl == 0 {
+		ttl = 60
+	}
+
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true, Truncated: truncate, RCode: s.rcode})
 	_ = b.StartQuestions()
 	_ = b.Question(q)
 	_ = b.StartAnswers()
 
 	if !truncate {
-		_ = b.CNAMEResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: 60}, dnsmessage.CNAMEResource{CNAME: q.Name})
+		_ = b.CNAMEResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.CNAMEResource{CNAME: q.Name})
 
-		for _, rec := range s.records {
-			data := encodeNAPTR(rec)
-			if s.malformed {
-				data = data[:5]
+		if q.Type == typeNAPTR {
+			for _, rec := range s.records {
+				data := encodeNAPTR(rec)
+				if s.malformed {
+					data = data[:5]
+				}
+
+				_ = b.UnknownResource(dnsmessage.ResourceHeader{Name: q.Name, Type: typeNAPTR, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.UnknownResource{Type: typeNAPTR, Data: data})
 			}
+		}
 
-			_ = b.UnknownResource(dnsmessage.ResourceHeader{Name: q.Name, Type: typeNAPTR, Class: dnsmessage.ClassINET, TTL: 60}, dnsmessage.UnknownResource{Type: typeNAPTR, Data: data})
+		if q.Type == dnsmessage.TypeSRV {
+			for _, rec := range s.srv[q.Name.String()] {
+				_ = b.SRVResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: ttl}, dnsmessage.SRVResource{
+					Priority: rec.Priority, Weight: rec.Weight, Port: rec.Port, Target: dnsmessage.MustNewName(rec.Target),
+				})
+			}
+		}
+
+		if soa := s.soa.Load(); soa > 0 {
+			_ = b.StartAuthorities()
+			_ = b.SOAResource(dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("example.com."), Class: dnsmessage.ClassINET, TTL: 3600},
+				dnsmessage.SOAResource{NS: dnsmessage.MustNewName("ns.example.com."), MBox: dnsmessage.MustNewName("admin.example.com."), MinTTL: soa})
 		}
 	}
 
@@ -637,7 +684,7 @@ func TestSystemNAPTR(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newDNSServer(t, &dnsServer{records: recs, truncate: tt.truncate, malformed: tt.malformed, rcode: tt.rcode})
 
-			d := systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{s.addr}}
+			d := &systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{s.addr}}
 
 			got, err := d.LookupNAPTR(t.Context(), "example.com")
 
@@ -665,7 +712,7 @@ func TestSystemNAPTRServerFailure(t *testing.T) {
 	failing := newDNSServer(t, &dnsServer{rcode: dnsmessage.RCodeServerFailure})
 	working := newDNSServer(t, &dnsServer{records: []NAPTR{{Order: 1, Flags: "s", Service: "SIP+D2U", Replacement: "_sip._udp.example.com."}}})
 
-	d := systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{failing.addr, working.addr}}
+	d := &systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{failing.addr, working.addr}}
 
 	got, err := d.LookupNAPTR(t.Context(), "example.com.")
 	if err != nil || !slices.Equal(got, working.records) {
@@ -676,7 +723,7 @@ func TestSystemNAPTRServerFailure(t *testing.T) {
 func TestReadResolvConf(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf")
 
-	conf := "# comment\nsearch example.com\nnameserver 192.0.2.53\nnameserver bogus\nnameserver 2001:db8::53\noptions ndots:2 timeout:3 attempts:9 rotate\n"
+	conf := "# comment\ndomain old.example\nsearch example.com corp.example.\nnameserver 192.0.2.53\nnameserver bogus\nnameserver 2001:db8::53\noptions ndots:2 timeout:3 attempts:9 rotate\n"
 	if err := os.WriteFile(path, []byte(conf), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -684,11 +731,191 @@ func TestReadResolvConf(t *testing.T) {
 	c := readResolvConf(path)
 
 	want := []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53"), netip.MustParseAddrPort("[2001:db8::53]:53")}
-	if !slices.Equal(c.servers, want) || c.timeout != 3*time.Second || c.attempts != 5 {
+	if !slices.Equal(c.servers, want) || c.timeout != 3*time.Second || c.attempts != 5 || c.ndots != 2 ||
+		!slices.Equal(c.search, []string{"example.com.", "corp.example."}) {
 		t.Errorf("readResolvConf = %+v", c)
 	}
 
 	if c := readResolvConf(filepath.Join(t.TempDir(), "missing")); len(c.servers) != 2 || c.timeout != dnsTimeout || c.attempts != dnsAttempts {
 		t.Errorf("readResolvConf without a file = %+v", c)
+	}
+}
+
+func TestResolveSRVFailureSkipsTransport(t *testing.T) {
+	d := naptrZone()
+	d.srvErr = map[string]error{"_sips._tcp.tls.example.com": &net.DNSError{Err: "server misbehaving", IsTemporary: true}}
+
+	servers, err := (&Resolver{DNS: d, Transports: []Transport{UDP, TCP, TLS}}).Resolve(t.Context(), URI{Scheme: "sip", Host: "tls.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, s := range servers {
+		got = append(got, string(s.Transport)+" "+s.Addr.String())
+	}
+
+	if want := []string{"UDP 192.0.2.1:5062", "TCP 192.0.2.1:5063"}; !slices.Equal(got, want) {
+		t.Errorf("Resolve = %v, want %v", got, want)
+	}
+
+	d = naptrZone()
+	d.srvErr = map[string]error{"_sip._udp.carrier.example.com": &net.DNSError{Err: "server misbehaving", IsTemporary: true}}
+
+	servers, err = (&Resolver{DNS: d}).Resolve(t.Context(), URI{Scheme: "sip", Host: "carrier.example.com", Params: Params{{Name: "transport", Value: "udp"}}})
+	if err != nil || len(servers) != 1 || servers[0].Addr != netip.MustParseAddrPort("192.0.2.9:5060") {
+		t.Errorf("Resolve after a failed SRV query = %v, %v, want the A records", servers, err)
+	}
+}
+
+func TestResolveQueriesAbsoluteNames(t *testing.T) {
+	d := naptrZone()
+
+	if _, err := (&Resolver{DNS: d, Transports: []Transport{UDP, TCP, TLS}}).Resolve(t.Context(), URI{Scheme: "sip", Host: "carrier.example.com."}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"carrier.example.com.", "_sips._tcp.carrier.example.com.", "sbc1.example.com."}
+	if !slices.Equal(d.raw, want) {
+		t.Errorf("names %v, want %v", d.raw, want)
+	}
+
+	d = naptrZone()
+
+	if _, err := (&Resolver{DNS: d}).Resolve(t.Context(), URI{Scheme: "sip", Host: "sctp.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if d.raw[0] != "sctp.example.com" {
+		t.Errorf("relative name queried as %q", d.raw[0])
+	}
+}
+
+func TestSearchNames(t *testing.T) {
+	c := resolvConf{ndots: 2, search: []string{"a.example.", "b.example."}}
+
+	for _, tt := range []struct {
+		name string
+		want []string
+	}{
+		{"sbc.carrier.example.", []string{"sbc.carrier.example."}},
+		{"sbc.carrier.example", []string{"sbc.carrier.example.", "sbc.carrier.example.a.example.", "sbc.carrier.example.b.example."}},
+		{"scscf.ims", []string{"scscf.ims.a.example.", "scscf.ims.b.example.", "scscf.ims."}},
+	} {
+		if got := c.names(tt.name); !slices.Equal(got, tt.want) {
+			t.Errorf("names(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestSystemSRV(t *testing.T) {
+	s := newDNSServer(t, &dnsServer{
+		srv:   map[string][]net.SRV{"_sip._udp.scscf.corp.example.": {{Target: "scscf1.corp.example.", Port: 5070, Priority: 1, Weight: 2}}},
+		asked: make(chan string, 16),
+	})
+
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("search corp.example\noptions ndots:5\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &systemDNS{conf: path, servers: []netip.AddrPort{s.addr}}
+
+	_, got, err := d.LookupSRV(t.Context(), "sip", "udp", "scscf")
+	if err != nil || len(got) != 1 || *got[0] != (net.SRV{Target: "scscf1.corp.example.", Port: 5070, Priority: 1, Weight: 2}) {
+		t.Fatalf("LookupSRV = %v, %v", got, err)
+	}
+
+	if q := <-s.asked; q != "TypeSRV _sip._udp.scscf.corp.example." {
+		t.Errorf("first query %s, want the search domain first", q)
+	}
+
+	if _, _, err := d.LookupSRV(t.Context(), "sip", "udp", "scscf."); err == nil {
+		t.Error("absolute name expanded with the search list")
+	}
+}
+
+func TestSystemDNSCache(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+
+	s := newDNSServer(t, &dnsServer{
+		srv:   map[string][]net.SRV{"_sip._udp.example.com.": {{Target: "sbc.example.com.", Port: 5060}}},
+		ttl:   30,
+		asked: make(chan string, 16),
+	})
+	s.soa.Store(20)
+
+	d := &systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{s.addr}, now: clock}
+
+	lookups := func(n int) {
+		t.Helper()
+
+		for range n {
+			if _, got, err := d.LookupSRV(t.Context(), "sip", "udp", "example.com."); err != nil || len(got) != 1 {
+				t.Fatalf("LookupSRV = %v, %v", got, err)
+			}
+
+			if _, err := d.LookupNAPTR(t.Context(), "example.com."); err == nil {
+				t.Fatal("NAPTR found")
+			}
+		}
+	}
+
+	asked := func() int {
+		n := 0
+
+		for {
+			select {
+			case <-s.asked:
+				n++
+			default:
+				return n
+			}
+		}
+	}
+
+	lookups(3)
+
+	if n := asked(); n != 2 {
+		t.Errorf("%d queries, want 2 with a cache", n)
+	}
+
+	now = now.Add(25 * time.Second)
+
+	lookups(1)
+
+	if n := asked(); n != 1 {
+		t.Errorf("%d queries after 25s, want the negative answer only", n)
+	}
+
+	now = now.Add(10 * time.Second)
+
+	lookups(1)
+
+	if n := asked(); n != 1 {
+		t.Errorf("%d queries after 35s, want the SRV only", n)
+	}
+
+	s.soa.Store(0)
+
+	now = now.Add(time.Hour)
+
+	lookups(2)
+
+	if n := asked(); n != 3 {
+		t.Errorf("%d queries, want negative answers without SOA not cached", n)
+	}
+}
+
+func TestSystemDNSCacheBounded(t *testing.T) {
+	d := &systemDNS{}
+
+	for i := range 2 * maxCacheEntries {
+		d.put(dnsKey{name: strconv.Itoa(i), qtype: dnsmessage.TypeSRV}, dnsResult{notFound: true, ttl: time.Minute})
+	}
+
+	if n := len(d.cache); n > maxCacheEntries {
+		t.Errorf("%d cache entries, want at most %d", n, maxCacheEntries)
 	}
 }

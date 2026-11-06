@@ -10,7 +10,10 @@ import (
 
 const OnNetParam = "onnet"
 
-var ErrNoRoute = errors.New("no usable SIP route")
+var (
+	ErrNoRoute       = errors.New("no SIP route")
+	ErrNoUsableTrunk = errors.New("no usable SIP trunk on the SIP route")
+)
 
 type BGCF struct {
 	settings func() settings.Settings
@@ -38,10 +41,22 @@ func Number(u sip.URI) (string, bool) {
 	return number, global(number)
 }
 
+const (
+	minE164Digits = 7
+	maxE164Digits = 15
+)
+
+// RFC 3966 section 5.1.4
+// ITU-T E.164 section 6.1
+// ITU-T E.164 section A.8.2
+func E164(digits string) bool {
+	return len(digits) >= minE164Digits && len(digits) <= maxE164Digits && digits[0] != '0' && strings.Trim(digits, "0123456789") == ""
+}
+
 func global(number string) bool {
 	digits, ok := strings.CutPrefix(number, "+")
 
-	return ok && digits != "" && strings.Trim(digits, "0123456789") == ""
+	return ok && E164(digits)
 }
 
 // TS 23.228 clause 4.6.4
@@ -75,19 +90,19 @@ func (b *BGCF) Trunks(number string) ([]settings.Trunk, error) {
 	}
 
 	if len(trunks) == 0 {
-		return nil, ErrNoRoute
+		return nil, ErrNoUsableTrunk
 	}
 
 	return trunks, nil
 }
 
-func (b *BGCF) Routable(u sip.URI) bool {
+func (b *BGCF) Route(u sip.URI) error {
 	number, ok := Number(u)
 	if !ok {
-		return false
+		return ErrNoRoute
 	}
 
 	_, err := b.Trunks(number)
 
-	return err == nil
+	return err
 }

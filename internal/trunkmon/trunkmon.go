@@ -394,7 +394,18 @@ func (m *Monitor) probe(ctx context.Context, t settings.Trunk) bool {
 	return false
 }
 
+// SIPconnect 2.0 section 8.1
+// SIPconnect 2.0 section 17.1.1.2
 func (m *Monitor) resolve(ctx context.Context, a settings.TrunkAddress, allowed []sip.Transport) ([]sip.Server, error) {
+	if a.Transport != "" {
+		tr := sip.Transport(strings.ToUpper(string(a.Transport)))
+		if !slices.Contains(allowed, tr) {
+			return nil, errNoServer
+		}
+
+		allowed = []sip.Transport{tr}
+	}
+
 	servers, err := m.lookup(ctx, addressURI(a), allowed)
 	if err != nil {
 		return nil, err
@@ -467,12 +478,7 @@ func newOptions(t settings.Trunk, home string) *sip.Request {
 // RFC 3263 section 4.1
 // RFC 3263 section 4.2
 func addressURI(a settings.TrunkAddress) sip.URI {
-	u := sip.URI{Scheme: "sip", Host: host(a.Host), Port: uint16(a.Port)}
-	if a.Transport != "" {
-		u.Params.Set("transport", strings.ToLower(string(a.Transport)))
-	}
-
-	return u
+	return sip.URI{Scheme: "sip", Host: host(a.Host), Port: uint16(a.Port)}
 }
 
 func host(h string) string {

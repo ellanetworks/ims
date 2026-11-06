@@ -90,7 +90,7 @@ func TestExitCallRecordAndMetrics(t *testing.T) {
 	}
 
 	l := savedRecords(t, rec, d)
-	if len(l) != 1 || l[0].Trunk != "carrier" || l[0].Direction != db.DirectionOffNetOut {
+	if len(l) != 1 || l[0].OutTrunk != "carrier" || l[0].OutTrunkName != "Carrier" || l[0].InTrunk != "" {
 		t.Fatalf("records %+v, want one to the trunk", l)
 	}
 }
@@ -133,8 +133,8 @@ func TestEntryCallRecordAndMetrics(t *testing.T) {
 	got := l[0]
 
 	switch {
-	case got.ICID != icid, got.Trunk != "carrier", got.Direction != db.DirectionOffNetIn:
-		t.Errorf("record %s over %s %s, want %s over carrier off-net-in", got.ICID, got.Trunk, got.Direction, icid)
+	case got.ICID != icid, got.InTrunk != "carrier", got.InTrunkName != "Carrier", got.OutTrunk != "":
+		t.Errorf("record %s in over %s %s, out over %s, want %s in over carrier", got.ICID, got.InTrunk, got.InTrunkName, got.OutTrunk, icid)
 	case got.Outcome != db.OutcomeAnswered, got.EndedBy != db.PartyCaller, !got.Alerted:
 		t.Errorf("record %s ended by %s, alerted %v", got.Outcome, got.EndedBy, got.Alerted)
 	case got.CalledParty != "sip:"+alice+"@"+home+";user=phone", len(got.Media) != 1 || got.Media[0] != "audio":

@@ -2,6 +2,7 @@ package ibcf
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -52,9 +53,11 @@ type outcome struct {
 }
 
 type exit struct {
-	number  sip.URI
-	caller  sip.Address
-	privacy sip.Privacy
+	number    sip.URI
+	caller    sip.Address
+	asserted  sip.Address
+	forwarder *forwarder
+	privacy   sip.Privacy
 }
 
 func (c *call) owner() (settings.Trunk, []netip.Addr) {
@@ -96,7 +99,7 @@ func (c *call) towardsTrunk(to *b2bua.Leg) bool {
 
 func (b *IBCF) relay(c *call) b2bua.RelayConfig {
 	cfg := b2bua.RelayConfig{
-		Headers:  b2bua.Headers{Sticky: []string{}, Field: c.crosses},
+		Headers:  b2bua.Headers{Sticky: []string{}, Field: c.crosses, Part: crossing},
 		TimerC:   timerC,
 		Request:  c.request,
 		Response: c.response,
@@ -108,6 +111,7 @@ func (b *IBCF) relay(c *call) b2bua.RelayConfig {
 	}
 
 	if c.outbound {
+		cfg.FailoverBudget = failoverBudget
 		cfg.Failover = func(ctx context.Context, _ *b2bua.Leg, f b2bua.Failure) *sip.Request { return b.failover(ctx, c, f) }
 	}
 
@@ -206,7 +210,7 @@ func (c *call) own(t settings.Trunk) {
 	c.b.cfg.Metrics.enter(t.ID, c.direction())
 
 	if c.outbound {
-		c.b.cfg.Records.Trunk(c.icid, t.ID, db.DirectionOffNetOut)
+		c.b.cfg.Records.Trunk(c.icid, callrecords.Outbound, t.ID, t.Name)
 	}
 }
 
@@ -294,7 +298,6 @@ var towardsTrunk = []string{
 
 // RFC 3261 section 20
 // RFC 3323 section 4.2
-// RFC 5373 section 7
 // RFC 6086 section 7
 // SIPconnect 2.0 section 10.1.4
 var fromTrunk = []string{
@@ -326,6 +329,8 @@ func (c *call) crosses(_, to *b2bua.Leg, m sip.Message, f sip.Field) bool {
 		return false
 	case name == "p-asserted-identity" && m == sip.Message(c.initial):
 		return false
+	case name == "privacy" && c.outbound && m == sip.Message(c.initial):
+		return false
 	case !c.towardsTrunk(to):
 		return c.fromTrunk(name, trusted)
 	case !slices.Contains(towardsTrunk, name):
@@ -334,6 +339,8 @@ func (c *call) crosses(_, to *b2bua.Leg, m sip.Message, f sip.Field) bool {
 
 	switch name {
 	case "p-asserted-identity":
+		return trusted || !c.withheld(m)
+	case "p-early-media":
 		return trusted
 	case "reason":
 		_, response := m.(*sip.Response)
@@ -346,22 +353,95 @@ func (c *call) crosses(_, to *b2bua.Leg, m sip.Message, f sip.Field) bool {
 	return true
 }
 
+// TS 24.229 clause 5.10.6.3
+var crossingBodies = []string{"application/dtmf-relay", "application/dtmf"}
+
+const accepted = "application/sdp, application/dtmf-relay, application/dtmf"
+
+var errBody = errors.New("ibcf: required message body refused at the border")
+
+// TS 24.229 clause 5.10.6.3
+// TS 29.162 clause 9.1.4
+func crossing(_, _ *b2bua.Leg, _ sip.Message, p sip.BodyPart) bool {
+	return slices.Contains(crossingBodies, p.MediaType())
+}
+
+// TS 24.229 clause 5.10.6.3
+// RFC 3261 section 21.4.13
+// RFC 5621 section 8.1
+func screen(req *sip.Request) error {
+	if req.Method == "ACK" || req.Method == "CANCEL" {
+		return nil
+	}
+
+	parts, err := req.Content().Parts()
+	if err != nil {
+		return &sip.StatusError{StatusCode: 400, Err: err}
+	}
+
+	for _, p := range parts {
+		if !p.IsSession() && !crossing(nil, nil, nil, p) && !p.Optional() {
+			return &sip.StatusError{StatusCode: 415, Header: sip.Header{{Name: "Accept", Value: accepted}}, Err: errBody}
+		}
+	}
+
+	return nil
+}
+
 func (c *call) fromTrunk(name string, trusted bool) bool {
 	return slices.Contains(fromTrunk, name) || trusted && slices.Contains(fromTrustedTrunk, name)
 }
 
+// RFC 3325 section 5
+// RFC 3325 section 7
+func (c *call) withheld(m sip.Message) bool {
+	privacy, err := m.Env().Header.Privacy()
+
+	switch {
+	case err != nil:
+		return true
+	case len(privacy) > 0:
+		return withholds(privacy)
+	}
+
+	return c.outbound && withholds(c.exit.privacy)
+}
+
+func withholds(p sip.Privacy) bool {
+	return p.Has(sip.PrivacyID) && !p.Has(sip.PrivacyNone)
+}
+
 // TS 24.229 clause 4.5.2
 func (c *call) request(_, to *b2bua.Leg, _ *sip.Request, ch *ua.Change) {
-	if !c.towardsTrunk(to) && c.icid != "" && !ch.Header.Has("P-Charging-Vector") {
-		ch.Header.Add("P-Charging-Vector", "icid-value="+c.icid)
+	if !c.towardsTrunk(to) {
+		charge(&ch.Header, c.icid)
 	}
+}
+
+// TS 24.229 clause 4.5.2
+func charge(h *sip.Header, icid string) {
+	if icid == "" {
+		return
+	}
+
+	ps := sip.Params{{Name: "icid-value", Value: icid}}
+
+	if received, err := sip.ParseParams(h.Get("P-Charging-Vector")); err == nil {
+		for _, p := range received {
+			if !strings.EqualFold(p.Name, "icid-value") {
+				ps = append(ps, p)
+			}
+		}
+	}
+
+	h.Set("P-Charging-Vector", strings.TrimPrefix(ps.String(), ";"))
 }
 
 // TS 24.229 clause 4.5.2
 // RFC 3261 section 12.1.1
 func (c *call) response(_, to *b2bua.Leg, res *sip.Response, rp *ua.Reply) {
-	if !c.towardsTrunk(to) && c.icid != "" && !rp.Header.Has("P-Charging-Vector") {
-		rp.Header.Add("P-Charging-Vector", "icid-value="+c.icid)
+	if !c.towardsTrunk(to) {
+		charge(&rp.Header, c.icid)
 	}
 
 	cseq, err := res.Header.CSeq()

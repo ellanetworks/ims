@@ -2,7 +2,7 @@ import { apiFetch } from "@/queries/utils";
 
 export type SIPTransport = "udp" | "tcp" | "tls";
 
-export type SIPTrunkState = "unknown" | "up" | "down";
+export type SIPTrunkState = "unknown" | "up" | "down" | "unusable";
 
 export interface SIPTrunkAddress {
   host: string;

@@ -3010,7 +3010,7 @@ components:
         addresses:
           type: array
           minItems: 1
-          description: Addresses of the carrier, in the order requests try them; DNS (RFC 3263) fills in what is absent.
+          description: Addresses of the carrier, in the order requests try them; DNS (RFC 3263) fills in what is absent. An address of one trunk only.
           items:
             type: object
             additionalProperties: false
@@ -3031,13 +3031,13 @@ components:
                 description: Absent when DNS decides it; tls only with tls.ca_certificates or tls.pins; not udp on a trusted trunk.
         inbound_cidrs:
           type: array
-          description: Source networks of the carrier, not overlapping any other; default the IP addresses among the hosts.
+          description: Source networks of the carrier, as CIDRs or IP addresses, not overlapping those of another trunk, sip.addresses or sip.trusted_networks. Empty, the IP addresses among the hosts.
           items:
             type: string
-            examples: [198.51.100.10/32]
+            examples: [198.51.100.10/32, 198.51.100.11]
         domain:
           type: string
-          description: Host of the Request-URI towards the carrier; default the first domain name among the hosts.
+          description: Host of the Request-URI towards the carrier. Empty, the first domain name among the hosts.
           examples: [sip.carrier.example]
         trusted:
           type: boolean
@@ -3052,18 +3052,19 @@ components:
         enabled:
           type: boolean
           default: true
-          description: Whether routes may use the trunk. Absent, true, on update too.
+          description: Whether the trunk carries calls, in both directions. Absent, true, on update too.
         tls:
           $ref: "#/components/schemas/SIPTrunkTLSParams"
 
     SIPTrunkTLSParams:
       type: object
+      additionalProperties: false
       description: TLS authentication of the carrier, by CA or pin. Absent for a trunk without TLS.
       properties:
         required:
           type: boolean
           default: false
-          description: Whether the carrier must use TLS, with mutual authentication.
+          description: Whether the carrier must use TLS, with mutual authentication. Requires ibcf.external.tls in the configuration file.
         ca_certificates:
           type: string
           description: PEM-encoded CA certificates the carrier's certificate must chain to, at most 32.
@@ -3077,7 +3078,7 @@ components:
         identities:
           type: array
           maxItems: 16
-          description: Domain names the carrier's certificate must hold one of, at most 16; default the domain and host names.
+          description: Domain names the carrier's certificate must hold one of, at most 16. Empty, the domain and the domain names among the hosts.
           items:
             type: string
             examples: [sip.carrier.example]
@@ -3134,10 +3135,11 @@ components:
           description: The SHA-256 fingerprint of the certificate, as upper-case hex bytes separated by colons.
 
     SIPTrunk:
+      description: The trunk as set. id, effective, status and tls.ca_certificate_details are read-only, and an update refuses them.
       allOf:
         - $ref: "#/components/schemas/SIPTrunkParams"
         - type: object
-          required: [id, inbound_cidrs, domain, trusted, keepalive_interval, enabled, tls, status]
+          required: [id, inbound_cidrs, domain, trusted, keepalive_interval, enabled, tls, effective, status]
           properties:
             id:
               type: string
@@ -3145,8 +3147,29 @@ components:
               description: A UUIDv7.
             tls:
               $ref: "#/components/schemas/SIPTrunkTLS"
+            effective:
+              $ref: "#/components/schemas/SIPTrunkEffective"
             status:
               $ref: "#/components/schemas/SIPTrunkStatus"
+
+    SIPTrunkEffective:
+      type: object
+      description: The values in use, defaults included.
+      required: [domain, inbound_cidrs, tls_identities]
+      properties:
+        domain:
+          type: string
+          examples: [sip.carrier.example]
+        inbound_cidrs:
+          type: array
+          items:
+            type: string
+            examples: [198.51.100.10/32]
+        tls_identities:
+          type: array
+          items:
+            type: string
+            examples: [sip.carrier.example]
 
     SIPTrunkStatus:
       type: object
@@ -3154,8 +3177,8 @@ components:
       properties:
         state:
           type: string
-          enum: [unknown, up, down]
-          description: "up: answers OPTIONS. down: does not; routes skip it. unknown: not probed yet or keepalives off."
+          enum: [unknown, up, down, unusable]
+          description: "up: answers OPTIONS. down: does not; routes skip it. unknown: not probed yet or keepalives off. unusable: conflicts with the configuration file; carries no calls."
         since:
           type: string
           format: date-time
@@ -3377,13 +3400,18 @@ components:
         duration_ms:
           type: integer
           description: Duration of an answered call that ended, in milliseconds.
-        trunk_id:
+        in_trunk_id:
           type: string
-          description: ID of the SIP trunk that gave the final answer. Absent for an on-net call.
-        direction:
+          description: ID of the SIP trunk the call came from. Absent for a call from a phone.
+        in_trunk_name:
           type: string
-          enum: [off-net-out, off-net-in]
-          description: "off-net-out: to a SIP trunk. off-net-in: from a SIP trunk. Absent for an on-net call."
+          description: Name of that SIP trunk at the time of the call.
+        out_trunk_id:
+          type: string
+          description: ID of the SIP trunk that gave the final answer. Absent for a call to a phone.
+        out_trunk_name:
+          type: string
+          description: Name of that SIP trunk at the time of the call.
 
     CallRecordRetention:
       type: object

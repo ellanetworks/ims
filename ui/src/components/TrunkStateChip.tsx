@@ -5,6 +5,7 @@ const stateColor: Record<SIPTrunkState, ChipProps["color"]> = {
   up: "success",
   down: "error",
   unknown: "default",
+  unusable: "warning",
 };
 
 export default function TrunkStateChip({ state }: { state: SIPTrunkState }) {

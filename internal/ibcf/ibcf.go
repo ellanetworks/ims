@@ -315,8 +315,8 @@ func (b *IBCF) local(tr sip.Transport, remote netip.Addr) (netip.AddrPort, bool)
 	return pick(b.locals(tr), remote)
 }
 
+// RFC 3261 section 18.1.1
 // RFC 3261 section 18.2.1
-// RFC 3581 section 4
 func (b *IBCF) advertise(local netip.AddrPort) netip.AddrPort {
 	if a, ok := b.cfg.Advertised[local.Addr().Unmap()]; ok && b.isExternal(local) {
 		return netip.AddrPortFrom(a, local.Port())
@@ -352,6 +352,10 @@ func (b *IBCF) filter(m sip.Message) error {
 	}
 
 	err := b.admit(req)
+	if err == nil {
+		err = screen(req)
+	}
+
 	if err == nil {
 		b.noteEnding(req)
 	}
@@ -400,8 +404,11 @@ func (b *IBCF) accept(local, remote netip.AddrPort) bool {
 	case b.isInternal(local):
 		return b.cfg.Trust.Trusted(remote.Addr())
 	case b.isExternal(local):
-		_, ok := b.trunkOf(remote.Addr())
-		return ok
+		if _, ok := b.trunkOf(remote.Addr()); ok {
+			return true
+		}
+
+		return b.legs.resolved(remote.Addr())
 	}
 
 	return false
@@ -440,10 +447,21 @@ func (b *IBCF) fromTrunk(req *sip.Request) error {
 	case !b.allowed(t, f.Transport):
 		return b.forbid(req)
 	case !t.Enabled && !inDialog(req):
-		return b.forbid(req)
+		return disabled(req)
 	}
 
 	return nil
+}
+
+var errDisabled = errors.New("ibcf: request from a disabled SIP trunk")
+
+// RFC 3261 section 21.5.4
+func disabled(req *sip.Request) error {
+	if req.Method == "ACK" {
+		return errDisabled
+	}
+
+	return &sip.StatusError{StatusCode: 503, Err: errDisabled}
 }
 
 // SIPconnect 2.0 section 17.2

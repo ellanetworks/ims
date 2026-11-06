@@ -20,6 +20,7 @@ const (
 	dropDirection
 	dropMalformed
 	dropSendError
+	dropPoliced
 	dropReasons
 )
 
@@ -30,6 +31,7 @@ var dropReasonNames = [dropReasons]string{
 	dropDirection:        "direction",
 	dropMalformed:        "malformed",
 	dropSendError:        "send_error",
+	dropPoliced:          "policed",
 }
 
 type Metrics struct {
@@ -71,7 +73,7 @@ func NewMetrics() *Metrics {
 			Help: "RTP and RTCP packets that the media relay of SIP trunks dropped, by trunk ID, by the leg they arrived on and by reason: " +
 				"unexpected_source (not from the remote address of the leg), no_remote (the leg has no remote " +
 				"address yet), no_destination (the other leg has no remote address yet), direction (on hold or " +
-				"inactive), malformed, and send_error.",
+				"inactive), malformed, send_error, and policed (above the bandwidth negotiated for the stream).",
 		}, []string{"trunk", "leg", "reason"}),
 		lost: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_trunk_media_packets_lost_total",

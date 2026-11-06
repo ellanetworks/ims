@@ -125,15 +125,21 @@ func (t TrunkTLS) checkCurrent(prev TrunkTLS, now time.Time) error {
 func ParseCertificatesPEM(field, data string) ([][]byte, error) {
 	var ders [][]byte
 
-	rest := []byte(data)
+	rest := bytes.TrimSpace([]byte(data))
 
-	for {
+	for len(rest) > 0 {
+		if !bytes.HasPrefix(rest, []byte("-----BEGIN ")) {
+			return nil, invalidf("%s must be PEM-encoded certificates", field)
+		}
+
 		var b *pem.Block
 
 		b, rest = pem.Decode(rest)
 		if b == nil {
-			break
+			return nil, invalidf("%s must be PEM-encoded certificates", field)
 		}
+
+		rest = bytes.TrimSpace(rest)
 
 		if b.Type != "CERTIFICATE" {
 			return nil, invalidf("%s must hold only CERTIFICATE PEM blocks, not %s", field, b.Type)
@@ -144,10 +150,6 @@ func ParseCertificatesPEM(field, data string) ([][]byte, error) {
 		}
 
 		ders = append(ders, b.Bytes)
-	}
-
-	if len(bytes.TrimSpace(rest)) > 0 {
-		return nil, invalidf("%s must be PEM-encoded certificates", field)
 	}
 
 	return ders, nil
@@ -178,7 +180,11 @@ func ParsePin(s string, now time.Time) ([sha256.Size]byte, error) {
 		return [sha256.Size]byte{}, err
 	}
 
-	if len(ders) == 0 || len(ders[0]) > MaxTrunkCertificateDER {
+	if len(ders) != 1 {
+		return [sha256.Size]byte{}, invalidf("tls.pins must hold one certificate per pin, not %d", len(ders))
+	}
+
+	if len(ders[0]) > MaxTrunkCertificateDER {
 		return [sha256.Size]byte{}, invalidf("tls.pins must hold PEM certificates of at most %d bytes", MaxTrunkCertificateDER)
 	}
 
@@ -217,6 +223,10 @@ func (t TrunkTLS) ClientOptions(serverName string) (transport.TLSOptions, error)
 	}
 
 	o.ServerName = serverName
+
+	if isSIPHostname(serverName) {
+		o.Identities = nil
+	}
 
 	return o, nil
 }

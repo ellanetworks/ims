@@ -22,6 +22,7 @@ const anonymous = `"Anonymous" <sip:anonymous@anonymous.invalid>`
 // TS 23.228 clause 4.14
 // TS 24.229 clause 5.10.2.2
 // SIPconnect 2.0 section 10.2
+// RFC 3261 section 21.5.4
 func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 	in := r.Message()
 
@@ -30,6 +31,11 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 
 		_ = r.Reject(403)
 
+		return
+	}
+
+	if _, err := remaining(in); err != nil {
+		_ = r.Reject(hopsStatus(err))
 		return
 	}
 
@@ -48,6 +54,12 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 		_ = r.Reject(404)
 
 		return
+	case errors.Is(err, bgcf.ErrNoUsableTrunk):
+		b.log.InfoContext(ctx, "no usable SIP trunk for the number", slog.String("number", number))
+
+		_ = r.Reject(503)
+
+		return
 	case err != nil:
 		b.log.WarnContext(ctx, "SIP route selection failed", slog.String("number", number), slog.Any("error", err))
 
@@ -62,23 +74,20 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 		return
 	}
 
-	if unsupported := unsupportedPrivacy(privacy); unsupported != "" {
+	if unsupported := unsupportedPrivacy(privacy, b.cfg.Media != nil); unsupported != "" {
 		_ = r.Respond(ua.Reply{Code: 500, Reason: "Privacy Failure: " + unsupported})
 		return
 	}
 
-	caller, ok := callerOf(in.Header)
+	x, ok := b.exitOf(ctx, in, privacy)
 	if !ok {
-		b.log.InfoContext(ctx, "off-net call of a caller without an E.164 number", slog.Any("p-asserted-identity", in.Header.Values("P-Asserted-Identity")))
-
 		_ = r.Reject(403)
-
 		return
 	}
 
 	c := &call{
 		b: b, outbound: true, initial: in, in: r, icid: icidOf(in.Header), cause: trace.SpanContextFromContext(ctx),
-		route: b.newRoute(trunks), exit: exit{number: in.URI, caller: caller, privacy: privacy},
+		route: b.newRoute(trunks), exit: x,
 	}
 
 	if c.icid != "" {
@@ -180,7 +189,8 @@ func (b *IBCF) bridge(ctx context.Context, r *ua.Request, c *call, out *sip.Requ
 }
 
 // RFC 3323 section 5
-func unsupportedPrivacy(p sip.Privacy) string {
+// RFC 3323 section 5.2
+func unsupportedPrivacy(p sip.Privacy, anchored bool) string {
 	if !p.Has(sip.PrivacyCritical) {
 		return ""
 	}
@@ -188,12 +198,114 @@ func unsupportedPrivacy(p sip.Privacy) string {
 	for _, v := range p {
 		switch strings.ToLower(v) {
 		case sip.PrivacyNone, sip.PrivacyCritical, sip.PrivacyID, sip.PrivacyUser, sip.PrivacyHeader, sip.PrivacyHistory:
+		case sip.PrivacySession:
+			if !anchored {
+				return v
+			}
 		default:
 			return v
 		}
 	}
 
 	return ""
+}
+
+// SIPconnect 2.0 section 9
+// SIPconnect 2.0 section 11.1
+func (b *IBCF) exitOf(ctx context.Context, in *sip.Request, privacy sip.Privacy) (exit, bool) {
+	x := exit{number: in.URI, privacy: privacy}
+
+	fwd, forwarded := forwarderOf(in.Header)
+	if !forwarded {
+		caller, ok := callerOf(in.Header)
+		if !ok {
+			b.log.InfoContext(ctx, "off-net call of a caller without an E.164 number",
+				slog.Any("p-asserted-identity", in.Header.Values("P-Asserted-Identity")))
+
+			return exit{}, false
+		}
+
+		x.asserted = sip.Address{Display: caller.Display, URI: phoneURI(caller.URI.User, b.cfg.HomeDomain)}
+		x.caller = x.asserted
+
+		return x, true
+	}
+
+	if fwd.number == "" {
+		b.log.InfoContext(ctx, "off-net call forwarded by a user without an E.164 number",
+			slog.Any("history-info", in.Header.Values("History-Info")))
+
+		return exit{}, false
+	}
+
+	x.asserted = sip.Address{URI: phoneURI(fwd.number, b.cfg.HomeDomain)}
+	x.forwarder = &fwd
+	x.caller = b.originalCaller(in.Header)
+
+	return x, true
+}
+
+func (b *IBCF) originalCaller(h sip.Header) sip.Address {
+	if caller, ok := callerOf(h); ok {
+		return sip.Address{Display: caller.Display, URI: phoneURI(caller.URI.User, b.cfg.HomeDomain)}
+	}
+
+	from, err := h.From()
+	if err != nil {
+		a, _ := sip.ParseAddress(anonymous)
+		return a
+	}
+
+	if number, ok := globalNumber(from.URI); ok {
+		return sip.Address{Display: from.Display, URI: phoneURI(number, b.cfg.HomeDomain)}
+	}
+
+	return sip.Address{Display: from.Display, URI: from.URI}
+}
+
+type forwarder struct {
+	number  string
+	private bool
+}
+
+// RFC 7044 section 5
+// RFC 7044 section 10.4
+// TS 24.604 clause 4.5.2.6.2.2
+// TS 24.604 clause 4.5.2.6.2.3
+func forwarderOf(h sip.Header) (forwarder, bool) {
+	entries, err := h.Addresses("History-Info")
+	if err != nil {
+		return forwarder{}, false
+	}
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		mp, ok := entries[i].Params.Get("mp")
+		if !ok {
+			continue
+		}
+
+		j := slices.IndexFunc(entries[:i], func(e sip.Address) bool {
+			index, _ := e.Params.Get("index")
+			return index == mp
+		})
+		if j < 0 {
+			return forwarder{}, true
+		}
+
+		served := entries[j].URI
+		number, _ := globalNumber(served)
+
+		embedded, err := served.Embedded()
+		if err != nil {
+			return forwarder{}, true
+		}
+
+		privacy, err := embedded.Header.Privacy()
+
+		return forwarder{number: number, private: err != nil || privacy.Has(sip.PrivacyHistory)}, true
+	}
+
+	return forwarder{}, false
 }
 
 // TS 24.229 clause 5.10.8
@@ -203,6 +315,7 @@ func unsupportedPrivacy(p sip.Privacy) string {
 // SIPconnect 2.0 section 10.2.3
 // SIPconnect 2.0 section 10.2.4
 // SIPconnect 2.0 section 10.2.5
+// SIPconnect 2.0 section 11.1
 // RFC 3325 section 7
 func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Request, error) {
 	in, x, t := c.initial, c.exit, next.trunk
@@ -212,10 +325,9 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 
 	out := sip.NewRequest("INVITE", uri)
 
-	asserted := sip.Address{Display: x.caller.Display, URI: phoneURI(x.caller.URI.User, b.cfg.HomeDomain)}
 	hidden := !x.privacy.Has(sip.PrivacyNone) && (x.privacy.Has(sip.PrivacyID) || x.privacy.Has(sip.PrivacyUser))
 
-	from := asserted
+	from := x.caller
 	if hidden {
 		from, _ = sip.ParseAddress(anonymous)
 	}
@@ -227,8 +339,22 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 	out.Header.Add("To", "<"+uri.String()+">")
 	out.Header.Add("Call-ID", callID)
 
-	if t.Trusted || !x.privacy.Has(sip.PrivacyID) || x.privacy.Has(sip.PrivacyNone) {
-		out.Header.Add("P-Asserted-Identity", asserted.String())
+	if t.Trusted || !withholds(x.privacy) {
+		out.Header.Add("P-Asserted-Identity", x.asserted.String())
+	}
+
+	privacy := x.privacy
+
+	if x.forwarder != nil {
+		var served sip.URI
+
+		served, privacy = b.served(*x.forwarder, x.privacy, t.Trusted)
+		out.Header.Add("History-Info", "<"+served.String()+">;index=1")
+		out.Header.Add("History-Info", "<"+uri.String()+">;index=1.1;mp=1")
+	}
+
+	if len(privacy) > 0 {
+		out.Header.Add("Privacy", privacy.String())
 	}
 
 	out.Header.Add("Contact", b.contact(next.local, next.server.Transport).String())
@@ -238,6 +364,37 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 	}
 
 	return out, nil
+}
+
+// RFC 7044 section 10.1.2
+// TS 24.229 clause 4.4.4
+// TS 24.229 clause 5.10.8
+func (b *IBCF) served(f forwarder, privacy sip.Privacy, trusted bool) (sip.URI, sip.Privacy) {
+	u := phoneURI(f.number, b.cfg.HomeDomain)
+	asked := !privacy.Has(sip.PrivacyNone) && (privacy.Has(sip.PrivacyHistory) || privacy.Has(sip.PrivacyHeader))
+
+	switch {
+	case trusted && f.private:
+		u.SetEmbedded(sip.Envelope{Header: sip.Header{{Name: "Privacy", Value: sip.PrivacyHistory}}})
+	case trusted:
+	case f.private || asked:
+		u = sip.URI{Scheme: "sip", User: "anonymous", Host: "anonymous.invalid"}
+		privacy = withoutHistory(privacy)
+	}
+
+	return u, privacy
+}
+
+// RFC 3323 section 5
+// RFC 7044 section 10.1.2
+func withoutHistory(p sip.Privacy) sip.Privacy {
+	out := slices.DeleteFunc(slices.Clone(p), func(v string) bool { return strings.EqualFold(v, sip.PrivacyHistory) })
+
+	if !slices.ContainsFunc(out, func(v string) bool { return !strings.EqualFold(v, sip.PrivacyCritical) }) {
+		return nil
+	}
+
+	return out
 }
 
 // RFC 3261 section 19.1.6
@@ -283,20 +440,45 @@ func subscriber(u sip.URI, trusted bool) string {
 	return sb.String()
 }
 
-var errLoop = errors.New("ibcf: Max-Forwards exhausted")
+var (
+	errLoop        = errors.New("ibcf: Max-Forwards exhausted")
+	errMaxForwards = errors.New("ibcf: Max-Forwards not a number")
+)
 
-func forwards(in, out *sip.Request) error {
+// RFC 3261 section 16.3
+func remaining(in *sip.Request) (int, error) {
 	v := in.Header.Get("Max-Forwards")
 	if v == "" {
-		return nil
+		return -1, nil
 	}
 
 	mf, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || mf <= 0 {
-		return errLoop
+
+	switch {
+	case err != nil || mf < 0:
+		return 0, errMaxForwards
+	case mf == 0:
+		return 0, errLoop
 	}
 
-	out.Header.Set("Max-Forwards", strconv.Itoa(mf-1))
+	return mf - 1, nil
+}
+
+func hopsStatus(err error) int {
+	if errors.Is(err, errLoop) {
+		return 483
+	}
+
+	return 400
+}
+
+func forwards(in, out *sip.Request) error {
+	mf, err := remaining(in)
+	if err != nil || mf < 0 {
+		return err
+	}
+
+	out.Header.Set("Max-Forwards", strconv.Itoa(mf))
 
 	return nil
 }

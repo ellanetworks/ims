@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -176,6 +177,12 @@ func newTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, trunk settin
 func newTracedTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, trunk settings.Trunk, tp trace.TracerProvider) *tlsScene {
 	t.Helper()
 
+	return newResolvingTLSScene(t, ca, certificate, trunk, tp, nil)
+}
+
+func newResolvingTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, trunk settings.Trunk, tp trace.TracerProvider, resolve ResolveFunc) *tlsScene {
+	t.Helper()
+
 	s := &tlsScene{t: t, ca: ca}
 	s.ibcfC = s.ca.Issue(t, "ibcf", sbitlstest.Leaf{Hosts: []string{"ibcf.example"}})
 	s.ims = newRealParty(t, "127.0.0.1", nil, nil)
@@ -190,6 +197,7 @@ func newTracedTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, trunk 
 		Trust:       trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
 		BGCF:        bgcf.New(s.settings, nil),
 		Settings:    s.settings,
+		Resolve:     resolve,
 		Transaction: transaction.Config{TracerProvider: tp},
 	}
 
@@ -378,13 +386,14 @@ func TestTLSIncomingMutual(t *testing.T) {
 		to := s.ibcf.External()[0]
 		if tr == sip.TLS {
 			to = s.ibcf.TLS()[0]
+			p.secure = to
 		}
 
 		uri := sip.URI{Scheme: "sip", User: alice, Host: to.Addr().String(), Port: to.Port()}
 		uri.Params.Set("user", "phone")
 
-		if tr != sip.UDP {
-			uri.Params.Set("transport", strings.ToLower(string(tr)))
+		if tr == sip.TCP {
+			uri.Params.Set("transport", "tcp")
 		}
 
 		req := sip.NewRequest("INVITE", uri)
@@ -500,5 +509,96 @@ func TestTLSPersistentWithoutCertificate(t *testing.T) {
 		_ = c.Close()
 	case <-time.After(10 * time.Second):
 		t.Fatal("the persistent TLS connection was not reopened")
+	}
+}
+
+func TestTLSPersistentFailover(t *testing.T) {
+	ca := sbitlstest.NewCA(t, "carriers")
+	cert := ca.Issue(t, "carrier", sbitlstest.Leaf{Hosts: []string{"carrier.example"}})
+	other := ca.Issue(t, "other", sbitlstest.Leaf{Hosts: []string{"sbc9.carrier.example"}})
+
+	accept := func(ip string, c tls.Certificate) (netip.AddrPort, chan net.Conn) {
+		ln, err := tls.Listen("tcp", ip+":0", &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{c}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		t.Cleanup(func() { _ = ln.Close() })
+
+		conns := make(chan net.Conn, 8)
+
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+
+				if err := c.(*tls.Conn).HandshakeContext(t.Context()); err != nil {
+					_ = c.Close()
+					continue
+				}
+
+				conns <- c
+			}
+		}()
+
+		return netip.MustParseAddrPort(ln.Addr().String()), conns
+	}
+
+	impostor, impostorConns := accept("127.0.0.5", other.Cert)
+	alive, conns := accept("127.0.0.3", cert.Cert)
+	dead := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.4"), alive.Port())
+
+	resolve := func(_ context.Context, u sip.URI, transports []sip.Transport) ([]sip.Server, error) {
+		if u.Host != "carrier.example" || !slices.Equal(transports, []sip.Transport{sip.TLS}) || u.Params.Has("transport") {
+			return nil, fmt.Errorf("unexpected resolution of %s over %v", u, transports)
+		}
+
+		return []sip.Server{
+			{Transport: sip.TLS, Addr: dead, Domain: "carrier.example"},
+			{Transport: sip.TLS, Addr: impostor, Domain: "carrier.example"},
+			{Transport: sip.TLS, Addr: alive, Domain: "carrier.example"},
+		}, nil
+	}
+
+	trunk := settings.Trunk{
+		ID: "tls", Name: "TLS", Domain: "carrier.example", Enabled: true, KeepaliveInterval: 30 * time.Second,
+		TLS:          settings.TrunkTLS{Required: true, CACertificates: [][]byte{ca.Cert.Raw}, Identities: []string{"carrier.example", "sbc9.carrier.example"}},
+		Addresses:    []settings.TrunkAddress{{Host: "carrier.example", Transport: settings.SIPTransportTLS}},
+		InboundCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/24")},
+	}
+
+	newResolvingTLSScene(t, sbitlstest.NewCA(t, "ims"), false, trunk, nil, resolve)
+
+	for range 2 {
+		select {
+		case c := <-conns:
+			_ = c.Close()
+		case <-time.After(10 * time.Second):
+			t.Fatal("no persistent TLS connection to the available server")
+		}
+	}
+
+	select {
+	case <-impostorConns:
+		t.Fatal("server with a certificate for another domain kept")
+	default:
+	}
+}
+
+func TestPeersKeepFirstTrunk(t *testing.T) {
+	p := newPeers()
+	a := settings.TrunkAddress{Host: "carrier.example", Transport: settings.SIPTransportTLS}
+	first := settings.Trunk{ID: "first", Addresses: []settings.TrunkAddress{a}}
+	second := settings.Trunk{ID: "second", Addresses: []settings.TrunkAddress{a}}
+	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061"), Domain: "carrier.example"}
+
+	if !p.note(first, a, srv) || p.note(second, a, srv) || !p.note(first, a, srv) {
+		t.Fatal("a second trunk took over a server")
+	}
+
+	if pr, _ := p.get(srv.Addr); pr.trunk != "first" || pr.serverName != "carrier.example" {
+		t.Errorf("peer %+v", pr)
 	}
 }

@@ -120,6 +120,8 @@ func isAlphanum(c rune) bool {
 }
 
 func (t Trunk) Validate() error {
+	t = t.Effective()
+
 	switch {
 	case !validTrunkName(t.Name):
 		return invalidf("name must be 1 to %d printable characters, without leading or trailing spaces", maxTrunkName)
@@ -185,7 +187,7 @@ func (t Trunk) validateTLS() error {
 	return nil
 }
 
-func (t Trunk) WithDefaults() Trunk {
+func (t Trunk) Effective() Trunk {
 	var names []string
 
 	for _, a := range t.Addresses {
@@ -359,13 +361,21 @@ func (s Settings) validateSIPTrunks() error {
 			return err
 		}
 
+		t = t.Effective()
+
 		for _, u := range s.Trunks[:i] {
 			if strings.EqualFold(u.Name, t.Name) {
 				return conflictf("A SIP trunk already has name %s", t.Name)
 			}
 
+			for _, a := range t.Addresses {
+				if slices.ContainsFunc(u.Addresses, a.same) {
+					return conflictf("Address %s is an address of SIP trunk %s", a, u.Name)
+				}
+			}
+
 			for _, p := range t.InboundCIDRs {
-				for _, q := range u.InboundCIDRs {
+				for _, q := range u.Effective().InboundCIDRs {
 					if p.Overlaps(q) {
 						return conflictf("Inbound CIDR %s overlaps %s of SIP trunk %s", p, q, u.Name)
 					}

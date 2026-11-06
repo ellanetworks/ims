@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -95,7 +96,7 @@ func (dns) LookupSRV(_ context.Context, service, proto, name string) (string, []
 }
 
 func (dns) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
-	if host == "scscf1.ims.example.com" {
+	if strings.TrimSuffix(host, ".") == "scscf1.ims.example.com" {
 		return []netip.Addr{netip.MustParseAddr("192.0.2.9")}, nil
 	}
 

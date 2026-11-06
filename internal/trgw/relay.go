@@ -25,6 +25,11 @@ const bufferSize = 2048
 
 const rtpVersion = 2
 
+var (
+	ErrFamily    = errors.New("trgw: no binding in the address family of the remote")
+	ErrForbidden = errors.New("trgw: remote address not allowed")
+)
+
 // SIPconnect 2.0 section 14.10
 type Direction uint8
 
@@ -54,16 +59,57 @@ func (d Direction) sends() bool { return d == SendRecv || d == SendOnly }
 
 func (d Direction) receives() bool { return d == SendRecv || d == RecvOnly }
 
+// RFC 5761 section 5.1.1
 type Remote struct {
 	RTP       netip.AddrPort
 	RTCP      netip.AddrPort
 	Direction Direction
+	Mux       bool
+}
+
+func (rm Remote) Known() bool {
+	return rm.RTP.IsValid() && !rm.RTP.Addr().IsUnspecified()
 }
 
 type remote struct {
 	Remote
 	known bool
 	set   int64
+	prev  *Remote
+}
+
+func (rs *remote) heard() bool {
+	return rs != nil && (rs.known || rs.prev != nil)
+}
+
+func (rs *remote) rtpFrom(a netip.AddrPort) (ok, current bool) {
+	switch {
+	case rs.known && a == rs.RTP:
+		return true, true
+	case rs.prev != nil && a == rs.prev.RTP:
+		return true, false
+	}
+
+	return false, false
+}
+
+func (rs *remote) rtcpFrom(a netip.AddrPort) bool {
+	return rs.known && a == rs.RTCP || rs.prev != nil && a == rs.prev.RTCP
+}
+
+func (rs *remote) muxed(current bool) bool {
+	if current {
+		return rs.Mux
+	}
+
+	return rs.prev != nil && rs.prev.Mux
+}
+
+func (rs *remote) settled() *remote {
+	c := *rs
+	c.prev = nil
+
+	return &c
 }
 
 type Relay struct {
@@ -83,20 +129,88 @@ type Relay struct {
 	err      error
 }
 
+const (
+	ipv4 = iota
+	ipv6
+	families
+)
+
+func familyOf(a netip.Addr) int {
+	return index(a.Unmap().Is4())
+}
+
+func index(is4 bool) int {
+	if is4 {
+		return ipv4
+	}
+
+	return ipv6
+}
+
+type Binding struct {
+	LocalRTP       netip.AddrPort
+	LocalRTCP      netip.AddrPort
+	AdvertisedRTP  netip.AddrPort
+	AdvertisedRTCP netip.AddrPort
+}
+
+type binding struct {
+	pool      *portPool
+	rtp       *net.UDPConn
+	rtcp      *net.UDPConn
+	localRTP  netip.AddrPort
+	localRTCP netip.AddrPort
+	received  atomic.Bool
+	once      sync.Once
+}
+
+func (b *binding) public() Binding {
+	return Binding{
+		LocalRTP: b.localRTP, LocalRTCP: b.localRTCP,
+		AdvertisedRTP:  netip.AddrPortFrom(b.pool.advertise, b.localRTP.Port()),
+		AdvertisedRTCP: netip.AddrPortFrom(b.pool.advertise, b.localRTCP.Port()),
+	}
+}
+
+func (b *binding) close() {
+	b.once.Do(func() {
+		_ = b.rtp.Close()
+		_ = b.rtcp.Close()
+
+		b.pool.release(b.localRTP.Port())
+	})
+}
+
+type bindingSet struct {
+	b       [families]*binding
+	primary int
+	keep    int
+}
+
+func (s *bindingSet) primaryBinding() *binding {
+	if b := s.b[s.primary]; b != nil {
+		return b
+	}
+
+	return s.b[1-s.primary]
+}
+
 // SIPconnect 2.0 section 14.2
 type Leg struct {
+	relay        *Relay
 	side         int
-	pool         *portPool
-	rtp          *net.UDPConn
-	rtcp         *net.UDPConn
-	localRTP     netip.AddrPort
-	localRTCP    netip.AddrPort
+	mu           sync.Mutex
+	binds        atomic.Pointer[bindingSet]
 	remote       atomic.Pointer[remote]
+	police       atomic.Pointer[bucket]
 	lastReceived atomic.Int64
 }
 
-func newLeg(side int, pool *portPool, rtp, rtcp *net.UDPConn) *Leg {
-	return &Leg{side: side, pool: pool, rtp: rtp, rtcp: rtcp, localRTP: localAddr(rtp), localRTCP: localAddr(rtcp)}
+func newLeg(r *Relay, side int) *Leg {
+	l := &Leg{relay: r, side: side}
+	l.binds.Store(&bindingSet{keep: -1})
+
+	return l
 }
 
 func (r *Relay) Phone() *Leg { return r.legs[phoneLeg] }
@@ -115,19 +229,6 @@ func (r *Relay) Err() error {
 func (r *Relay) Close() error {
 	r.close(ErrClosed)
 	return nil
-}
-
-func (r *Relay) start(timeout time.Duration) {
-	r.timeout = timeout
-
-	for i, l := range r.legs {
-		other := r.legs[1-i]
-
-		r.wg.Add(2)
-
-		go r.relayRTP(l, other)
-		go r.relayRTCP(l, other)
-	}
 }
 
 func (r *Relay) Answered() {
@@ -190,39 +291,201 @@ func (r *Relay) close(reason error) bool {
 	r.mu.Unlock()
 
 	for _, l := range r.legs {
-		_ = l.rtp.Close()
-		_ = l.rtcp.Close()
+		if l != nil {
+			l.closeAll()
+		}
 	}
 
 	r.wg.Wait()
 
-	for _, l := range r.legs {
-		l.pool.release(l.localRTP.Port())
+	if r.metrics != nil {
+		r.gw.metrics.close(r.trunk)
 	}
 
-	r.gw.metrics.close(r.trunk)
 	r.gw.forget(r)
 	close(r.done)
 
 	return true
 }
 
-func (l *Leg) close() {
-	_ = l.rtp.Close()
-	_ = l.rtcp.Close()
-	l.pool.release(l.localRTP.Port())
+func (r *Relay) serve(l *Leg, b *binding) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		return ErrClosed
+	}
+
+	r.wg.Add(2)
+
+	go r.relayRTP(l, b)
+	go r.relayRTCP(l, b)
+
+	return nil
 }
 
-func (l *Leg) LocalRTP() netip.AddrPort { return l.localRTP }
+func (r *Relay) start() {
+	for _, l := range r.legs {
+		for _, b := range l.binds.Load().b {
+			if b != nil {
+				r.wg.Add(2)
 
-func (l *Leg) LocalRTCP() netip.AddrPort { return l.localRTCP }
+				go r.relayRTP(l, b)
+				go r.relayRTCP(l, b)
+			}
+		}
+	}
+}
+
+func (l *Leg) closeAll() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, b := range l.binds.Load().b {
+		if b != nil {
+			b.close()
+		}
+	}
+}
+
+// TS 23.334 clause 5.21
+// TS 29.162 clause 9.1.3
+func (l *Leg) Open(a netip.Addr) (Binding, error) {
+	p, err := l.relay.gw.pool(a)
+	if err != nil {
+		return Binding{}, err
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	set := *l.binds.Load()
+	f := familyOf(p.addr)
+
+	if b := set.b[f]; b != nil {
+		return b.public(), nil
+	}
+
+	rtp, rtcp, err := p.open()
+	if err != nil {
+		return Binding{}, err
+	}
+
+	b := newBinding(p, rtp, rtcp)
+
+	if err := l.relay.serve(l, b); err != nil {
+		b.close()
+		return Binding{}, err
+	}
+
+	if set.primaryBinding() == nil {
+		set.primary = f
+	}
+
+	set.b[f] = b
+	l.binds.Store(&set)
+
+	return b.public(), nil
+}
+
+func newBinding(p *portPool, rtp, rtcp *net.UDPConn) *binding {
+	return &binding{pool: p, rtp: rtp, rtcp: rtcp, localRTP: localAddr(rtp), localRTCP: localAddr(rtcp)}
+}
+
+// TS 23.334 clause 5.21
+// TS 29.162 clause 9.1.3
+// RFC 3264 section 8.3.1
+func (l *Leg) Keep(is4 bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	set := *l.binds.Load()
+	f := index(is4)
+
+	other := set.b[1-f]
+	if set.b[f] == nil || other == nil {
+		return
+	}
+
+	set.primary, set.keep = f, f
+
+	if !other.received.Load() || set.b[f].received.Load() {
+		other.close()
+
+		set.b[1-f], set.keep = nil, -1
+	}
+
+	l.binds.Store(&set)
+}
+
+func (l *Leg) arrived(b *binding) {
+	if !b.received.Load() {
+		b.received.Store(true)
+	}
+
+	set := l.binds.Load()
+	if set.keep < 0 || set.b[set.keep] != b {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	cur := *l.binds.Load()
+	if cur.keep < 0 || cur.b[cur.keep] != b {
+		return
+	}
+
+	if other := cur.b[1-cur.keep]; other != nil {
+		other.close()
+
+		cur.b[1-cur.keep] = nil
+	}
+
+	cur.keep = -1
+	l.binds.Store(&cur)
+}
+
+func (l *Leg) bound(a netip.Addr) *binding {
+	return l.binds.Load().b[familyOf(a)]
+}
+
+func (l *Leg) Bound(is4 bool) (Binding, bool) {
+	b := l.binds.Load().b[index(is4)]
+	if b == nil {
+		return Binding{}, false
+	}
+
+	return b.public(), true
+}
+
+func (l *Leg) Primary() (Binding, bool) {
+	b := l.binds.Load().primaryBinding()
+	if b == nil {
+		return Binding{}, false
+	}
+
+	return b.public(), true
+}
+
+func (l *Leg) LocalRTP() netip.AddrPort {
+	b, _ := l.Primary()
+	return b.LocalRTP
+}
+
+func (l *Leg) LocalRTCP() netip.AddrPort {
+	b, _ := l.Primary()
+	return b.LocalRTCP
+}
 
 func (l *Leg) AdvertisedRTP() netip.AddrPort {
-	return netip.AddrPortFrom(l.pool.advertise, l.localRTP.Port())
+	b, _ := l.Primary()
+	return b.AdvertisedRTP
 }
 
 func (l *Leg) AdvertisedRTCP() netip.AddrPort {
-	return netip.AddrPortFrom(l.pool.advertise, l.localRTCP.Port())
+	b, _ := l.Primary()
+	return b.AdvertisedRTCP
 }
 
 func (l *Leg) LastReceived() time.Time {
@@ -246,7 +509,11 @@ func (l *Leg) Remote() Remote {
 	return Remote{}
 }
 
+// RFC 3264 section 8.3.1
+// RFC 3264 section 8.4
 // RFC 3550 section 11
+// RFC 5761 section 5.1.1
+// RFC 8858 section 4.2
 func (l *Leg) SetRemote(rm Remote) error {
 	if rm.Direction > Inactive {
 		return fmt.Errorf("trgw: direction %d", rm.Direction)
@@ -264,18 +531,19 @@ func (l *Leg) SetRemote(rm Remote) error {
 
 	rm.RTP = netip.AddrPortFrom(rm.RTP.Addr().Unmap(), rm.RTP.Port())
 
-	if rm.RTCP.IsValid() {
+	switch {
+	case rm.Mux:
+		rm.RTCP = rm.RTP
+	case rm.RTCP.IsValid():
 		rm.RTCP = netip.AddrPortFrom(rm.RTCP.Addr().Unmap(), rm.RTCP.Port())
-	} else {
-		if rm.RTP.Port() == 0 || rm.RTP.Port() == 65535 {
-			return fmt.Errorf("trgw: no RTCP port follows RTP port %d", rm.RTP.Port())
-		}
-
+	case rm.RTP.Port() == 0 || rm.RTP.Port() == 65535:
+		return fmt.Errorf("trgw: no RTCP port follows RTP port %d", rm.RTP.Port())
+	default:
 		rm.RTCP = netip.AddrPortFrom(rm.RTP.Addr(), rm.RTP.Port()+1)
 	}
 
-	if rm.RTP == rm.RTCP {
-		return fmt.Errorf("trgw: RTP and RTCP share %s", rm.RTP)
+	if !rm.Mux && rm.RTP == rm.RTCP {
+		return fmt.Errorf("trgw: RTP and RTCP share %s without multiplexing", rm.RTP)
 	}
 
 	known := !rm.RTP.Addr().IsUnspecified()
@@ -286,34 +554,104 @@ func (l *Leg) SetRemote(rm Remote) error {
 				return fmt.Errorf("trgw: remote %s has no port", a)
 			}
 
-			if !l.reaches(a.Addr()) {
-				return fmt.Errorf("trgw: %s can't send to %s", l.localRTP.Addr(), a.Addr())
+			if err := l.reaches(a.Addr()); err != nil {
+				return err
 			}
 		}
 	}
 
-	l.remote.Store(&remote{Remote: rm, known: known, set: time.Now().UnixNano()})
+	next := &remote{Remote: rm, known: known, set: time.Now().UnixNano()}
+
+	if old := l.remote.Load(); old != nil {
+		switch {
+		case old.known && (!known || old.RTP != rm.RTP || old.RTCP != rm.RTCP):
+			p := old.Remote
+			next.prev = &p
+		case !old.known && old.prev != nil && (!known || old.prev.RTP != rm.RTP || old.prev.RTCP != rm.RTCP):
+			next.prev = old.prev
+		}
+	}
+
+	l.remote.Store(next)
 
 	return nil
 }
 
-func (l *Leg) reaches(a netip.Addr) bool {
-	return a.Is4() == l.pool.addr.Is4()
+func (l *Leg) reaches(a netip.Addr) error {
+	b := l.bound(a)
+	if b == nil {
+		return fmt.Errorf("%w: %s", ErrFamily, a)
+	}
+
+	if !l.relay.gw.allowed(b.pool.addr, a) {
+		return fmt.Errorf("%w: %s", ErrForbidden, a)
+	}
+
+	return nil
+}
+
+func (g *Gateway) allowed(local, a netip.Addr) bool {
+	if local.IsLoopback() {
+		return a.IsLoopback()
+	}
+
+	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return false
+	}
+
+	for _, own := range g.addrs {
+		if a == own.Bind || a == own.Advertise {
+			return false
+		}
+	}
+
+	return true
+}
+
+// TS 29.162 clause 10.2.9
+// TS 29.235 clause A.7.1.2.2.8.2
+func (l *Leg) Police(bitsPerSecond uint64) {
+	if bitsPerSecond == 0 {
+		l.police.Store(nil)
+		return
+	}
+
+	if cur := l.police.Load(); cur != nil && cur.bps == bitsPerSecond {
+		return
+	}
+
+	l.police.Store(newBucket(bitsPerSecond, time.Now()))
+}
+
+func (l *Leg) admit(b *binding, n int, now time.Time) bool {
+	p := l.police.Load()
+	if p == nil {
+		return true
+	}
+
+	overhead := udpHeader + ipv4Header
+	if !b.pool.addr.Is4() {
+		overhead = udpHeader + ipv6Header
+	}
+
+	return p.admit(n+overhead, now)
 }
 
 // RFC 3550 section A.1
+// RFC 5761 section 4
 // SIPconnect 2.0 section 14.2
 // SIPconnect 2.0 section 14.9
-func (r *Relay) relayRTP(src, dst *Leg) {
+func (r *Relay) relayRTP(src *Leg, b *binding) {
 	defer r.wg.Done()
 
+	dst := r.legs[1-src.side]
 	m := &r.metrics.legs[src.side]
 	buf := make([]byte, bufferSize+1)
 
 	var loss lossCounter
 
 	for {
-		n, from, err := src.rtp.ReadFromUDPAddrPort(buf)
+		n, from, err := b.rtp.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -323,18 +661,30 @@ func (r *Relay) relayRTP(src, dst *Leg) {
 		}
 
 		rs := src.remote.Load()
-		if rs == nil || !rs.known {
+		if !rs.heard() {
 			m.dropped[dropNoRemote].Inc()
 			continue
 		}
 
-		if netip.AddrPortFrom(from.Addr().Unmap(), from.Port()) != rs.RTP {
+		ok, current := rs.rtpFrom(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()))
+		if !ok {
 			m.dropped[dropUnexpectedSource].Inc()
 			continue
 		}
 
-		if n > bufferSize || rtp.IsRTCP(buf[:n]) {
+		if n > bufferSize {
 			m.dropped[dropMalformed].Inc()
+			continue
+		}
+
+		if rtp.IsRTCP(buf[:n]) {
+			if !rs.muxed(current) {
+				m.dropped[dropMalformed].Inc()
+				continue
+			}
+
+			r.forwardRTCP(m, src, b, dst, buf[:n])
+
 			continue
 		}
 
@@ -344,10 +694,22 @@ func (r *Relay) relayRTP(src, dst *Leg) {
 			continue
 		}
 
-		src.lastReceived.Store(time.Now().UnixNano())
+		if current && rs.prev != nil {
+			src.remote.CompareAndSwap(rs, rs.settled())
+		}
+
+		now := time.Now()
+
+		src.arrived(b)
+		src.lastReceived.Store(now.UnixNano())
 
 		if lost := loss.update(p.SSRC, p.Sequence); lost > 0 {
 			m.lost.Add(float64(lost))
+		}
+
+		if !src.admit(b, n, now) {
+			m.dropped[dropPoliced].Inc()
+			continue
 		}
 
 		rd := dst.remote.Load()
@@ -361,7 +723,13 @@ func (r *Relay) relayRTP(src, dst *Leg) {
 			continue
 		}
 
-		if _, err := dst.rtp.WriteToUDPAddrPort(buf[:n], rd.RTP); err != nil {
+		db := dst.bound(rd.RTP.Addr())
+		if db == nil {
+			m.dropped[dropSendError].Inc()
+			continue
+		}
+
+		if _, err := db.rtp.WriteToUDPAddrPort(buf[:n], rd.RTP); err != nil {
 			m.dropped[dropSendError].Inc()
 			continue
 		}
@@ -371,14 +739,15 @@ func (r *Relay) relayRTP(src, dst *Leg) {
 }
 
 // SIPconnect 2.0 section 14.2
-func (r *Relay) relayRTCP(src, dst *Leg) {
+func (r *Relay) relayRTCP(src *Leg, b *binding) {
 	defer r.wg.Done()
 
+	dst := r.legs[1-src.side]
 	m := &r.metrics.legs[src.side]
 	buf := make([]byte, bufferSize+1)
 
 	for {
-		n, from, err := src.rtcp.ReadFromUDPAddrPort(buf)
+		n, from, err := b.rtcp.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -388,36 +757,58 @@ func (r *Relay) relayRTCP(src, dst *Leg) {
 		}
 
 		rs := src.remote.Load()
-		if rs == nil || !rs.known {
+		if !rs.heard() {
 			m.dropped[dropNoRemote].Inc()
 			continue
 		}
 
-		if netip.AddrPortFrom(from.Addr().Unmap(), from.Port()) != rs.RTCP {
+		if !rs.rtcpFrom(netip.AddrPortFrom(from.Addr().Unmap(), from.Port())) {
 			m.dropped[dropUnexpectedSource].Inc()
 			continue
 		}
 
-		if n > bufferSize || !validRTCP(buf[:n]) {
+		if n > bufferSize {
 			m.dropped[dropMalformed].Inc()
 			continue
 		}
 
-		src.lastReceived.Store(time.Now().UnixNano())
-
-		rd := dst.remote.Load()
-		if rd == nil || !rd.known {
-			m.dropped[dropNoDestination].Inc()
-			continue
-		}
-
-		if _, err := dst.rtcp.WriteToUDPAddrPort(buf[:n], rd.RTCP); err != nil {
-			m.dropped[dropSendError].Inc()
-			continue
-		}
-
-		m.rtcp.Inc()
+		r.forwardRTCP(m, src, b, dst, buf[:n])
 	}
+}
+
+// RFC 5761 section 5.1.1
+func (r *Relay) forwardRTCP(m *legMetrics, src *Leg, b *binding, dst *Leg, pkt []byte) {
+	if !validRTCP(pkt) {
+		m.dropped[dropMalformed].Inc()
+		return
+	}
+
+	src.arrived(b)
+	src.lastReceived.Store(time.Now().UnixNano())
+
+	rd := dst.remote.Load()
+	if rd == nil || !rd.known {
+		m.dropped[dropNoDestination].Inc()
+		return
+	}
+
+	db := dst.bound(rd.RTP.Addr())
+	if db == nil {
+		m.dropped[dropSendError].Inc()
+		return
+	}
+
+	conn, to := db.rtcp, rd.RTCP
+	if rd.Mux {
+		conn = db.rtp
+	}
+
+	if _, err := conn.WriteToUDPAddrPort(pkt, to); err != nil {
+		m.dropped[dropSendError].Inc()
+		return
+	}
+
+	m.rtcp.Inc()
 }
 
 // RFC 3550 section A.2

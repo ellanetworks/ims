@@ -26,9 +26,11 @@ Ella IMS runs all three in its one process.
 1. A phone calls a number that the HSS doesn't know.
 2. The BGCF takes the route with the longest prefix of the number, else the default route.
 3. The IBCF tries the route's trunks in order. It skips trunks that are down or disabled.
-4. If a trunk fails before the call rings, the IBCF tries the next server, then the next trunk.
+4. If a trunk fails before any provisional response, the IBCF tries the next server, then the next trunk.
 
-Only numbers dialled in full go to a trunk: in international form, in national form, or long enough. Short codes stay inside the IMS.
+If every trunk of the route is down or disabled, the call fails. It doesn't fall back to a shorter prefix.
+
+Only numbers dialled in full go to a trunk: in international form, in national form, or long enough. Short codes stay inside the IMS, and so do numbers of fewer than 7 or more than 15 digits, country code included.
 
 ## Calls in
 
@@ -36,9 +38,13 @@ Only numbers dialled in full go to a trunk: in international form, in national f
 2. The IBCF finds the trunk by the call's source address.
 3. The I-CSCF routes the call to the subscriber with that number, as any other call.
 
+A disabled trunk refuses calls in, as well as calls out.
+
 ## Trust
 
 A carrier with an interconnect agreement can be trusted. Ella IMS then accepts the caller's number it asserts, and asserts its subscribers' numbers to it. From an untrusted carrier, the caller's number is only a claim. See [Security](security.md#sip-trunks).
+
+A trunk's inbound CIDRs never overlap the IMS's own networks. A trunk that overlaps them after a change to the configuration file carries no calls, and its state is `unusable`.
 
 ## Voice
 
@@ -48,7 +54,7 @@ The voice is relayed as it is, without transcoding. The phone and the carrier mu
 
 ## Keepalives
 
-Ella IMS sends OPTIONS requests to each trunk. A trunk that stops answering is down, and routes skip it until it answers again.
+Ella IMS sends OPTIONS requests to each trunk with a keepalive interval. A trunk that stops answering is down, and routes skip it until it answers again.
 
 ## What SIP trunks don't carry
 

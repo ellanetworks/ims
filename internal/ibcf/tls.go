@@ -1,6 +1,7 @@
 package ibcf
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -39,9 +40,9 @@ func newPeers() *peers {
 }
 
 // RFC 5922 section 7.3
-func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) {
+func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) bool {
 	if srv.Transport != sip.TLS {
-		return
+		return true
 	}
 
 	name := srv.Domain
@@ -54,7 +55,21 @@ func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Serve
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.peers[unmap(srv.Addr)] = peer{trunk: t.ID, address: addr, serverName: name}
+	a := unmap(srv.Addr)
+
+	if old, ok := p.peers[a]; ok && old.trunk != t.ID {
+		return false
+	}
+
+	p.peers[a] = peer{trunk: t.ID, address: addr, serverName: name}
+
+	return true
+}
+
+func (b *IBCF) noteServer(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) {
+	if !b.peers.note(t, addr, srv) {
+		b.log.Warn("SIP trunks share a TLS server, keeping the first", slog.String("trunk", t.Name), slog.String("server", srv.Addr.String()))
+	}
 }
 
 func (p *peers) prune(trunks []settings.Trunk) {
@@ -194,8 +209,19 @@ func (b *IBCF) Transports(t settings.Trunk) []sip.Transport {
 	return b.transports(t)
 }
 
-func usesTLS(t settings.Trunk) bool {
-	return t.TLS.Required || slices.ContainsFunc(t.Addresses, func(a settings.TrunkAddress) bool { return a.Transport == settings.SIPTransportTLS })
+func usesTLS(t settings.Trunk, a settings.TrunkAddress) bool {
+	return t.TLS.Required || a.Transport == settings.SIPTransportTLS
+}
+
+type persistKey struct {
+	trunk   string
+	address settings.TrunkAddress
+}
+
+type persistent struct {
+	tls      settings.TrunkTLS
+	interval time.Duration
+	stop     func()
 }
 
 type persister struct {
@@ -203,13 +229,13 @@ type persister struct {
 	ctx  context.Context
 	stop context.CancelFunc
 	done chan struct{}
-	live map[sip.Flow]func()
+	live map[persistKey]persistent
 }
 
 // SIPconnect 2.0 section 17.2
 func (b *IBCF) startPersister() *persister {
 	ctx, stop := context.WithCancel(b.life)
-	p := &persister{b: b, ctx: ctx, stop: stop, done: make(chan struct{}), live: map[sip.Flow]func(){}}
+	p := &persister{b: b, ctx: ctx, stop: stop, done: make(chan struct{}), live: map[persistKey]persistent{}}
 
 	go p.run()
 
@@ -225,8 +251,8 @@ func (p *persister) run() {
 	defer close(p.done)
 
 	defer func() {
-		for _, stop := range p.live {
-			stop()
+		for _, c := range p.live {
+			c.stop()
 		}
 	}()
 
@@ -250,70 +276,92 @@ func (p *persister) run() {
 	}
 }
 
+// SIPconnect 2.0 section 17.2
+// SIPconnect 2.0 section 17.4
 func (p *persister) apply() {
-	p.b.peers.prune(p.b.cfg.Settings().Trunks)
-
-	want := map[sip.Flow]bool{}
+	trunks := p.b.cfg.Settings().Trunks
+	want := map[persistKey]settings.Trunk{}
 
 	if p.b.cfg.Certificate == nil && len(p.b.ls().secure) > 0 {
-		for _, t := range p.b.cfg.Settings().Trunks {
-			if t.Enabled && usesTLS(t) {
-				for _, f := range p.flows(t) {
-					want[f] = true
-				}
-			}
-		}
-	}
-
-	for f, stop := range p.live {
-		if !want[f] {
-			stop()
-			delete(p.live, f)
-		}
-	}
-
-	for f := range want {
-		if p.live[f] != nil {
-			continue
-		}
-
-		stop, err := p.b.agent.Layer().Persist(f, transport.KeepAlive{})
-		if err != nil {
-			p.b.log.Warn("no persistent TLS connection to the SIP trunk", slog.String("flow", f.String()), slog.Any("error", err))
-			continue
-		}
-
-		p.live[f] = stop
-	}
-}
-
-func (p *persister) flows(t settings.Trunk) []sip.Flow {
-	var out []sip.Flow
-
-	for _, a := range t.Addresses {
-		if t.TLS.Required || a.Transport == settings.SIPTransportTLS {
-			ctx, cancel := context.WithTimeout(p.ctx, resolveTimeout)
-			servers, err := p.b.cfg.Resolve(ctx, addressURI(a), []sip.Transport{sip.TLS})
-
-			cancel()
-
-			if err != nil {
+		for _, t := range trunks {
+			if !t.Enabled || !t.TLS.Trusts() {
 				continue
 			}
 
-			for _, srv := range servers {
-				local, ok := p.b.local(sip.TLS, srv.Addr.Addr())
-				if srv.Transport != sip.TLS || !ok {
-					continue
+			for _, a := range t.Addresses {
+				if usesTLS(t, a) {
+					want[persistKey{trunk: t.ID, address: a}] = t
 				}
-
-				p.b.peers.note(t, a, srv)
-				out = append(out, sip.Flow{Transport: sip.TLS, Local: local, Remote: srv.Addr})
-
-				break
 			}
 		}
 	}
 
-	return out
+	for k, c := range p.live {
+		if t, ok := want[k]; !ok || !sameTLS(c.tls, t.TLS) || c.interval != keepAliveInterval(t) {
+			c.stop()
+			delete(p.live, k)
+		}
+	}
+
+	p.b.peers.prune(trunks)
+
+	for k, t := range want {
+		if _, ok := p.live[k]; ok {
+			continue
+		}
+
+		ka := transport.KeepAlive{Interval: keepAliveInterval(t), PongTimeout: transport.DefaultPongTimeout}
+
+		stop, err := p.b.agent.Layer().Persist(p.targets(t, k.address), ka)
+		if err != nil {
+			p.b.log.Warn("no persistent TLS connection to the SIP trunk", slog.String("trunk", t.Name),
+				slog.String("address", k.address.String()), slog.Any("error", err))
+
+			continue
+		}
+
+		p.live[k] = persistent{tls: t.TLS, interval: ka.Interval, stop: stop}
+	}
+}
+
+// SIPconnect 2.0 section 17.4
+func keepAliveInterval(t settings.Trunk) time.Duration {
+	if t.KeepaliveInterval > 0 {
+		return t.KeepaliveInterval
+	}
+
+	return transport.DefaultKeepAliveInterval
+}
+
+func sameTLS(a, b settings.TrunkTLS) bool {
+	return a.Required == b.Required && slices.Equal(a.Pins, b.Pins) && slices.Equal(a.Identities, b.Identities) &&
+		slices.EqualFunc(a.CACertificates, b.CACertificates, bytes.Equal)
+}
+
+// SIPconnect 2.0 section 17.2
+// RFC 3263 section 4.3
+func (p *persister) targets(t settings.Trunk, a settings.TrunkAddress) transport.Targets {
+	return func(ctx context.Context) ([]sip.Flow, error) {
+		ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+		defer cancel()
+
+		servers, err := p.b.resolveVia(ctx, addressURI(a), []sip.Transport{sip.TLS})
+		if err != nil {
+			return nil, err
+		}
+
+		var out []sip.Flow
+
+		for _, srv := range servers {
+			local, ok := p.b.local(sip.TLS, srv.Addr.Addr())
+			if srv.Transport != sip.TLS || !ok {
+				continue
+			}
+
+			p.b.noteServer(t, a, srv)
+			out = append(out, sip.Flow{Transport: sip.TLS, Local: local, Remote: srv.Addr})
+		}
+
+		return out, nil
+	}
 }

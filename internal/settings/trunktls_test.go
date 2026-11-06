@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +138,12 @@ func TestTrunkTLSValidate(t *testing.T) {
 			"tls.ca_certificates must hold CA certificates, and CN=sip.telnyx.com is not one: pin it in tls.pins instead",
 		},
 		"CA without identities": {
-			tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}}),
+			func() Trunk {
+				tr := tlsTrunk(TrunkTLS{CACertificates: [][]byte{ca.der}})
+				tr.Addresses, tr.Domain = tr.Addresses[1:], "192.0.2.1"
+
+				return tr
+			}(),
 			"tls.identities must list the carrier's domain names when tls.ca_certificates is set and the trunk has none",
 		},
 		"identity is URI": {
@@ -232,10 +238,12 @@ func TestParseCertificatesPEM(t *testing.T) {
 	withHeaders := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}, Bytes: leaf.der}))
 
 	for in, want := range map[string]string{
-		withKey:            "tls.ca_certificates must hold only CERTIFICATE PEM blocks, not PRIVATE KEY",
-		bundle + "garbage": "tls.ca_certificates must be PEM-encoded certificates",
-		"MIIB":             "tls.ca_certificates must be PEM-encoded certificates",
-		withHeaders:        "tls.ca_certificates must hold PEM blocks without headers",
+		withKey:                                 "tls.ca_certificates must hold only CERTIFICATE PEM blocks, not PRIVATE KEY",
+		bundle + "garbage":                      "tls.ca_certificates must be PEM-encoded certificates",
+		"garbage" + bundle:                      "tls.ca_certificates must be PEM-encoded certificates",
+		"Subject: CN=sip.telnyx.com\n" + bundle: "tls.ca_certificates must be PEM-encoded certificates",
+		"MIIB":                                  "tls.ca_certificates must be PEM-encoded certificates",
+		withHeaders:                             "tls.ca_certificates must hold PEM blocks without headers",
 	} {
 		if _, err := ParseCertificatesPEM("tls.ca_certificates", in); !errors.Is(err, ErrInvalid) || err.Error() != want {
 			t.Errorf("ParseCertificatesPEM = %v, want %q", err, want)
@@ -259,7 +267,7 @@ func TestParsePin(t *testing.T) {
 		strings.ToLower(strings.ReplaceAll(formatted, ":", "")),
 		" " + formatted + " ",
 		EncodeCertificatesPEM([][]byte{leaf.der}),
-		"\n" + EncodeCertificatesPEM([][]byte{leaf.der, expired.der}),
+		"\n" + EncodeCertificatesPEM([][]byte{leaf.der}) + "\n",
 	} {
 		if got, err := ParsePin(s, now); err != nil || got != fp {
 			t.Errorf("ParsePin(%q) = %x, %v", s, got, err)
@@ -272,8 +280,11 @@ func TestParsePin(t *testing.T) {
 		formatted + ":00":                       "tls.pins must hold PEM certificates or SHA-256 fingerprints",
 		strings.Replace(formatted, "A", "G", 1): "tls.pins must hold PEM certificates or SHA-256 fingerprints",
 		"-----BEGIN CERTIFICATE-----\nMIIB":     "tls.pins must be PEM-encoded certificates",
-		EncodeCertificatesPEM([][]byte{[]byte("not DER")}): "tls.pins holds a certificate that does not parse",
-		EncodeCertificatesPEM([][]byte{expired.der}):       "tls.pins holds CN=old.telnyx.com, which expired on ",
+		EncodeCertificatesPEM([][]byte{[]byte("not DER")}):   "tls.pins holds a certificate that does not parse",
+		EncodeCertificatesPEM([][]byte{expired.der}):         "tls.pins holds CN=old.telnyx.com, which expired on ",
+		EncodeCertificatesPEM([][]byte{leaf.der, leaf.der}):  "tls.pins must hold one certificate per pin, not 2",
+		"junk\n" + EncodeCertificatesPEM([][]byte{leaf.der}): "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		" junk -----BEGIN CERTIFICATE-----":                  "tls.pins must hold PEM certificates or SHA-256 fingerprints",
 	} {
 		if _, err := ParsePin(in, now); !errors.Is(err, ErrInvalid) || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("ParsePin(%q) = %v, want %q", in, err, want)
@@ -343,8 +354,14 @@ func TestTrunkTLSOptions(t *testing.T) {
 	byFingerprint := TrunkTLS{Pins: [][sha256.Size]byte{sha256.Sum256(selfSigned.der)}, Identities: []string{"sbc.example.org"}}
 
 	o, err := byCA.ClientOptions("sip.telnyx.com")
-	if err != nil || o.Roots == nil || o.ServerName != "sip.telnyx.com" || len(o.Identities) != 1 || o.RequireClientCertificate || len(o.Certificates) != 0 {
+	if err != nil || o.Roots == nil || o.ServerName != "sip.telnyx.com" || len(o.Identities) != 0 || o.RequireClientCertificate || len(o.Certificates) != 0 {
 		t.Fatalf("ClientOptions = %+v, %v", o, err)
+	}
+
+	for _, name := range []string{"", "192.0.2.1"} {
+		if o, err := byCA.ClientOptions(name); err != nil || !slices.Equal(o.Identities, byCA.Identities) {
+			t.Fatalf("ClientOptions(%q) = %+v, %v, want the trunk identities", name, o, err)
+		}
 	}
 
 	in, err := byCA.InboundOptions()

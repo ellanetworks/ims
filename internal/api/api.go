@@ -46,6 +46,7 @@ type Config struct {
 
 type Settings interface {
 	Get() settings.Settings
+	Usable(trunkID string) bool
 	UpdateOperator(ctx context.Context, o settings.Operator) error
 	CreatePeer(ctx context.Context, p settings.Peer) (settings.Peer, error)
 	UpdatePeer(ctx context.Context, p settings.Peer) error

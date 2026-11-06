@@ -74,6 +74,7 @@ func target(u URI) string {
 }
 
 // RFC 3263 section 4
+// SIPconnect 2.0 section 8.1
 func Destination(u URI) (Transport, netip.AddrPort, error) {
 	if !u.IsSIP() || u.IsSIPS() {
 		return "", netip.AddrPort{}, fmt.Errorf("sip: no destination in %s", u)
@@ -84,14 +85,9 @@ func Destination(u URI) (Transport, netip.AddrPort, error) {
 		return "", netip.AddrPort{}, fmt.Errorf("sip: destination %s is not an IP address", target(u))
 	}
 
-	tr := UDP
-
-	if t, ok := u.Params.Get("transport"); ok {
-		switch tr = Transport(strings.ToUpper(t)); tr {
-		case UDP, TCP, TLS:
-		default:
-			return "", netip.AddrPort{}, fmt.Errorf("sip: destination transport %s", t)
-		}
+	tr, _, err := uriTransport(u, false)
+	if err != nil {
+		return "", netip.AddrPort{}, err
 	}
 
 	port := u.Port

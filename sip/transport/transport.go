@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -130,6 +131,7 @@ type listener struct {
 	udp   *net.UDPConn
 	tcp   *net.TCPListener
 	tls   *tls.Config
+	hold  io.Closer
 	buf   []byte
 }
 
@@ -583,6 +585,10 @@ func (t *Transport) fail(l *listener, err error) {
 }
 
 func (l *listener) close() {
+	if l.hold != nil {
+		_ = l.hold.Close()
+	}
+
 	if l.tcp != nil {
 		_ = l.tcp.Close()
 	}

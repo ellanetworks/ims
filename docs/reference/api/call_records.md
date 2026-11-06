@@ -48,8 +48,10 @@ This path returns the list of call records, most recently requested first.
 | `in_progress`       | boolean | Whether the call has not ended. |
 | `incomplete`        | boolean | Whether the record was closed without the end of the call. |
 | `duration_ms`       | int     | Duration of an answered call that ended, in milliseconds. |
-| `trunk_id`          | string  | ID of the SIP trunk that gave the final answer. Absent for an on-net call. |
-| `direction`         | string  | `off-net-out` (to a SIP trunk) or `off-net-in` (from a SIP trunk). Absent for an on-net call. |
+| `in_trunk_id`       | string  | ID of the SIP trunk the call came from. Absent for a call from a phone. |
+| `in_trunk_name`     | string  | Name of that SIP trunk at the time of the call. |
+| `out_trunk_id`      | string  | ID of the SIP trunk that gave the final answer. Absent for a call to a phone. |
+| `out_trunk_name`    | string  | Name of that SIP trunk at the time of the call. |
 
 A value the IMS did not observe is absent. Times are RFC 3339.
 
@@ -82,11 +84,36 @@ A value the IMS did not observe is absent. Times are RFC 3339.
                 "in_progress": false,
                 "incomplete": false,
                 "duration_ms": 107459
+            },
+            {
+                "id": 43,
+                "icid": "2b3c4d5e6f7a8b9c",
+                "session_id": "b95c5d87f77821@10.45.0.2",
+                "calling_party": [
+                    "sip:+15550000001@ims.mnc001.mcc001.3gppnetwork.org",
+                    "tel:+15550000001"
+                ],
+                "caller_impi": "001010000000001@ims.mnc001.mcc001.3gppnetwork.org",
+                "requested_party": "tel:+15555550100",
+                "called_party": "tel:+15555550100",
+                "requested_at": "2026-10-26T18:30:02.118Z",
+                "delivery_start_at": "2026-10-26T18:30:09.502Z",
+                "delivery_end_at": "2026-10-26T18:31:12.004Z",
+                "sip_status": 200,
+                "outcome": "answered",
+                "ended_by": "callee",
+                "alerted": true,
+                "media": ["audio"],
+                "in_progress": false,
+                "incomplete": false,
+                "duration_ms": 62502,
+                "out_trunk_id": "019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f",
+                "out_trunk_name": "Carrier"
             }
         ],
         "page": 1,
         "per_page": 25,
-        "total_count": 1
+        "total_count": 2
     }
 }
 ```

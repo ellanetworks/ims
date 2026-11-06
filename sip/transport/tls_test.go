@@ -8,7 +8,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/netip"
@@ -41,9 +43,12 @@ type certSpec struct {
 	uris []string
 	ips  []netip.Addr
 	eku  []x509.ExtKeyUsage
+	oids []asn1.ObjectIdentifier
 	ca   bool
 	old  bool
 }
+
+var sipDomain = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 20}
 
 type issued struct {
 	tls  tls.Certificate
@@ -54,7 +59,7 @@ func issue(t *testing.T, spec certSpec, parent *issued) *issued {
 	t.Helper()
 
 	eku := spec.eku
-	if eku == nil && !spec.ca {
+	if eku == nil && spec.oids == nil && !spec.ca {
 		eku = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
 	}
 
@@ -65,6 +70,7 @@ func issue(t *testing.T, spec certSpec, parent *issued) *issued {
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           eku,
+		UnknownExtKeyUsage:    spec.oids,
 		DNSNames:              spec.dns,
 		BasicConstraintsValid: true,
 		IsCA:                  spec.ca,
@@ -303,6 +309,16 @@ func TestTLSClientRejectsServer(t *testing.T) {
 	otherSelfSigned := issue(t, certSpec{dns: []string{"sip.carrier.example"}}, nil)
 	expired := issue(t, certSpec{dns: []string{"sip.carrier.example"}, old: true}, nil)
 	clientOnly := issue(t, certSpec{dns: []string{"sip.carrier.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, p.ca)
+	sipOnly := issue(t, certSpec{dns: []string{"sip.carrier.example"}, oids: []asn1.ObjectIdentifier{sipDomain}}, p.ca)
+	anyUsage := issue(t, certSpec{dns: []string{"sip.carrier.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}, p.ca)
+	noUsage := issue(t, certSpec{dns: []string{"sip.carrier.example"}, eku: []x509.ExtKeyUsage{}}, p.ca)
+	otherServer := issue(t, certSpec{dns: []string{"sbc2.carrier.example"}}, p.ca)
+	restricted := issue(t, certSpec{cn: "Restricted CA", ca: true, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, p.ca)
+	underRestricted := issue(t, certSpec{dns: []string{"sip.carrier.example"}}, restricted)
+	underRestricted.tls.Certificate = append(underRestricted.tls.Certificate, restricted.x509.Raw)
+	allowed := issue(t, certSpec{cn: "Server CA", ca: true, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}, p.ca)
+	underAllowed := issue(t, certSpec{dns: []string{"sip.carrier.example"}}, allowed)
+	underAllowed.tls.Certificate = append(underAllowed.tls.Certificate, allowed.x509.Raw)
 
 	for _, tc := range []struct {
 		name   string
@@ -321,6 +337,15 @@ func TestTLSClientRejectsServer(t *testing.T) {
 		{"self-signed with CA trust", selfSigned, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, false},
 		{"pinned and CA", p.server, transport.TLSOptions{Roots: pool(p.ca), PinnedCertificates: []*x509.Certificate{otherSelfSigned.x509}, ServerName: "sip.carrier.example"}, true},
 		{"client-only key usage", clientOnly, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, false},
+		{"SIP domain key usage", sipOnly, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, true},
+		{"any key usage", anyUsage, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, true},
+		{"no key usage extension", noUsage, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, true},
+		{"CA restricted to clients", underRestricted, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, false},
+		{"CA restricted to servers", underAllowed, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}, true},
+		{"pinned SIP domain key usage", sipOnly, transport.TLSOptions{PinnedCertificates: []*x509.Certificate{sipOnly.x509}}, true},
+		{"another server of the trunk", otherServer, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example", Identities: []string{"sip.carrier.example", "sbc2.carrier.example"}}, false},
+		{"identities without a server name", otherServer, transport.TLSOptions{Roots: pool(p.ca), ServerName: "192.0.2.1", Identities: []string{"sip.carrier.example", "sbc2.carrier.example"}}, true},
+		{"pinned without the server name", otherServer, transport.TLSOptions{PinnedCertificates: []*x509.Certificate{otherServer.x509}, ServerName: "sip.carrier.example"}, true},
 		{"pinned expired", expired, transport.TLSOptions{PinnedCertificates: []*x509.Certificate{expired.x509}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -371,6 +396,10 @@ func TestTLSMutualAuthentication(t *testing.T) {
 	stranger := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}}, p.other)
 	serverOnly := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}, p.ca)
 	codeSigning := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}}, p.ca)
+	sipOnly := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}, oids: []asn1.ObjectIdentifier{sipDomain}}, p.ca)
+	clientOnly := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, p.ca)
+	anyUsage := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}, p.ca)
+	noUsage := issue(t, certSpec{uris: []string{"sip:ims.ella.example"}, eku: []x509.ExtKeyUsage{}}, p.ca)
 
 	for _, tc := range []struct {
 		name   string
@@ -383,8 +412,12 @@ func TestTLSMutualAuthentication(t *testing.T) {
 		{"wrong client identity", []tls.Certificate{p.client.tls}, []string{"pbx.example"}, false},
 		{"no client certificate", nil, nil, false},
 		{"untrusted client certificate", []tls.Certificate{stranger.tls}, nil, false},
-		{"server-only key usage", []tls.Certificate{serverOnly.tls}, nil, true},
+		{"server-only key usage", []tls.Certificate{serverOnly.tls}, nil, false},
 		{"code-signing key usage", []tls.Certificate{codeSigning.tls}, nil, false},
+		{"client-only key usage", []tls.Certificate{clientOnly.tls}, nil, true},
+		{"SIP domain key usage", []tls.Certificate{sipOnly.tls}, nil, true},
+		{"any key usage", []tls.Certificate{anyUsage.tls}, nil, true},
+		{"no key usage extension", []tls.Certificate{noUsage.tls}, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.ids == nil {
@@ -592,7 +625,7 @@ func TestTLSPersistentConnection(t *testing.T) {
 
 	f := sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}
 
-	stop, err := client.tr.Persist(f, transport.KeepAlive{Interval: 50 * time.Millisecond})
+	stop, err := client.tr.Persist(targets(f), transport.KeepAlive{Interval: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,13 +660,17 @@ func TestTLSPersistentConnection(t *testing.T) {
 	}
 }
 
-func TestTLSPersistentConnectionWithoutPong(t *testing.T) {
+func targets(flows ...sip.Flow) transport.Targets {
+	return func(context.Context) ([]sip.Flow, error) { return flows, nil }
+}
+
+func TestTLSPersistentConnectionPong(t *testing.T) {
 	p := newPKI(t)
 	peer := newRawServer(t, p.server.tls)
 	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
 		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
 
-	stop, err := client.tr.Persist(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()},
+	stop, err := client.tr.Persist(targets(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}),
 		transport.KeepAlive{Interval: 20 * time.Millisecond, PongTimeout: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -642,30 +679,75 @@ func TestTLSPersistentConnectionWithoutPong(t *testing.T) {
 	defer stop()
 
 	first := peer.next(t)
+
+	for range 3 {
+		readKeepalive(t, first)
+	}
+
+	select {
+	case <-peer.conns:
+		t.Fatal("reconnected although the peer never answers keep-alives")
+	default:
+	}
+
+	if _, err := first.Write([]byte("\r\n")); err != nil {
+		t.Fatal(err)
+	}
+
 	readKeepalive(t, first)
 
 	second := peer.next(t)
 	readKeepalive(t, second)
+}
 
-	if _, err := second.Write([]byte("\r\n")); err != nil {
+func TestTLSPersistentConnectionFailover(t *testing.T) {
+	p := newPKI(t)
+	peer := newRawServer(t, p.server.tls)
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+
+	dead := sip.Flow{Transport: sip.TLS, Local: client.local, Remote: netip.AddrPortFrom(lo, closedPort(t))}
+	udp := sip.Flow{Transport: sip.UDP, Local: client.local, Remote: peer.addr()}
+	alive := sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}
+
+	var resolved atomic.Int64
+
+	stop, err := client.tr.Persist(func(context.Context) ([]sip.Flow, error) {
+		resolved.Add(1)
+		return []sip.Flow{dead, udp, alive}, nil
+	}, transport.KeepAlive{Interval: 20 * time.Millisecond})
+	if err != nil {
 		t.Fatal(err)
 	}
 
+	first := peer.next(t)
+	readKeepalive(t, first)
+
+	n := resolved.Load()
+
+	_ = first.Close()
+
+	second := peer.next(t)
 	readKeepalive(t, second)
 
-	select {
-	case <-peer.conns:
-		t.Error("reconnected although the peer answered")
-	case <-time.After(30 * time.Millisecond):
+	if resolved.Load() <= n {
+		t.Error("servers not resolved again after the connection was lost")
+	}
+
+	stop()
+
+	_ = second.SetReadDeadline(time.Now().Add(siptest.Timeout))
+
+	if _, err := second.Read(make([]byte, 16)); !errors.Is(err, io.EOF) {
+		t.Errorf("read after stop: %v, want the connection closed", err)
 	}
 }
 
-func TestPersistRejectsUDP(t *testing.T) {
+func TestPersistWithoutTargets(t *testing.T) {
 	tr, _ := siptest.NewTransport(t, transport.Config{})
-	local := siptest.Listen(t, tr, lo)
 
-	if _, err := tr.Persist(sip.Flow{Transport: sip.UDP, Local: local, Remote: local}, transport.KeepAlive{}); !errors.Is(err, transport.ErrUnsupportedTransport) {
-		t.Errorf("err = %v", err)
+	if _, err := tr.Persist(nil, transport.KeepAlive{}); err == nil {
+		t.Error("persistent connection without targets accepted")
 	}
 }
 
@@ -894,7 +976,7 @@ func TestTLSPersistBacksOffWhenRejected(t *testing.T) {
 	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
 		clientConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}, Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
 
-	stop, err := client.tr.Persist(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: netip.MustParseAddrPort(l.Addr().String())},
+	stop, err := client.tr.Persist(targets(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: netip.MustParseAddrPort(l.Addr().String())}),
 		transport.KeepAlive{Interval: time.Minute})
 	if err != nil {
 		t.Fatal(err)
@@ -905,5 +987,89 @@ func TestTLSPersistBacksOffWhenRejected(t *testing.T) {
 
 	if n := accepted.Load(); n < 2 || n > 5 {
 		t.Errorf("%d connections in 1s, want a few with backoff", n)
+	}
+}
+
+func TestTLSClientCipherOrder(t *testing.T) {
+	p := newPKI(t)
+	offered := make(chan []uint16, 1)
+
+	cfg := serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.server.tls}})
+	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		offered <- hello.CipherSuites
+		return nil, nil
+	}
+
+	server := newNode(t, cfg, nil)
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+
+	if _, err := client.send(t, server.local); err != nil {
+		t.Fatal(err)
+	}
+
+	var tls12 []uint16
+
+	for _, s := range <-offered {
+		if slices.ContainsFunc(tls.CipherSuites(), func(c *tls.CipherSuite) bool {
+			return c.ID == s && !slices.Contains(c.SupportedVersions, tls.VersionTLS13)
+		}) {
+			tls12 = append(tls12, s)
+		}
+	}
+
+	if len(tls12) == 0 || tls12[0] != tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 {
+		t.Errorf("TLS 1.2 suites offered %v, want TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 first", tls12)
+	}
+}
+
+func TestTLSPinnedClientWithoutIdentity(t *testing.T) {
+	p := newPKI(t)
+	pinned := issue(t, certSpec{uris: []string{"sip:pbx.example"}, eku: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, nil)
+
+	server := newNode(t, serverConfig(t, transport.TLSOptions{
+		Certificates: []tls.Certificate{p.server.tls}, Roots: pool(p.ca), Identities: ellaIdentity,
+		PinnedFingerprints: [][sha256.Size]byte{transport.Fingerprint(pinned.x509)}, RequireClientCertificate: true,
+	}), nil)
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		clientConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{pinned.tls}, Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+
+	if _, err := client.send(t, server.local); err != nil {
+		t.Fatal(err)
+	}
+
+	server.rec.NextRequest()
+}
+
+func TestClientTLSReservesPort(t *testing.T) {
+	p := newPKI(t)
+	server := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.server.tls}}), nil)
+
+	tr, _ := siptest.NewTransport(t, transport.Config{
+		TLSClientOptions: clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}),
+	})
+
+	local, err := tr.ClientTLS(t.Context(), netip.AddrPortFrom(lo, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var lc net.ListenConfig
+
+	if l, err := lc.Listen(t.Context(), "tcp4", local.String()); err == nil {
+		_ = l.Close()
+
+		t.Fatalf("%s not reserved", local)
+	}
+
+	req := siptest.NewRequest("OPTIONS", "sip:"+server.local.String(), sip.TLS, local)
+	req.Flow = sip.Flow{Transport: sip.TLS, Local: local, Remote: server.local}
+
+	if err := tr.Send(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if in := server.rec.NextRequest(); in.Flow.Remote != local {
+		t.Errorf("request from %s, want %s", in.Flow.Remote, local)
 	}
 }

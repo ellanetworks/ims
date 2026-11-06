@@ -95,7 +95,7 @@ func TestSIPTrunkTLS(t *testing.T) {
 			Required:       true,
 			CACertificates: ca.pem(),
 			Pins:           []string{settings.FormatFingerprint(sha256.Sum256(pinned.der)), settings.FormatFingerprint(fp)},
-			Identities:     []string{"sip.telnyx.com"},
+			Identities:     []string{},
 		},
 		CACertificateDetails: []CertificateSummary{{
 			Subject: "CN=Telnyx CA,O=Telnyx", Issuer: "CN=Telnyx CA,O=Telnyx", DNSNames: []string{}, URIs: []string{},
@@ -106,6 +106,10 @@ func TestSIPTrunkTLS(t *testing.T) {
 	}
 	if !reflect.DeepEqual(created.TLS, wantTLS) {
 		t.Fatalf("tls = %+v, want %+v", created.TLS, wantTLS)
+	}
+
+	if !reflect.DeepEqual(created.Effective.TLSIdentities, []string{"sip.telnyx.com"}) {
+		t.Fatalf("effective tls_identities = %v, want the domain", created.Effective.TLSIdentities)
 	}
 
 	if created.Addresses[0].Transport != "tls" || created.SIPTrunkParams.TLS != nil {

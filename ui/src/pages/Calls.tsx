@@ -73,8 +73,22 @@ const outcomesOf = (param: string): CallOutcome[] =>
     .split(",")
     .filter((o): o is CallOutcome => CALL_OUTCOMES.includes(o as CallOutcome));
 
+const trunksOf = (
+  record: CallRecord,
+  trunkName: (id: string) => string | undefined,
+): string => {
+  const name = (id?: string, stored?: string) =>
+    id ? (trunkName(id) ?? stored ?? id) : undefined;
+  const names = [
+    name(record.in_trunk_id, record.in_trunk_name),
+    name(record.out_trunk_id, record.out_trunk_name),
+  ].filter((n) => n !== undefined);
+
+  return names.length > 0 ? names.join(" → ") : "—";
+};
+
 const columnsFor = (
-  trunkName: (id: string) => string,
+  trunkName: (id: string) => string | undefined,
 ): GridColDef<CallRecord>[] => [
   {
     field: "requested_at",
@@ -115,12 +129,11 @@ const columnsFor = (
       row.duration_ms !== undefined ? formatDuration(row.duration_ms) : "—",
   },
   {
-    field: "trunk_id",
+    field: "trunk",
     headerName: "Trunk",
     flex: 1,
     minWidth: 150,
-    valueGetter: (_value, row) =>
-      row.trunk_id ? trunkName(row.trunk_id) : "—",
+    valueGetter: (_value, row) => trunksOf(row, trunkName),
   },
   {
     field: "media",
@@ -204,7 +217,7 @@ export default function Calls() {
     enabled: auth.can("sip_trunk:read"),
   });
   const columns = useMemo(
-    () => columnsFor((id) => trunks.data?.find((t) => t.id === id)?.name ?? id),
+    () => columnsFor((id) => trunks.data?.find((t) => t.id === id)?.name),
     [trunks.data],
   );
 

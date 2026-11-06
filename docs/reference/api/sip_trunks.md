@@ -24,18 +24,21 @@ This path returns the list of SIP trunks, ordered by identifier.
 | `addresses[].host`     | string  | Domain name, or IPv4 or IPv6 address. |
 | `addresses[].port`     | int     | Port. Absent if not set. |
 | `addresses[].transport` | string | `udp`, `tcp` or `tls`. Absent if not set. |
-| `inbound_cidrs`        | array   | Networks that requests from the carrier come from. |
-| `domain`               | string  | Host of the Request-URI of requests to the carrier. |
+| `inbound_cidrs`        | array   | Networks that requests from the carrier come from. Empty if not set. |
+| `domain`               | string  | Host of the Request-URI of requests to the carrier. Empty if not set. |
 | `trusted`              | boolean | Whether the carrier is in the trust domain. |
 | `keepalive_interval`   | int     | Seconds between OPTIONS requests to the carrier. `0` for none. |
-| `enabled`              | boolean | Whether routes use the trunk. |
+| `enabled`              | boolean | Whether the trunk carries calls, in both directions. |
 | `tls`                  | object  | TLS with the carrier. See [TLS](#tls). |
 | `tls.required`         | boolean | Whether the carrier must use TLS, with a certificate. |
 | `tls.ca_certificates`  | string  | PEM-encoded CA certificates. Empty if none. |
 | `tls.pins`             | array   | SHA-256 fingerprints of pinned certificates, as upper-case hex bytes separated by colons. |
-| `tls.identities`       | array   | Domain names one of which the carrier's certificate must hold. |
+| `tls.identities`       | array   | Domain names one of which the carrier's certificate must hold. Empty if not set. |
 | `tls.ca_certificate_details` | array | One entry per CA certificate, in order. See [Certificate Details](#certificate-details). |
-| `status.state`         | string  | `up`: the carrier answers OPTIONS requests. `down`: it does not; routes skip the trunk. `unknown`: not probed. |
+| `effective.domain`     | string  | `domain` in use, default included. |
+| `effective.inbound_cidrs` | array | `inbound_cidrs` in use, default included. |
+| `effective.tls_identities` | array | `tls.identities` in use, default included. |
+| `status.state`         | string  | `up`: the carrier answers OPTIONS requests. `down`: it does not; routes skip the trunk. `unknown`: not probed. `unusable`: conflicts with the configuration file; the trunk carries no calls. |
 | `status.since`         | string  | Time of the last state change (RFC 3339). Absent while `unknown`. |
 
 ### Certificate Details
@@ -69,7 +72,7 @@ This path returns the list of SIP trunks, ordered by identifier.
                     }
                 ],
                 "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
-                "domain": "sip.carrier.example",
+                "domain": "",
                 "trusted": true,
                 "keepalive_interval": 30,
                 "enabled": true,
@@ -79,6 +82,11 @@ This path returns the list of SIP trunks, ordered by identifier.
                     "pins": [],
                     "identities": [],
                     "ca_certificate_details": []
+                },
+                "effective": {
+                    "domain": "sip.carrier.example",
+                    "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
+                    "tls_identities": []
                 },
                 "status": {
                     "state": "up",
@@ -124,7 +132,7 @@ This path returns the details of a specific SIP trunk.
             }
         ],
         "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
-        "domain": "sip.carrier.example",
+        "domain": "",
         "trusted": true,
         "keepalive_interval": 30,
         "enabled": true,
@@ -134,6 +142,11 @@ This path returns the details of a specific SIP trunk.
             "pins": [],
             "identities": [],
             "ca_certificate_details": []
+        },
+        "effective": {
+            "domain": "sip.carrier.example",
+            "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
+            "tls_identities": []
         },
         "status": {
             "state": "up",
@@ -156,17 +169,17 @@ This path creates a SIP trunk.
 | Field                   | Type    | Required | Description |
 | ----------------------- | ------- | -------- | ----------- |
 | `name`                  | string  | Yes      | 1 to 64 printable characters, without leading or trailing spaces. Unique among trunks, ignoring case. |
-| `addresses`             | array   | Yes      | At least one, each once. See [Addresses and DNS](#addresses-and-dns). |
+| `addresses`             | array   | Yes      | At least one, each once, none an address of another trunk. See [Addresses and DNS](#addresses-and-dns). |
 | `addresses[].host`      | string  | Yes      | Domain name, or specific IPv4 or IPv6 address. |
 | `addresses[].port`      | int     | No       | 1–65535. |
 | `addresses[].transport` | string  | No       | `udp`, `tcp` or `tls`. `tls` needs `tls.ca_certificates` or `tls.pins`. |
-| `inbound_cidrs`         | array   | No       | Networks, such as `198.51.100.0/24`, or single addresses. No two may overlap, in this trunk or across trunks. Not `0.0.0.0/0` or `::/0`. Default: the IP addresses among the hosts of `addresses`. |
+| `inbound_cidrs`         | array   | No       | Networks, such as `198.51.100.0/24`, or single addresses. No two may overlap, in this trunk or across trunks. None may overlap `sip.addresses` or `sip.trusted_networks` of the [configuration file](../config_file.md). Not `0.0.0.0/0` or `::/0`. Default: the IP addresses among the hosts of `addresses`. |
 | `domain`                | string  | No       | Domain name, or specific IPv4 or IPv6 address, without brackets. Default: the first domain name among the hosts of `addresses`. Required if every host is an IP address. |
 | `trusted`               | boolean | No       | Default `false`. A trusted trunk never uses UDP: no address may have `udp` as transport. |
 | `keepalive_interval`    | int     | No       | 5–3600 seconds, or `0` for none. Default `30`. |
 | `enabled`               | boolean | No       | Default `true`. |
 | `tls`                   | object  | No       | Absent for a trunk without TLS. See [TLS](#tls). |
-| `tls.required`          | boolean | No       | Default `false`. Every address must have `tls` as transport. |
+| `tls.required`          | boolean | No       | Default `false`. Every address must have `tls` as transport. Requires `ibcf.external.tls` in the [configuration file](../config_file.md). |
 | `tls.ca_certificates`   | string  | No       | PEM-encoded CA certificates, at most 32. |
 | `tls.pins`              | array   | No       | At most 32, each a PEM-encoded certificate, or a SHA-256 fingerprint as 32 hex bytes, with or without colons. |
 | `tls.identities`        | array   | No       | Domain names, at most 16. Default: `domain` and the domain names among the hosts of `addresses`. Required with `tls.ca_certificates` if there are none. |
@@ -201,8 +214,8 @@ Ella IMS's own certificate is `ibcf.external.tls` in the [configuration file](..
 
 | Code  | Description |
 | ----- | ----------- |
-| `400` | A field is invalid. |
-| `409` | Another trunk has the same name, or an inbound network that overlaps one of this trunk's. |
+| `400` | A field is invalid, an inbound network overlaps the networks of the configuration file, or `tls.required` is set without `ibcf.external.tls`. |
+| `409` | Another trunk has the same name, an address of this trunk, or an inbound network that overlaps one of this trunk's. |
 
 ### Sample Request
 
@@ -234,7 +247,7 @@ Ella IMS's own certificate is `ibcf.external.tls` in the [configuration file](..
             }
         ],
         "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
-        "domain": "sip.carrier.example",
+        "domain": "",
         "trusted": true,
         "keepalive_interval": 30,
         "enabled": true,
@@ -244,6 +257,11 @@ Ella IMS's own certificate is `ibcf.external.tls` in the [configuration file](..
             "pins": [],
             "identities": [],
             "ca_certificate_details": []
+        },
+        "effective": {
+            "domain": "sip.carrier.example",
+            "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
+            "tls_identities": []
         },
         "status": {
             "state": "unknown"
@@ -279,7 +297,7 @@ The `tls` object of its response:
     "required": true,
     "ca_certificates": "-----BEGIN CERTIFICATE-----\nMIIBczCCARigAwIBAgII...\n-----END CERTIFICATE-----\n",
     "pins": [],
-    "identities": ["sip.carrier.example"],
+    "identities": [],
     "ca_certificate_details": [
         {
             "subject": "CN=Carrier CA,O=Carrier",
@@ -299,7 +317,7 @@ The `tls` object of its response:
 
 ## Update a SIP Trunk
 
-This path replaces a SIP trunk. The request body is that of [Create a SIP Trunk](#create-a-sip-trunk). A field left out takes its default.
+This path replaces a SIP trunk. The request body is that of [Create a SIP Trunk](#create-a-sip-trunk). A field left out takes its default. A response is a valid request body without `id`, `effective`, `status` and `tls.ca_certificate_details`.
 
 | Method | Path                       |
 | ------ | -------------------------- |
@@ -315,9 +333,9 @@ This path replaces a SIP trunk. The request body is that of [Create a SIP Trunk]
 
 | Code  | Description |
 | ----- | ----------- |
-| `400` | A field is invalid. |
+| `400` | A field is invalid, an inbound network overlaps the networks of the configuration file, or `tls.required` is set without `ibcf.external.tls`. |
 | `404` | No trunk has this identifier. |
-| `409` | Another trunk has the same name, or an inbound network that overlaps one of this trunk's. |
+| `409` | Another trunk has the same name, an address of this trunk, or an inbound network that overlaps one of this trunk's. |
 
 ### Sample Request
 
@@ -350,7 +368,7 @@ This path replaces a SIP trunk. The request body is that of [Create a SIP Trunk]
             }
         ],
         "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
-        "domain": "sip.carrier.example",
+        "domain": "",
         "trusted": true,
         "keepalive_interval": 30,
         "enabled": false,
@@ -360,6 +378,11 @@ This path replaces a SIP trunk. The request body is that of [Create a SIP Trunk]
             "pins": [],
             "identities": [],
             "ca_certificate_details": []
+        },
+        "effective": {
+            "domain": "sip.carrier.example",
+            "inbound_cidrs": ["198.51.100.10/32", "198.51.100.11/32"],
+            "tls_identities": []
         },
         "status": {
             "state": "unknown"
@@ -487,7 +510,7 @@ This path creates a SIP route.
 
 | Code  | Description |
 | ----- | ----------- |
-| `400` | A trunk does not exist. |
+| `400` | The prefix is invalid, or a trunk does not exist. |
 | `409` | Another route has the same prefix. |
 
 ### Sample Request
@@ -529,7 +552,7 @@ This path replaces a SIP route. The request body is that of [Create a SIP Route]
 
 | Code  | Description |
 | ----- | ----------- |
-| `400` | A trunk does not exist. |
+| `400` | The prefix is invalid, or a trunk does not exist. |
 | `404` | No route has this identifier. |
 | `409` | Another route has the same prefix. |
 

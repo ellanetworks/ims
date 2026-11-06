@@ -22,6 +22,8 @@ type RelayConfig struct {
 
 	TimerC time.Duration
 
+	FailoverBudget time.Duration
+
 	Request func(from, to *Leg, req *sip.Request, c *ua.Change)
 
 	Response func(from, to *Leg, res *sip.Response, rp *ua.Reply)
@@ -52,6 +54,8 @@ type Relay struct {
 	failures   []Failure
 	sticky     sip.Header
 	timerC     *ua.Timer
+	budget     *ua.Timer
+	exhausted  bool
 }
 
 type pair struct {
@@ -125,7 +129,7 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 		if p.sdp, err = p.begin(p.initial); err != nil {
 			b.removed(ctx)
 
-			_ = r.Reject(488)
+			_ = r.Respond(refusal(err))
 
 			return p, err
 		}
@@ -146,6 +150,10 @@ func Bridge(ctx context.Context, c *Call, r *ua.Request, out *sip.Request, cfg R
 	}
 
 	p.opts = opts
+
+	if cfg.FailoverBudget > 0 {
+		p.budget = c.st.AfterFunc(cfg.FailoverBudget, func() { p.exhausted = true })
+	}
 
 	if err := p.dial(ctx, b, out); err != nil {
 		if p.failover(ctx, b, Failure{Err: err}) {
@@ -174,7 +182,7 @@ func (p *Relay) dial(ctx context.Context, l *Leg, out *sip.Request) error {
 			l.state = ua.Terminated
 			l.removed(ctx)
 
-			return err
+			return &mediaError{err}
 		}
 
 		p.sdp = sdp
@@ -209,6 +217,11 @@ func (p *Relay) failover(ctx context.Context, l *Leg, f Failure) bool {
 		l.relay, p.b = nil, next
 
 		if err := p.dial(ctx, next, out); err != nil {
+			if me := (*mediaError)(nil); errors.As(err, &me) {
+				p.respond(ctx, nil, refusal(me.err))
+				return true
+			}
+
 			l, f = next, Failure{Err: err}
 			p.failures = append(p.failures, f)
 
@@ -224,7 +237,7 @@ func (p *Relay) failover(ctx context.Context, l *Leg, f Failure) bool {
 }
 
 func (p *Relay) retryable() bool {
-	return p.cfg.Failover != nil && !p.final && !p.progressed && p.failCode == 0 && p.a.state == ua.Early
+	return p.cfg.Failover != nil && !p.final && !p.progressed && !p.exhausted && p.failCode == 0 && p.a.state == ua.Early
 }
 
 // RFC 3261 section 16.7
@@ -347,6 +360,10 @@ func (p *Relay) Stop() {
 
 	if p.timerC != nil {
 		p.timerC.Stop()
+	}
+
+	if p.budget != nil {
+		p.budget.Stop()
 	}
 
 	p.endAll()
@@ -511,7 +528,7 @@ func (p *Relay) progress(ctx context.Context, l *Leg, s *ua.Session, res *sip.Re
 	if body := sessionSDP(res.Envelope); body != nil && p.initial != nil && !pr.answered {
 		answer, err := p.answerOf(p.initial, pr, body)
 		if err != nil {
-			p.abandon(ctx, 488)
+			p.abandon(ctx, refusal(err))
 			return
 		}
 
@@ -558,7 +575,7 @@ func (p *Relay) offer(ctx context.Context, l *Leg, s *ua.Session, o *ua.Offer) b
 	sdp, err := p.begin(x)
 	if err != nil {
 		o.Reject(ctx)
-		p.abandon(ctx, 488)
+		p.abandon(ctx, refusal(err))
 
 		return true
 	}
@@ -596,7 +613,7 @@ func (p *Relay) fetched(ctx context.Context, l *Leg, pr *pair, o *ua.Offer) {
 		if op.join != nil {
 			op.join(err)
 		} else {
-			p.report(op.r.Reject(488))
+			p.report(op.r.Respond(refusal(err)))
 		}
 
 		return
@@ -755,7 +772,7 @@ func (p *Relay) established(ctx context.Context, l *Leg, msg sip.Message) {
 		if body := sessionSDP(res.Envelope); body != nil {
 			answer, err := p.answerOf(p.initial, pr, body)
 			if err != nil {
-				p.abandon(ctx, 488)
+				p.abandon(ctx, refusal(err))
 				return
 			}
 
@@ -775,6 +792,10 @@ func (p *Relay) respond(ctx context.Context, pr *pair, rp ua.Reply) {
 
 	if p.timerC != nil {
 		p.timerC.Stop()
+	}
+
+	if p.budget != nil {
+		p.budget.Stop()
 	}
 
 	if rp.Code >= 300 || pr == nil {
@@ -814,8 +835,8 @@ func (p *Relay) failed(ctx context.Context, l *Leg, res *sip.Response, err error
 	}
 }
 
-func (p *Relay) abandon(ctx context.Context, code int) {
-	p.respond(ctx, nil, ua.Reply{Code: code})
+func (p *Relay) abandon(ctx context.Context, rp ua.Reply) {
+	p.respond(ctx, nil, rp)
 	p.report(p.b.End(ctx, ua.Reply{}))
 }
 
@@ -1011,7 +1032,7 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 
 		var err error
 		if sdp, err = p.begin(op.x); err != nil {
-			p.report(r.Reject(488))
+			p.report(r.Respond(refusal(err)))
 			return
 		}
 	}
@@ -1053,7 +1074,7 @@ func (p *Relay) modify(ctx context.Context, from *Leg, r *ua.Request, pr *pair, 
 				a, err := p.answerOf(op.x, pr, body)
 				if err != nil {
 					p.end(op.x, nil)
-					p.report(r.Reject(488))
+					p.report(r.Respond(refusal(err)))
 					p.restore(ctx, from, o, to, pr)
 
 					return

@@ -356,7 +356,7 @@ func TestEveryTargetFails(t *testing.T) {
 	}{
 		{"503", func(_ *siptest.Net, p *party) string { return p.uri() }, 503, 500},
 		{"486", func(_ *siptest.Net, p *party) string { return p.uri() }, 486, 486},
-		{"timeout", func(n *siptest.Net, _ *party) string { return deadUDP(n) }, 0, 500},
+		{"timeout", func(n *siptest.Net, _ *party) string { return deadUDP(n) }, 0, 408},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			n := newNet(t)

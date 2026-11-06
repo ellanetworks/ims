@@ -23,6 +23,15 @@ func usBGCF() *bgcf.BGCF {
 	return bgcf.New(func() settings.Settings { return s }, nil)
 }
 
+func disabledBGCF() *bgcf.BGCF {
+	s := settings.Settings{
+		Trunks:    []settings.Trunk{{ID: "telnyx", Name: "Telnyx"}},
+		SIPRoutes: []settings.SIPRoute{{ID: "us", Prefix: "+1", Trunks: []string{"telnyx"}}},
+	}
+
+	return bgcf.New(func() settings.Settings { return s }, nil)
+}
+
 func userUnknownAnswer() *hssAnswer {
 	return &hssAnswer{result: tgpp.Experimental(tgpp.ResultErrorUserUnknown)}
 }
@@ -99,6 +108,8 @@ func TestUnknownNumberNotRoutedToIBCF(t *testing.T) {
 		want   int
 	}{
 		{name: "no SIP route", opts: harnessOptions{bgcf: usBGCF(), ibcf: true}, target: "tel:+442079460000", want: 404},
+		{name: "no usable SIP trunk", opts: harnessOptions{bgcf: disabledBGCF(), ibcf: true}, target: offNet, want: 503},
+		{name: "short code under a country code", opts: harnessOptions{bgcf: usBGCF(), ibcf: true}, target: "tel:+1911", want: 404},
 		{
 			name: "from the IBCF", opts: harnessOptions{bgcf: usBGCF(), ibcf: true}, target: offNet, want: 404,
 			source: func(h *harness) *ue { return &ue{h: h, sock: h.ibcf.sock} },

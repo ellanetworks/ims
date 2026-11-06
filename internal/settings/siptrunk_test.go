@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +82,12 @@ func TestTrunkValidate(t *testing.T) {
 			},
 			"addresses must not use udp when trusted is set, not 192.0.2.1 over udp",
 		},
-		"no domain":     {func(t *Trunk) { t.Domain = "" }, "domain is required when no address has a domain name as host"},
+		"no domain": {
+			func(t *Trunk) {
+				t.Domain, t.Addresses = "", []TrunkAddress{{Host: "192.0.2.1", Transport: SIPTransportTCP}}
+			},
+			"domain is required when no address has a domain name as host",
+		},
 		"domain is URI": {func(t *Trunk) { t.Domain = "sip:sip.telnyx.com" }, "domain must be a domain name or a specific IPv4 or IPv6 address"},
 		"short keepalive": {
 			func(t *Trunk) { t.KeepaliveInterval = 4 * time.Second }, "keepalive_interval must be 0, for no keepalive, or between 5 and 3600 seconds",
@@ -308,9 +314,11 @@ func TestLiveTrunkGuard(t *testing.T) {
 
 	trusted := netip.MustParsePrefix("192.76.120.0/24")
 
-	live.SetTrunkGuard(func(p netip.Prefix) error {
-		if p.Overlaps(trusted) {
-			return fmt.Errorf("inbound_cidrs %s overlaps the trust domain", p)
+	live.SetTrunkGuard(func(t Trunk) error {
+		for _, p := range t.InboundCIDRs {
+			if p.Overlaps(trusted) {
+				return fmt.Errorf("inbound_cidrs %s overlaps the trust domain", p)
+			}
 		}
 
 		return nil
@@ -319,6 +327,14 @@ func TestLiveTrunkGuard(t *testing.T) {
 	if _, err := live.CreateTrunk(t.Context(), telnyx()); !errors.Is(err, ErrInvalid) ||
 		err.Error() != "inbound_cidrs 192.76.120.10/32 overlaps the trust domain" {
 		t.Fatalf("CreateTrunk inside the trust domain = %v, want invalid", err)
+	}
+
+	defaulted := sbc()
+	defaulted.Addresses = []TrunkAddress{{Host: "192.76.120.7"}}
+	defaulted.InboundCIDRs = nil
+
+	if _, err := live.CreateTrunk(t.Context(), defaulted); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("CreateTrunk with a default inbound CIDR inside the trust domain = %v, want invalid", err)
 	}
 
 	created, err := live.CreateTrunk(t.Context(), sbc())
@@ -339,7 +355,7 @@ func TestLiveTrunkGuard(t *testing.T) {
 
 	kinded := Invalidf("kept as is")
 
-	live.SetTrunkGuard(func(netip.Prefix) error { return kinded })
+	live.SetTrunkGuard(func(Trunk) error { return kinded })
 
 	if err := live.UpdateTrunk(t.Context(), created); !errors.Is(err, kinded) {
 		t.Fatalf("UpdateTrunk = %v, want the guard's own invalid error", err)
@@ -349,6 +365,96 @@ func TestLiveTrunkGuard(t *testing.T) {
 
 	if _, err := live.CreateTrunk(t.Context(), telnyx()); err != nil {
 		t.Fatalf("CreateTrunk without a guard: %v", err)
+	}
+}
+
+func TestLiveRuntimeDropsGuardedTrunks(t *testing.T) {
+	initial := validSettings()
+	kept, dropped := sbc(), telnyx()
+	kept.ID, dropped.ID = "kept", "dropped"
+	initial.Trunks = []Trunk{kept, dropped}
+
+	live := NewLive(&fakeStore{}, initial, nil)
+
+	if !live.Usable("kept") || !live.Usable("dropped") {
+		t.Fatal("trunks unusable without a guard")
+	}
+
+	live.SetTrunkGuard(func(t Trunk) error {
+		if t.ID == "dropped" {
+			return Invalidf("overlaps the trust domain")
+		}
+
+		return nil
+	})
+
+	if !live.Usable("kept") || live.Usable("dropped") {
+		t.Fatalf("usable kept %v, dropped %v, want true, false", live.Usable("kept"), live.Usable("dropped"))
+	}
+
+	if _, ok := live.Get().Trunk("dropped"); !ok {
+		t.Fatal("the guarded trunk left the settings")
+	}
+
+	if _, ok := live.Runtime().Trunk("dropped"); ok {
+		t.Fatal("the guarded trunk remains at runtime")
+	}
+}
+
+func TestLiveStoresOnlyWhatIsSet(t *testing.T) {
+	store := &fakeStore{}
+	live := NewLive(store, validSettings(), nil)
+
+	in := Trunk{
+		Name: "Carrier", Addresses: []TrunkAddress{{Host: "sip.carrier.example", Transport: SIPTransportTCP}, {Host: "192.0.2.1"}},
+		KeepaliveInterval: DefaultKeepaliveInterval, Enabled: true,
+	}
+
+	created, err := live.CreateTrunk(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := live.Get().Trunk(created.ID)
+	if got.Domain != "" || got.InboundCIDRs != nil {
+		t.Fatalf("stored domain %q, inbound_cidrs %v, want neither", got.Domain, got.InboundCIDRs)
+	}
+
+	rt, _ := live.Runtime().Trunk(created.ID)
+	if rt.Domain != "sip.carrier.example" || !slices.Equal(rt.InboundCIDRs, []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}) {
+		t.Fatalf("runtime domain %q, inbound_cidrs %v, want the defaults", rt.Domain, rt.InboundCIDRs)
+	}
+
+	moved := got
+	moved.Addresses = []TrunkAddress{{Host: "sip.carrier.example", Transport: SIPTransportTCP}, {Host: "192.0.2.2"}}
+
+	if err := live.UpdateTrunk(t.Context(), moved); err != nil {
+		t.Fatal(err)
+	}
+
+	if rt, _ := live.Runtime().Trunk(created.ID); !slices.Equal(rt.InboundCIDRs, []netip.Prefix{netip.MustParsePrefix("192.0.2.2/32")}) {
+		t.Fatalf("runtime inbound_cidrs %v after the address changed, want the new default", rt.InboundCIDRs)
+	}
+}
+
+func TestLiveTrunkAddressShared(t *testing.T) {
+	live := NewLive(&fakeStore{}, validSettings(), nil)
+
+	if _, err := live.CreateTrunk(t.Context(), telnyx()); err != nil {
+		t.Fatal(err)
+	}
+
+	other := sbc()
+	other.Addresses = append(other.Addresses, telnyx().Addresses[0])
+
+	if _, err := live.CreateTrunk(t.Context(), other); !errors.Is(err, ErrConflict) {
+		t.Fatalf("CreateTrunk with the address of another trunk = %v, want conflict", err)
+	}
+
+	other.Addresses[1].Port = 5061
+
+	if _, err := live.CreateTrunk(t.Context(), other); err != nil {
+		t.Fatalf("CreateTrunk with another port: %v", err)
 	}
 }
 
@@ -450,7 +556,7 @@ func TestLiveTrunksKeepSettingsWhenTheStoreFails(t *testing.T) {
 	}
 }
 
-func TestTrunkWithDefaults(t *testing.T) {
+func TestTrunkEffective(t *testing.T) {
 	fp := [32]byte{1}
 
 	for _, tt := range []struct {
@@ -492,8 +598,8 @@ func TestTrunkWithDefaults(t *testing.T) {
 			Trunk{Addresses: []TrunkAddress{{Host: "192.0.2.1"}}, InboundCIDRs: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}},
 		},
 	} {
-		if got := tt.in.WithDefaults(); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%s: WithDefaults = %+v, want %+v", tt.name, got, tt.want)
+		if got := tt.in.Effective(); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: Effective = %+v, want %+v", tt.name, got, tt.want)
 		}
 	}
 }

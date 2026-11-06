@@ -45,8 +45,10 @@ export interface CallRecord {
   in_progress: boolean;
   incomplete: boolean;
   duration_ms?: number;
-  trunk_id?: string;
-  direction?: "off-net-out" | "off-net-in";
+  in_trunk_id?: string;
+  in_trunk_name?: string;
+  out_trunk_id?: string;
+  out_trunk_name?: string;
 }
 
 export interface ListCallRecordsParams extends PageParams {

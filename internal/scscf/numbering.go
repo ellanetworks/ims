@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -15,11 +16,6 @@ type Numbering struct {
 	InternationalPrefix string
 	MinNationalDigits   int
 }
-
-const (
-	minE164 = 7
-	maxE164 = 15
-)
 
 func telephoneNumber(u sip.URI) (number, context string, params sip.Params, ok bool) {
 	switch {
@@ -92,17 +88,19 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (out sip.URI, onNet, 
 		return u, false, false
 	}
 
+	onNet = strings.HasPrefix(context, "+")
+
 	switch {
 	case n.InternationalPrefix != "" && strings.HasPrefix(digits, n.InternationalPrefix):
 		digits = digits[len(n.InternationalPrefix):]
 	case n.NationalPrefix != "" && strings.HasPrefix(digits, n.NationalPrefix):
 		digits = n.CountryCode + digits[len(n.NationalPrefix):]
 	default:
-		onNet = strings.HasPrefix(context, "+") || n.MinNationalDigits == 0 || len(digits) < n.MinNationalDigits
+		onNet = onNet || n.MinNationalDigits == 0 || len(digits) < n.MinNationalDigits
 		digits = n.CountryCode + digits
 	}
 
-	if len(digits) < minE164 || len(digits) > maxE164 || digits[0] == '0' {
+	if !bgcf.E164(digits) {
 		return u, false, false
 	}
 

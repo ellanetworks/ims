@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/internal/sockopt"
 )
 
 const (
@@ -22,7 +23,10 @@ const (
 	maxReconnectBackoff = 30 * time.Second
 )
 
-var errClosedEarly = errors.New("closed before any data or keep-alive interval")
+var (
+	errClosedEarly = errors.New("closed before any data or keep-alive interval")
+	errNoTarget    = errors.New("no server to connect to")
+)
 
 type KeepAlive struct {
 	Interval time.Duration
@@ -30,21 +34,13 @@ type KeepAlive struct {
 	PongTimeout time.Duration
 }
 
+type Targets func(ctx context.Context) ([]sip.Flow, error)
+
 // SIPconnect 2.0 section 17.2
 // SIPconnect 2.0 section 17.4
-func (t *Transport) Persist(f sip.Flow, ka KeepAlive) (stop func(), err error) {
-	f = normalize(f)
-
-	if f.Transport != sip.TCP && f.Transport != sip.TLS {
-		return nil, fmt.Errorf("sip/transport: persistent connection on %s: %w", f, ErrUnsupportedTransport)
-	}
-
-	if !f.Remote.IsValid() {
-		return nil, fmt.Errorf("sip/transport: persistent connection on %s: no remote address", f)
-	}
-
-	if _, err := t.listener(f); err != nil {
-		return nil, fmt.Errorf("sip/transport: persistent connection on %s: %w", f, err)
+func (t *Transport) Persist(targets Targets, ka KeepAlive) (stop func(), err error) {
+	if targets == nil {
+		return nil, errors.New("sip/transport: persistent connection without targets")
 	}
 
 	if ka.Interval <= 0 {
@@ -70,7 +66,7 @@ func (t *Transport) Persist(f sip.Flow, ka KeepAlive) (stop func(), err error) {
 		defer close(done)
 		defer t.wg.Done()
 
-		t.persist(ctx, f, ka)
+		t.persist(ctx, targets, ka)
 	}()
 
 	return func() {
@@ -79,36 +75,62 @@ func (t *Transport) Persist(f sip.Flow, ka KeepAlive) (stop func(), err error) {
 	}, nil
 }
 
-func (t *Transport) persist(ctx context.Context, f sip.Flow, ka KeepAlive) {
+// SIPconnect 2.0 section 17.2
+func (t *Transport) persist(ctx context.Context, targets Targets, ka KeepAlive) {
 	var backoff time.Duration
 
 	for {
-		c, err := t.conn(ctx, f, true, true)
-		if err == nil {
-			start := time.Now()
-
-			if !t.keepAlive(ctx, c, f, ka) {
-				return
-			}
-
-			if c.received.Load() || time.Since(start) >= ka.Interval {
-				backoff = 0
-
-				t.log.Info("SIP persistent connection lost, reconnecting", slog.String("flow", f.String()))
-
-				continue
-			}
-
-			err = errClosedEarly
-		}
-
+		flows, err := targets(ctx)
 		if ctx.Err() != nil {
 			return
 		}
 
+		if err == nil && len(flows) == 0 {
+			err = errNoTarget
+		}
+
+		lost := false
+
+		for _, f := range flows {
+			f = normalize(f)
+
+			c, ferr := t.persistent(ctx, f, ka)
+			if ctx.Err() != nil {
+				return
+			}
+
+			if ferr != nil {
+				err = fmt.Errorf("%s: %w", f, ferr)
+				t.log.Debug("SIP persistent connection failed", slog.String("flow", f.String()), slog.Any("error", ferr))
+
+				continue
+			}
+
+			start := time.Now()
+
+			if !t.keepAlive(ctx, c, f, ka) {
+				c.close()
+				return
+			}
+
+			if c.received.Load() || time.Since(start) >= ka.Interval {
+				lost = true
+
+				t.log.Info("SIP persistent connection lost, reconnecting", slog.String("flow", f.String()))
+
+				break
+			}
+
+			err = fmt.Errorf("%s: %w", f, errClosedEarly)
+		}
+
+		if lost {
+			backoff = 0
+			continue
+		}
+
 		backoff = min(max(2*backoff, minReconnectBackoff), maxReconnectBackoff)
-		t.log.Warn("SIP persistent connection failed", slog.String("flow", f.String()), slog.Any("error", err),
-			slog.Duration("retry", backoff))
+		t.log.Warn("no SIP persistent connection to any server", slog.Any("error", err), slog.Duration("retry", backoff))
 
 		if !sleep(ctx, backoff) {
 			return
@@ -116,6 +138,35 @@ func (t *Transport) persist(ctx context.Context, f sip.Flow, ka KeepAlive) {
 	}
 }
 
+func (t *Transport) persistent(ctx context.Context, f sip.Flow, ka KeepAlive) (*conn, error) {
+	if f.Transport != sip.TCP && f.Transport != sip.TLS {
+		return nil, ErrUnsupportedTransport
+	}
+
+	if !f.Remote.IsValid() {
+		return nil, errors.New("no remote address")
+	}
+
+	if _, err := t.listener(f); err != nil {
+		return nil, err
+	}
+
+	c, err := t.conn(ctx, f, true, true)
+	if err != nil {
+		return nil, err
+	}
+
+	if ka.PongTimeout > 0 {
+		if rc, err := c.tcp.SyscallConn(); err == nil {
+			_ = sockopt.UserTimeout(rc, ka.PongTimeout)
+		}
+	}
+
+	return c, nil
+}
+
+// RFC 5626 section 4.4.1
+// SIPconnect 2.0 section 17.4
 func (t *Transport) keepAlive(ctx context.Context, c *conn, f sip.Flow, ka KeepAlive) bool {
 	for {
 		timer := time.NewTimer(keepAliveDelay(ka.Interval))
@@ -130,22 +181,27 @@ func (t *Transport) keepAlive(ctx context.Context, c *conn, f sip.Flow, ka KeepA
 		case <-timer.C:
 		}
 
-		if err := t.ping(ctx, c, f, ka.PongTimeout); err != nil {
-			if ctx.Err() != nil {
-				return false
-			}
+		err := t.ping(ctx, c, f, ka.PongTimeout)
 
-			t.log.Debug("SIP keep-alive failed", slog.String("flow", f.String()), slog.Any("error", err))
-			c.abort()
-
-			select {
-			case <-c.done:
-			case <-ctx.Done():
-				return false
-			}
-
-			return true
+		switch {
+		case err == nil:
+			continue
+		case ctx.Err() != nil:
+			return false
+		case errors.Is(err, ErrNoPong) && !c.ponged.Load():
+			continue
 		}
+
+		t.log.Debug("SIP keep-alive failed", slog.String("flow", f.String()), slog.Any("error", err))
+		c.abort()
+
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return false
+		}
+
+		return true
 	}
 }
 

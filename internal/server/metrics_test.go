@@ -428,5 +428,37 @@ func testMetrics(t *testing.T) *metrics {
 
 	t.Cleanup(func() { _ = records.Close(context.Background()) })
 
-	return newMetrics(d, records, func() ([]settings.Peer, []diameter.PeerStatus) { return nil, nil })
+	return newMetrics(d, records, func() ([]settings.Peer, []diameter.PeerStatus) { return nil, nil },
+		func() []settings.Trunk { return nil })
+}
+
+func TestTrunkInfoMetric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(trunkInfoCollector{func() []settings.Trunk {
+		return []settings.Trunk{{ID: "a", Name: "Telnyx"}, {ID: "b", Name: "SBC"}}
+	}})
+
+	families, err := reg.Gather()
+	if err != nil || len(families) != 1 || families[0].GetName() != "ellaims_trunk_info" {
+		t.Fatalf("families = %v, %v, want ellaims_trunk_info", families, err)
+	}
+
+	got := map[string]string{}
+
+	for _, m := range families[0].GetMetric() {
+		labels := map[string]string{}
+		for _, l := range m.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+
+		if m.GetGauge().GetValue() != 1 {
+			t.Fatalf("value = %v, want 1", m.GetGauge().GetValue())
+		}
+
+		got[labels["trunk"]] = labels["name"]
+	}
+
+	if !maps.Equal(got, map[string]string{"a": "Telnyx", "b": "SBC"}) {
+		t.Fatalf("trunk names = %v", got)
+	}
 }

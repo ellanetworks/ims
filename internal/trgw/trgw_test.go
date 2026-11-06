@@ -295,13 +295,41 @@ func TestRemoteChange(t *testing.T) {
 
 	setRemote(t, r.Trunk(), moved.remote(SendRecv))
 
-	send(t, trunk.rtp, rtpPacket(t, 104, 2, []byte{2}), r.Trunk().LocalRTP())
+	relayed(t, trunk, phone, r.Trunk(), r.Phone(), rtpPacket(t, 104, 2, []byte{2}))
+	relayed(t, phone, moved, r.Phone(), r.Trunk(), rtpPacket(t, 104, 3, []byte{3}))
+	nothing(t, trunk.rtp)
+
+	rr := rtcpPacket(t)
+	send(t, trunk.rtcp, rr, r.Trunk().LocalRTCP())
+
+	if got, _ := receive(t, phone.rtcp); !bytes.Equal(got, rr) {
+		t.Fatalf("RTCP from the old address %x, want %x", got, rr)
+	}
+
+	relayed(t, moved, phone, r.Trunk(), r.Phone(), rtpPacket(t, 104, 4, []byte{4}))
+
+	send(t, trunk.rtp, rtpPacket(t, 104, 5, []byte{5}), r.Trunk().LocalRTP())
 	nothing(t, phone.rtp)
 	waitMetric(t, dropped(m, "trunk", dropUnexpectedSource), 1)
+}
 
-	relayed(t, moved, phone, r.Trunk(), r.Phone(), rtpPacket(t, 104, 3, []byte{3}))
-	relayed(t, phone, moved, r.Phone(), r.Trunk(), rtpPacket(t, 104, 4, []byte{4}))
+func TestHoldKeepsSource(t *testing.T) {
+	g, m := newGateway(t, 8)
+	r := allocate(t, g)
+	phone, trunk := newEndpoint(t, loopback), newEndpoint(t, loopback)
+
+	setRemote(t, r.Phone(), phone.remote(SendRecv))
+	setRemote(t, r.Trunk(), trunk.remote(SendRecv))
+
+	setRemote(t, r.Trunk(), Remote{RTP: netip.MustParseAddrPort("0.0.0.0:4000"), Direction: SendOnly})
+
+	relayed(t, trunk, phone, r.Trunk(), r.Phone(), rtpPacket(t, 104, 1, []byte{1}))
+
+	send(t, phone.rtp, rtpPacket(t, 104, 1, []byte{1}), r.Phone().LocalRTP())
 	nothing(t, trunk.rtp)
+	waitMetric(t, dropped(m, "phone", dropNoDestination), 1)
+
+	relayed(t, trunk, phone, r.Trunk(), r.Phone(), rtpPacket(t, 104, 2, []byte{2}))
 }
 
 func TestDirection(t *testing.T) {

@@ -89,8 +89,8 @@ func TestTrunkOutgoingCallTraceAndRecord(t *testing.T) {
 	ended(t, ac, testue.LocalBye)
 
 	r := s.callRecord(ac)
-	if r.TrunkID != id || r.Direction != "off-net-out" {
-		t.Errorf("record over %q %q, want %s off-net-out", r.TrunkID, r.Direction, id)
+	if r.OutTrunkID != id || r.OutTrunkName == "" || r.InTrunkID != "" {
+		t.Errorf("record over %q %q (in %q), want out %s", r.OutTrunkID, r.OutTrunkName, r.InTrunkID, id)
 	}
 
 	var trunk, scscf []sdktrace.ReadOnlySpan
@@ -142,7 +142,7 @@ func TestTrunkIncomingCallTraceAndRecord(t *testing.T) {
 
 	eventually(t, "the call record of the incoming call", func() bool {
 		for _, x := range s.callRecords() {
-			if x.Direction == "off-net-in" && !x.InProgress {
+			if x.InTrunkID != "" && !x.InProgress {
 				r = x
 
 				return true
@@ -152,7 +152,7 @@ func TestTrunkIncomingCallTraceAndRecord(t *testing.T) {
 		return false
 	})
 
-	if r.TrunkID != id || r.Outcome != "answered" || r.EndedBy != "caller" {
+	if r.InTrunkID != id || r.InTrunkName == "" || r.OutTrunkID != "" || r.Outcome != "answered" || r.EndedBy != "caller" {
 		t.Errorf("record %+v", r)
 	}
 

@@ -115,6 +115,28 @@ func (r *legs) remove(c *call) {
 	}
 }
 
+func (r *legs) resolved(a netip.Addr) bool {
+	r.mu.Lock()
+
+	calls := map[*call]bool{}
+
+	for _, l := range r.legs {
+		if l.trunk && l.call.route != nil {
+			calls[l.call] = true
+		}
+	}
+
+	r.mu.Unlock()
+
+	for c := range calls {
+		if t, known := c.owner(); !c.isEnded() && inTrunk(t, known, a) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func tags(req *sip.Request) (string, string) {
 	from, _ := req.Header.From()
 	to, _ := req.Header.To()

@@ -1,6 +1,7 @@
 package trgw
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -81,18 +82,31 @@ func (p *portPool) open() (*net.UDPConn, *net.UDPConn, error) {
 }
 
 func (p *portPool) bind(port uint16) (*net.UDPConn, *net.UDPConn, error) {
-	rtp, err := net.ListenUDP(p.network, net.UDPAddrFromAddrPort(netip.AddrPortFrom(p.addr, port)))
+	rtp, err := p.listen(port)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	rtcp, err := net.ListenUDP(p.network, net.UDPAddrFromAddrPort(netip.AddrPortFrom(p.addr, port+1)))
+	rtcp, err := p.listen(port + 1)
 	if err != nil {
 		_ = rtp.Close()
 		return nil, nil, err
 	}
 
 	return rtp, rtcp, nil
+}
+
+// TS 29.162 clause 10.2.7
+// TS 29.235 clause A.7.1.2.2.4
+func (p *portPool) listen(port uint16) (*net.UDPConn, error) {
+	lc := net.ListenConfig{Control: markEF}
+
+	c, err := lc.ListenPacket(context.Background(), p.network, netip.AddrPortFrom(p.addr, port).String())
+	if err != nil {
+		return nil, err
+	}
+
+	return c.(*net.UDPConn), nil
 }
 
 func (p *portPool) release(port uint16) {

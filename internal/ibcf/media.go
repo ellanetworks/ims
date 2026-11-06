@@ -25,18 +25,26 @@ type MediaConfig struct {
 	Trunk   []netip.Addr
 }
 
-func (m MediaConfig) bind(addrs []netip.Addr, family netip.Addr) netip.Addr {
+func inFamily(addrs []netip.Addr, is4 bool) netip.Addr {
 	for _, a := range addrs {
-		if a.Is4() == family.Unmap().Is4() {
+		if a.Unmap().Is4() == is4 {
 			return a
 		}
 	}
 
-	if len(addrs) > 0 {
-		return addrs[0]
+	return netip.Addr{}
+}
+
+func perFamily(addrs []netip.Addr) []netip.Addr {
+	var out []netip.Addr
+
+	for _, a := range addrs {
+		if !slices.ContainsFunc(out, func(b netip.Addr) bool { return b.Unmap().Is4() == a.Unmap().Is4() }) {
+			out = append(out, a)
+		}
 	}
 
-	return netip.Addr{}
+	return out
 }
 
 const (
@@ -47,6 +55,7 @@ const (
 var (
 	errNoMedia  = errors.New("ibcf: no TrGW address for the media")
 	errNoStream = errors.New("ibcf: no audio stream the TrGW relays")
+	errFamily   = errors.New("ibcf: no TrGW address in the address family of the media")
 )
 
 type origin struct {
@@ -58,6 +67,7 @@ type origin struct {
 // RFC 3264 section 8
 type dialogMedia struct {
 	remote  [2]*trgw.Remote
+	police  [2]uint64
 	origins [2]origin
 	touched uint64
 }
@@ -74,6 +84,8 @@ type pending struct {
 	side   int
 	prev   *trgw.Remote
 	stream *stream
+	mux    bool
+	remove bool
 }
 
 // TS 24.229 clause 6.7.1.1
@@ -108,7 +120,10 @@ func (c *call) side(l *b2bua.Leg) int {
 	return phoneSide
 }
 
-// SIPconnect 2.0 section 5
+// TS 29.162 clause 9.1.1.1
+// TS 29.162 clause 9.1.3
+// RFC 3264 section 8.2
+// RFC 3264 section 8.3.1
 func (m *media) Offer(x *b2bua.Exchange) ([]byte, error) {
 	s, err := sdp.Parse(x.Offer)
 	if err != nil {
@@ -120,30 +135,41 @@ func (m *media) Offer(x *b2bua.Exchange) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if st := m.stream; st != nil && st.index < len(s.Media) && s.Media[st.index].Port() == 0 {
+		st.refs++
+		x.Value = &pending{dialog: x.Dialog, side: from, prev: m.state(x.Dialog).remote[from], stream: st, remove: true}
+
+		return m.rewrite(s, x.Dialog, to, -1)
+	}
+
 	i := m.pick(s)
 	if i < 0 {
 		return nil, errNoStream
 	}
 
-	st, err := m.open(i, s, from)
+	rm := remoteOf(s, i)
+
+	st, err := m.open(i, from, to, rm)
 	if err != nil {
-		return nil, err
+		return nil, m.refuse(err)
 	}
 
 	st.refs++
 
-	p := &pending{dialog: x.Dialog, side: from, prev: m.state(x.Dialog).remote[from], stream: st}
+	p := &pending{dialog: x.Dialog, side: from, prev: m.state(x.Dialog).remote[from], stream: st, mux: m.mux(x.Dialog, to)}
 
-	if err := m.set(x.Dialog, from, remoteOf(s, i)); err != nil {
+	if err := m.set(x.Dialog, from, rm); err != nil {
 		m.release(st)
-		return nil, err
+		return nil, m.refuse(err)
 	}
 
 	x.Value = p
 
-	return m.rewrite(s, x.Dialog, to)
+	return m.rewrite(s, x.Dialog, to, i)
 }
 
+// TS 29.162 clause 9.1.1.2
+// RFC 5761 section 5.1.1
 func (m *media) Answer(x *b2bua.Exchange, dialog *ua.Session, body []byte) ([]byte, error) {
 	s, err := sdp.Parse(body)
 	if err != nil {
@@ -151,20 +177,33 @@ func (m *media) Answer(x *b2bua.Exchange, dialog *ua.Session, body []byte) ([]by
 	}
 
 	from, to := m.c.side(x.To), m.c.side(x.From)
+	p, _ := x.Value.(*pending)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if st := m.stream; st != nil && st.index < len(s.Media) && relayable(s.Media[st.index]) {
-		if err := m.set(dialog, from, remoteOf(s, st.index)); err != nil {
-			return nil, err
-		}
+	if p != nil && p.remove {
+		return m.rewrite(s, dialog, to, -1)
 	}
 
-	return m.rewrite(s, dialog, to)
+	idx := -1
+
+	if st := m.stream; st != nil && st.index < len(s.Media) && relayable(s.Media[st.index]) {
+		rm := remoteOf(s, st.index)
+		rm.Mux = rm.Mux && p != nil && p.mux
+
+		if err := m.set(dialog, from, rm); err != nil {
+			return nil, m.refuse(err)
+		}
+
+		idx = st.index
+	}
+
+	return m.rewrite(s, dialog, to, idx)
 }
 
 // RFC 3264 section 8
+// TS 29.162 clause 9.1.3
 func (m *media) End(x *b2bua.Exchange, dialog *ua.Session) {
 	p, ok := x.Value.(*pending)
 	if !ok {
@@ -177,14 +216,25 @@ func (m *media) End(x *b2bua.Exchange, dialog *ua.Session) {
 	switch {
 	case dialog != nil:
 		p.stream.kept = true
+
+		if p.remove && m.stream == p.stream {
+			m.free()
+			break
+		}
+
+		m.settle(dialog)
 	case x.Initial && p.dialog == nil:
 		m.base, m.dialogs, m.active, m.confirmed = &dialogMedia{}, map[*ua.Session]*dialogMedia{}, nil, false
 	default:
-		if d := m.known(p.dialog); d != nil {
+		if d := m.known(p.dialog); d != nil && !p.remove {
 			d.remote[p.side] = p.prev
 
 			if p.dialog == m.active {
 				m.apply(d)
+			}
+
+			if m.stream != nil && p.prev != nil && p.prev.Known() && (!m.confirmed || p.dialog == m.active) {
+				mediaLeg(m.stream.relay, p.side).Keep(p.prev.RTP.Addr().Unmap().Is4())
 			}
 		}
 	}
@@ -282,8 +332,47 @@ func (m *media) apply(d *dialogMedia) {
 			rm = &trgw.Remote{}
 		}
 
-		_ = mediaLeg(m.stream.relay, side).SetRemote(*rm)
+		l := mediaLeg(m.stream.relay, side)
+		_ = l.SetRemote(*rm)
+		l.Police(d.police[side])
 	}
+}
+
+// TS 23.334 clause 5.21
+// RFC 3264 section 8.3.1
+func (m *media) settle(dialog *ua.Session) {
+	if m.stream == nil || m.confirmed && dialog != m.active {
+		return
+	}
+
+	d := m.known(dialog)
+	if d == nil {
+		return
+	}
+
+	for side, rm := range d.remote {
+		if rm != nil && rm.Known() {
+			mediaLeg(m.stream.relay, side).Keep(rm.RTP.Addr().Unmap().Is4())
+		}
+	}
+}
+
+// TS 29.162 clause 9.1.3
+func (m *media) free() {
+	st := m.stream
+	m.stream = nil
+
+	reset := func(d *dialogMedia) {
+		d.remote, d.police = [2]*trgw.Remote{}, [2]uint64{}
+	}
+
+	reset(m.base)
+
+	for _, d := range m.dialogs {
+		reset(d)
+	}
+
+	_ = st.relay.Close()
 }
 
 func (m *media) pick(s *sdp.Session) int {
@@ -298,8 +387,8 @@ func (m *media) pick(s *sdp.Session) int {
 	return -1
 }
 
-// SIPconnect 2.0 section 5
 // SIPconnect 2.0 section 14.2
+// SIPconnect 2.0 section 14.3
 func relayable(md *sdp.Media) bool {
 	d, err := md.Desc()
 
@@ -315,40 +404,116 @@ func mediaLeg(r *trgw.Relay, side int) *trgw.Leg {
 	return r.Phone()
 }
 
-func (m *media) open(i int, s *sdp.Session, from int) (*stream, error) {
+// SIPconnect 2.0 section 15
+func (m *media) local(side int, rm trgw.Remote) (netip.Addr, error) {
+	known := rm.Known()
+	is4 := rm.RTP.Addr().Unmap().Is4()
+
+	if side == phoneSide {
+		if !known {
+			if len(m.cfg.Phone) == 0 {
+				return netip.Addr{}, errNoMedia
+			}
+
+			return m.cfg.Phone[0], nil
+		}
+
+		if a := inFamily(m.cfg.Phone, is4); a.IsValid() {
+			return a, nil
+		}
+
+		return netip.Addr{}, errFamily
+	}
+
+	signal := m.c.trunkFamily().Unmap()
+
+	switch {
+	case signal.IsValid() && known && signal.Is4() != is4:
+		return netip.Addr{}, errFamily
+	case signal.IsValid() && slices.Contains(m.cfg.Trunk, signal):
+		return signal, nil
+	case signal.IsValid():
+		is4 = signal.Is4()
+	case !known:
+		if len(m.cfg.Trunk) == 0 {
+			return netip.Addr{}, errNoMedia
+		}
+
+		return m.cfg.Trunk[0], nil
+	}
+
+	if a := inFamily(m.cfg.Trunk, is4); a.IsValid() {
+		return a, nil
+	}
+
+	return netip.Addr{}, errFamily
+}
+
+// TS 24.229 clause 6.7.1.4.1
+// TS 29.162 clause 10.2.22
+// SIPconnect 2.0 section 15
+func (m *media) offered(side int) ([]netip.Addr, error) {
+	if side == phoneSide {
+		addrs := perFamily(m.cfg.Phone)
+		if len(addrs) == 0 {
+			return nil, errNoMedia
+		}
+
+		return addrs, nil
+	}
+
+	a, err := m.local(trunkSide, trgw.Remote{})
+	if err != nil {
+		return nil, err
+	}
+
+	return []netip.Addr{a}, nil
+}
+
+// TS 29.162 clause 9.1.1.1
+// TS 29.162 clause 9.1.3
+func (m *media) open(i, from, to int, rm trgw.Remote) (*stream, error) {
 	if m.closed {
 		return nil, trgw.ErrClosed
 	}
 
-	if m.stream != nil {
-		return m.stream, nil
-	}
-
-	end, err := s.RTPEndpoint(i)
+	own, err := m.local(from, rm)
 	if err != nil {
 		return nil, err
 	}
 
-	signal := m.c.trunkFamily()
-	phone, trunk := m.cfg.bind(m.cfg.Phone, netip.IPv4Unspecified()), m.cfg.bind(m.cfg.Trunk, signal)
+	if m.stream != nil {
+		if rm.Known() {
+			if _, err := mediaLeg(m.stream.relay, from).Open(own); err != nil {
+				return nil, err
+			}
+		}
 
-	if from == phoneSide {
-		phone = m.cfg.bind(m.cfg.Phone, end.Addr)
-	} else {
-		trunk = m.cfg.bind(m.cfg.Trunk, end.Addr)
+		return m.stream, nil
 	}
 
-	if !phone.IsValid() || !trunk.IsValid() {
-		return nil, errNoMedia
+	towards, err := m.offered(to)
+	if err != nil {
+		return nil, err
 	}
+
+	addrs := [2]netip.Addr{}
+	addrs[from], addrs[to] = own, towards[0]
 
 	t, _ := m.c.owner()
 
 	r, err := m.cfg.Gateway.Allocate(context.Background(), trgw.Allocation{
-		TrunkID: t.ID, PhoneAddress: phone, TrunkAddress: trunk, OnMediaTimeout: m.timedOut,
+		TrunkID: t.ID, PhoneAddress: addrs[phoneSide], TrunkAddress: addrs[trunkSide], OnMediaTimeout: m.timedOut,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	for _, a := range towards[1:] {
+		if _, err := mediaLeg(r, to).Open(a); err != nil {
+			_ = r.Close()
+			return nil, err
+		}
 	}
 
 	if m.answered {
@@ -358,6 +523,26 @@ func (m *media) open(i int, s *sdp.Session, from int) (*stream, error) {
 	m.stream = &stream{index: i, relay: r}
 
 	return m.stream, nil
+}
+
+// RFC 3261 section 20.43
+// RFC 3261 section 21.4.26
+// RFC 3261 section 21.5.4
+func (m *media) refuse(err error) error {
+	switch {
+	case errors.Is(err, trgw.ErrNoPorts):
+		return &b2bua.Rejection{Reply: ua.Reply{Code: 503}, Err: err}
+	case errors.Is(err, errFamily), errors.Is(err, trgw.ErrFamily):
+		rp := ua.Reply{Code: 488}
+
+		if w, werr := sip.NewWarning(sip.WarnIncompatibleAddressFormats, m.c.b.cfg.HomeDomain); werr == nil {
+			rp.Header.Add("Warning", w.String())
+		}
+
+		return &b2bua.Rejection{Reply: rp, Err: err}
+	}
+
+	return err
 }
 
 func (m *media) release(st *stream) {
@@ -375,6 +560,7 @@ func (m *media) release(st *stream) {
 // RFC 3264 section 5.1
 // RFC 3264 section 8.4
 // RFC 4566 section 5.7
+// RFC 5761 section 5.1.1
 func remoteOf(s *sdp.Session, i int) trgw.Remote {
 	rm := trgw.Remote{Direction: direction(s.MediaDirection(i))}
 
@@ -391,6 +577,8 @@ func remoteOf(s *sdp.Session, i int) trgw.Remote {
 
 		return rm
 	}
+
+	rm.Mux = s.Media[i].RTCPMux()
 
 	if rtcp, err := s.RTCPEndpoint(i); err == nil {
 		rm.RTCP = netip.AddrPortFrom(rtcp.Addr, rtcp.Port)
@@ -437,15 +625,70 @@ func sdpDirection(d trgw.Direction) sdp.Direction {
 	return sdp.SendRecv
 }
 
-var dropped = []string{"rtcp", "rtcp-mux", "candidate", "remote-candidates", "end-of-candidates", "ice-ufrag", "ice-pwd", "ice-options", "ice-lite", "ice-mismatch"}
+// GSMA IR.65 section 5.2.5.6
+// RFC 3312 section 11
+// RFC 5761 section 5.1.1
+// RFC 6947 section 4.2.2
+// RFC 8858 section 4.3
+var dropped = []string{
+	"rtcp", "rtcp-mux", "rtcp-mux-only", "candidate", "remote-candidates", "end-of-candidates", "ice-ufrag", "ice-pwd",
+	"ice-options", "ice-lite", "ice-mismatch", sdp.Current, sdp.Desired, sdp.Confirmed, "altc",
+}
+
+func (m *media) mux(dialog *ua.Session, side int) bool {
+	rm := m.state(dialog).remote[side]
+	return rm != nil && rm.Mux
+}
+
+// RFC 6947 section 4.1
+func (m *media) advertised(dialog *ua.Session, to int) (trgw.Binding, *trgw.Binding) {
+	l := mediaLeg(m.stream.relay, to)
+
+	if rm := m.state(dialog).remote[to]; rm != nil && rm.Known() {
+		if b, ok := l.Bound(rm.RTP.Addr().Unmap().Is4()); ok {
+			return b, nil
+		}
+	}
+
+	b, _ := l.Primary()
+
+	if alt, ok := l.Bound(!b.AdvertisedRTP.Addr().Is4()); ok && to == phoneSide {
+		return b, &alt
+	}
+
+	return b, nil
+}
+
+// RFC 6947 section 4.1
+func altc(n int, b trgw.Binding) string {
+	family := sdp.IP4
+	if !b.AdvertisedRTP.Addr().Is4() {
+		family = sdp.IP6
+	}
+
+	return strconv.Itoa(n) + " " + family + " " + b.AdvertisedRTP.Addr().String() + " " + strconv.Itoa(int(b.AdvertisedRTP.Port()))
+}
 
 // TS 24.229 clause 6.7.1.2.1
-// TS 24.229 clause 6.7.1.4
+// TS 24.229 clause 6.7.1.4.1
+// TS 29.162 clause 9.1.5
+// RFC 3264 section 5
 // RFC 3264 section 6
+// RFC 3264 section 8.2
 // RFC 3605 section 2.1
-// RFC 4566 section 5.2
-func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to int) ([]byte, error) {
-	var addr netip.Addr
+// RFC 4566 section 5.7
+// RFC 4566 section 5.14
+func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to, idx int) ([]byte, error) {
+	var (
+		addr netip.Addr
+		src  netip.Addr
+	)
+
+	if idx >= 0 {
+		if e, err := s.RTPEndpoint(idx); err == nil {
+			src = e.Addr.Unmap()
+		}
+	}
 
 	for i, md := range s.Media {
 		for _, name := range dropped {
@@ -454,23 +697,38 @@ func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to int) ([]byte, err
 
 		md.Del('c')
 
-		if m.stream == nil || i != m.stream.index || md.Port() == 0 {
+		if m.stream == nil || i != idx || md.Port() == 0 {
 			md.Disable()
 			continue
 		}
 
-		l := mediaLeg(m.stream.relay, to)
-		rtp, rtcp := l.AdvertisedRTP(), l.AdvertisedRTCP()
+		b, alt := m.advertised(dialog, to)
+		rtp, rtcp := b.AdvertisedRTP, b.AdvertisedRTCP
 
 		d, _ := md.Desc()
-		d.Port = rtp.Port()
+		d.Port, d.NumPorts = rtp.Port(), 0
 		md.SetDesc(d)
 
 		if rtcp.Port() != rtp.Port()+1 {
 			md.AddAttr("rtcp", strconv.Itoa(int(rtcp.Port())))
 		}
 
+		if m.mux(dialog, to) {
+			md.AddAttr("rtcp-mux", "")
+		}
+
+		if alt != nil {
+			md.AddAttr("altc", altc(1, b))
+			md.AddAttr("altc", altc(2, *alt))
+		}
+
 		addr = rtp.Addr()
+
+		if src.IsValid() && src.Is4() != addr.Is4() {
+			interwork(s, md, src.Is4(), addr.Is4())
+		}
+
+		m.police(dialog, to, md, addr.Is4())
 	}
 
 	for _, name := range dropped {
@@ -478,10 +736,7 @@ func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to int) ([]byte, err
 	}
 
 	if !addr.IsValid() {
-		addr = m.cfg.bind(m.cfg.Phone, netip.IPv4Unspecified())
-		if to == trunkSide {
-			addr = m.cfg.bind(m.cfg.Trunk, m.c.trunkFamily())
-		}
+		addr = m.fallback(to)
 	}
 
 	if !addr.IsValid() {
@@ -491,6 +746,29 @@ func (m *media) rewrite(s *sdp.Session, dialog *ua.Session, to int) ([]byte, err
 	s.SetConnection(sdp.NewConnection(addr))
 
 	return m.stamp(s, dialog, to, addr)
+}
+
+func (m *media) fallback(side int) netip.Addr {
+	if addrs, err := m.offered(side); err == nil {
+		if a, ok := m.cfg.Gateway.Advertised(addrs[0]); ok {
+			return a
+		}
+
+		return addrs[0]
+	}
+
+	return netip.Addr{}
+}
+
+// TS 29.162 clause 10.2.9
+func (m *media) police(dialog *ua.Session, side int, md *sdp.Media, is4 bool) {
+	rate := policed(md, is4)
+	d := m.state(dialog)
+	d.police[side] = rate
+
+	if !m.confirmed || dialog == m.active {
+		mediaLeg(m.stream.relay, side).Police(rate)
+	}
 }
 
 // RFC 3264 section 8
