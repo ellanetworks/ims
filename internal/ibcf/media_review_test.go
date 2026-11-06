@@ -3,6 +3,7 @@ package ibcf
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
@@ -453,6 +454,18 @@ func TestRecalculateBandwidthInfo(t *testing.T) {
 			[]string{"a=bw-info:97 send MaxSupBw=40", "a=bw-info:101 send MaxSupBw=32;IpVer=4;MaxPRate=50", "a=bw-info:97 send MinSupBw=20;IpVer=4"},
 		},
 		{
+			"repeated payload type",
+			[]string{"a=bw-info:97,97,101 send MaxSupBw=40;IpVer=6", "a=bw-info:101 send MaxSupBw=32;IpVer=4"},
+			true,
+			[]string{"a=bw-info:97 send MaxSupBw=32;IpVer=4;MaxPRate=50", "a=bw-info:101 send MaxSupBw=40;IpVer=6", "a=bw-info:101 send MaxSupBw=32;IpVer=4"},
+		},
+		{
+			"repeated payload type converted whole",
+			[]string{"a=bw-info:97,97 send MaxSupBw=40"},
+			true,
+			[]string{"a=bw-info:97 send MaxSupBw=32;IpVer=4;MaxPRate=50"},
+		},
+		{
 			"wildcard converted whole",
 			[]string{"a=bw-info:* sendrecv MaxSupBw=40"},
 			true,
@@ -536,6 +549,35 @@ func TestPolicedRate(t *testing.T) {
 
 	if got := policed(s.Media[0]); got != 0 {
 		t.Errorf("rate %d with neither b=AS nor a known codec, want no policing", got)
+	}
+
+	s.Media[0].SetBandwidth(sdp.BandwidthAS, math.MaxUint64)
+
+	if got := policed(s.Media[0]); got != math.MaxUint64 {
+		t.Errorf("rate %d with b=AS:%d, want %d", got, uint64(math.MaxUint64), uint64(math.MaxUint64))
+	}
+}
+
+func TestTinyPtime(t *testing.T) {
+	body := "v=0\r\no=- 1 1 IN IP6 ::1\r\ns=-\r\nc=IN IP6 ::1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 97\r\nb=AS:30\r\na=rtpmap:97 G726-32/8000\r\na=ptime:0.0000001\r\na=maxptime:0.0000002\r\n"
+
+	s, err := sdp.Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if maxRate, minRate := packetRates(s.Media[0]); maxRate != 1000 || minRate != 1000 {
+		t.Errorf("packet rates %v and %v, want 1000", maxRate, minRate)
+	}
+
+	if got, want := policed(s.Media[0]), uint64((30000+float64((12+8+40)*8*1000))*policedHeadroom); got != want {
+		t.Errorf("rate %d, want %d", got, want)
+	}
+
+	interwork(s, s.Media[0], false, true)
+
+	if as, _ := s.Media[0].Bandwidth(sdp.BandwidthAS); as != 1 {
+		t.Errorf("b=AS:%d towards IPv4, want 1", as)
 	}
 }
 

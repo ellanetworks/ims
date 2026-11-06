@@ -109,7 +109,7 @@ func New(ctx context.Context, cfg Config) (*IBCF, error) {
 	}
 
 	cfg.Internal, cfg.External, cfg.TLS = unmapAll(cfg.Internal), unmapAll(cfg.External), unmapAll(cfg.TLS)
-	cfg.SCSCF = unmapAll(cfg.SCSCF)
+	cfg.SCSCF, cfg.ICSCF = unmapAll(cfg.SCSCF), unmapAll(cfg.ICSCF)
 
 	life, kill := context.WithCancel(context.Background())
 	b := &IBCF{cfg: cfg, log: logger, legs: newLegs(), peers: newPeers(), life: life, kill: kill}
@@ -274,6 +274,10 @@ func (b *IBCF) Filter(m sip.Message) error {
 
 	err := b.admit(req)
 	if err == nil {
+		err = req.Validate()
+	}
+
+	if err == nil {
 		err = screen(req)
 	}
 
@@ -289,7 +293,7 @@ func (b *IBCF) noteEnding(req *sip.Request) {
 		return
 	}
 
-	if l := b.legs.received(req); l != nil {
+	if l := b.legs.received(req); l != nil && (req.Method != "CANCEL" || l.call.cancels(req)) {
 		l.call.ending(l.trunk, req.Method)
 	}
 }

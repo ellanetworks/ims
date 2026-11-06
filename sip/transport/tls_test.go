@@ -18,6 +18,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -545,17 +546,23 @@ func TestTLSOutboundConnectionReused(t *testing.T) {
 func closedPort(t *testing.T) uint16 {
 	t.Helper()
 
-	var lc net.ListenConfig
-
-	l, err := lc.Listen(t.Context(), "tcp4", "127.0.0.1:0")
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
+	t.Cleanup(func() { _ = syscall.Close(fd) })
 
-	return uint16(port)
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: lo.As4()}); err != nil {
+		t.Fatal(err)
+	}
+
+	sa, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return uint16(sa.(*syscall.SockaddrInet4).Port)
 }
 
 type rawServer struct {
@@ -563,10 +570,10 @@ type rawServer struct {
 	conns chan *tls.Conn
 }
 
-func newRawServer(t *testing.T, cert tls.Certificate) *rawServer {
+func newRawServer(t *testing.T, cfg *tls.Config, from netip.AddrPort) *rawServer {
 	t.Helper()
 
-	l, err := tls.Listen("tcp4", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	l, err := tls.Listen("tcp4", "127.0.0.1:0", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,9 +589,23 @@ func newRawServer(t *testing.T, cert tls.Certificate) *rawServer {
 				return
 			}
 
+			if netip.MustParseAddrPort(c.RemoteAddr().String()) != from {
+				_ = c.Close()
+				continue
+			}
+
 			t.Cleanup(func() { _ = c.Close() })
 
-			s.conns <- c.(*tls.Conn)
+			tc := c.(*tls.Conn)
+
+			ctx, cancel := context.WithTimeout(t.Context(), siptest.Timeout)
+			err = tc.HandshakeContext(ctx)
+
+			cancel()
+
+			if err == nil {
+				s.conns <- tc
+			}
 		}
 	}()
 
@@ -619,9 +640,9 @@ func readKeepalive(t *testing.T, c *tls.Conn) {
 
 func TestTLSPersistentConnection(t *testing.T) {
 	p := newPKI(t)
-	peer := newRawServer(t, p.server.tls)
 	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
 		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+	peer := newRawServer(t, &tls.Config{Certificates: []tls.Certificate{p.server.tls}}, client.local)
 
 	f := sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}
 
@@ -666,9 +687,9 @@ func targets(flows ...sip.Flow) transport.Targets {
 
 func TestTLSPersistentConnectionPong(t *testing.T) {
 	p := newPKI(t)
-	peer := newRawServer(t, p.server.tls)
 	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
 		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+	peer := newRawServer(t, &tls.Config{Certificates: []tls.Certificate{p.server.tls}}, client.local)
 
 	stop, err := client.tr.Persist(targets(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}),
 		transport.KeepAlive{Interval: 20 * time.Millisecond, PongTimeout: 50 * time.Millisecond})
@@ -702,9 +723,9 @@ func TestTLSPersistentConnectionPong(t *testing.T) {
 
 func TestTLSPersistentConnectionFailover(t *testing.T) {
 	p := newPKI(t)
-	peer := newRawServer(t, p.server.tls)
 	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
 		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+	peer := newRawServer(t, &tls.Config{Certificates: []tls.Certificate{p.server.tls}}, client.local)
 
 	dead := sip.Flow{Transport: sip.TLS, Local: client.local, Remote: netip.AddrPortFrom(lo, closedPort(t))}
 	udp := sip.Flow{Transport: sip.UDP, Local: client.local, Remote: peer.addr()}
@@ -895,13 +916,14 @@ func TestTLSUnauthenticatedInboundExactFlowNotUsedForRequests(t *testing.T) {
 	server := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.server.tls}}),
 		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
 
-	port := closedPort(t)
-	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)}, Timeout: siptest.Timeout}
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, Timeout: siptest.Timeout}
 
 	nc, err := d.DialContext(t.Context(), "tcp4", server.local.String())
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	port := uint16(nc.LocalAddr().(*net.TCPAddr).Port)
 
 	raw := tls.Client(nc, &tls.Config{RootCAs: pool(p.ca), ServerName: "sip.carrier.example"})
 
@@ -1179,4 +1201,94 @@ func TestStopPersistDuringTheHandshake(t *testing.T) {
 		t.Error("reconnected after stop")
 	case <-time.After(200 * time.Millisecond):
 	}
+}
+
+func TestTLSOutboundConnectionReverifiedForRequests(t *testing.T) {
+	p := newPKI(t)
+	moved := issue(t, certSpec{dns: []string{"sip.carrier.example"}}, p.other)
+
+	var served atomic.Pointer[tls.Certificate]
+	served.Store(&p.server.tls)
+
+	var opts atomic.Pointer[transport.TLSOptions]
+	opts.Store(&transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"})
+
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		func(sip.Flow) (transport.TLSOptions, error) { return *opts.Load(), nil })
+	peer := newRawServer(t, &tls.Config{GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return served.Load(), nil
+	}}, client.local)
+
+	read := func(c *tls.Conn) error {
+		_, _, err := sip.NewStreamReader(c, 0).Next()
+		return err
+	}
+
+	if _, err := client.send(t, peer.addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	first := peer.next(t)
+	if err := read(first); err != nil {
+		t.Fatal(err)
+	}
+
+	opts.Store(&transport.TLSOptions{PinnedFingerprints: [][sha256.Size]byte{transport.Fingerprint(p.server.x509)}})
+
+	if _, err := client.send(t, peer.addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := read(first); err != nil {
+		t.Fatalf("connection still trusted not reused: %v", err)
+	}
+
+	served.Store(&moved.tls)
+	opts.Store(&transport.TLSOptions{Roots: pool(p.other), ServerName: "sip.carrier.example"})
+
+	if _, err := client.send(t, peer.addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := read(first); err == nil {
+		t.Fatal("request sent over a connection the current settings don't trust")
+	}
+
+	if err := read(peer.next(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	opts.Store(&transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"})
+
+	if _, err := client.send(t, peer.addr()); err == nil {
+		t.Fatal("request sent over a connection the current settings don't trust")
+	}
+}
+
+func TestTLSPersistentConnectionAfterCloseNotify(t *testing.T) {
+	p := newPKI(t)
+	client := newNode(t, serverConfig(t, transport.TLSOptions{Certificates: []tls.Certificate{p.client.tls}}),
+		clientConfig(t, transport.TLSOptions{Roots: pool(p.ca), ServerName: "sip.carrier.example"}))
+	peer := newRawServer(t, &tls.Config{Certificates: []tls.Certificate{p.server.tls}}, client.local)
+
+	stop, err := client.tr.Persist(targets(sip.Flow{Transport: sip.TLS, Local: client.local, Remote: peer.addr()}),
+		transport.KeepAlive{Interval: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer stop()
+
+	first := peer.next(t)
+	readKeepalive(t, first)
+	readKeepalive(t, first)
+
+	if err := first.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = io.Copy(io.Discard, first.NetConn())
+	_ = first.NetConn().Close()
+
+	readKeepalive(t, peer.next(t))
 }

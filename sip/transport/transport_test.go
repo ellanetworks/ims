@@ -966,7 +966,9 @@ func TestBrokenListenerIsDropped(t *testing.T) {
 	cfg := transport.Config{Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	failed := failures(&cfg)
 	tr, _ := siptest.NewTransport(t, cfg)
-	local := siptest.Listen(t, tr, lo)
+	pid := os.Getpid()
+	own := netip.AddrFrom4([4]byte{127, byte(1 + (pid>>16)%254), byte(pid >> 8), byte(pid)})
+	local := siptest.Listen(t, tr, own)
 
 	rcs, err := tr.Sockets(local)
 	if err != nil {

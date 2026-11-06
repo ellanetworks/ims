@@ -42,8 +42,13 @@ func TestScreen(t *testing.T) {
 				sip.Field{Name: "Content-Disposition", Value: "render;handling=optional"})},
 		},
 		{
-			name:  "early session",
+			name:  "required early session",
 			parts: []sip.BodyPart{sdp, part("application/sdp", sip.Field{Name: "Content-Disposition", Value: "early-session"})},
+			code:  415,
+		},
+		{
+			name:  "optional early session",
+			parts: []sip.BodyPart{sdp, part("application/sdp", sip.Field{Name: "Content-Disposition", Value: "early-session;handling=optional"})},
 		},
 	}
 

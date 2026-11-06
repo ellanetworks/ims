@@ -34,7 +34,10 @@ func (h *harness) serverBarrier() {
 }
 
 func TestSentByAliases(t *testing.T) {
-	h := newHarnessConfig(t, transaction.Config{Aliases: []string{"PCSCF.ims.example", "192.0.2.10"}})
+	h := newHarnessConfig(t, transaction.Config{Aliases: map[netip.Addr][]string{
+		loopback:                         {"PCSCF.ims.example", "192.0.2.10"},
+		netip.MustParseAddr("127.0.0.2"): {"ibcf.ims.example", "198.51.100.7"},
+	}})
 
 	tests := []struct {
 		host string
@@ -46,6 +49,8 @@ func TestSentByAliases(t *testing.T) {
 		{"pcscf.ims.example", h.local.Port() + 1, false},
 		{"other.ims.example", h.local.Port(), false},
 		{"127.0.0.1", 0, false},
+		{"ibcf.ims.example", h.local.Port(), false},
+		{"198.51.100.7", h.local.Port(), false},
 	}
 
 	for _, tt := range tests {
@@ -155,6 +160,42 @@ func TestFilter(t *testing.T) {
 
 		h.peer.RecvNone(quiet)
 		h.tu.None(0)
+	})
+
+	t.Run("invalid request from a refused source dropped silently", func(t *testing.T) {
+		rfc2543 := siptest.NewRequest("OPTIONS", "sip:pcscf@"+refused.String(), sip.UDP, h.peer.Addr())
+		rfc2543.Header.Set("Via", "SIP/2.0/UDP "+h.peer.Addr().String()+";branch=old")
+
+		version := siptest.NewRequest("OPTIONS", "sip:pcscf@"+refused.String(), sip.UDP, h.peer.Addr())
+		version.Version = "SIP/3.0"
+
+		scheme := siptest.NewRequest("OPTIONS", "sip:pcscf@"+refused.String(), sip.UDP, h.peer.Addr())
+		scheme.URI.Scheme = "http"
+
+		fields := siptest.NewRequest("OPTIONS", "sip:pcscf@"+refused.String(), sip.UDP, h.peer.Addr())
+		fields.Header.Add("Expires", "1")
+		fields.Header.Add("Expires", "2")
+
+		for _, req := range []*sip.Request{rfc2543, version, scheme, fields} {
+			h.peer.Send(sip.UDP, refused, req)
+		}
+
+		h.peerRequest("MESSAGE", sip.UDP)
+
+		if r := h.tu.NextRequest(); r.Req.Method != "MESSAGE" {
+			t.Fatalf("TU got %s", r.Req.Method)
+		}
+
+		h.peer.RecvNone(quiet)
+		h.tu.None(0)
+
+		for _, req := range []*sip.Request{rfc2543, version, scheme, fields} {
+			h.peer.Send(sip.UDP, h.local, req)
+
+			if res, _ := h.peer.RecvResponse(); res.StatusCode < 400 {
+				t.Fatalf("admitted source got %q, want a rejection", res.StartLine())
+			}
+		}
 	})
 
 	t.Run("response dropped before the transaction sees it", func(t *testing.T) {

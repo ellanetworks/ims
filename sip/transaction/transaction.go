@@ -72,7 +72,7 @@ type Config struct {
 
 	Transport transport.Config
 
-	Aliases []string
+	Aliases map[netip.Addr][]string
 
 	Filter func(m sip.Message) error
 
@@ -112,7 +112,7 @@ type Layer struct {
 	clock    Clock
 	sched    Scheduler
 	network  *Network
-	aliases  map[string]struct{}
+	aliases  map[netip.Addr]map[string]struct{}
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 	onDone   func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
@@ -184,7 +184,7 @@ func New(cfg Config) *Layer {
 		clock:    cfg.Clock,
 		sched:    cfg.Scheduler,
 		network:  cfg.Network,
-		aliases:  make(map[string]struct{}),
+		aliases:  make(map[netip.Addr]map[string]struct{}),
 		filter:   cfg.Filter,
 		respFlow: cfg.ResponseFlow,
 		onDone:   cfg.OnServerDone,
@@ -209,8 +209,15 @@ func New(cfg Config) *Layer {
 
 	l.locals.Store(&addrSet{})
 
-	for _, a := range cfg.Aliases {
-		l.aliases[normalizeHost(a)] = struct{}{}
+	for local, names := range cfg.Aliases {
+		local = local.Unmap()
+		if l.aliases[local] == nil {
+			l.aliases[local] = make(map[string]struct{}, len(names))
+		}
+
+		for _, n := range names {
+			l.aliases[local][normalizeHost(n)] = struct{}{}
+		}
 	}
 
 	if l.log == nil {
@@ -624,19 +631,18 @@ func (l *Layer) admit(m sip.Message) bool {
 }
 
 func (l *Layer) handleRequest(req *sip.Request) {
-	var serr *sip.StatusError
+	if !l.admit(req) {
+		return
+	}
 
 	if err := req.Validate(); err != nil {
 		l.log.Debug("invalid SIP request", slog.String("flow", req.Flow.String()), slog.Any("error", err))
 
+		var serr *sip.StatusError
 		if errors.As(err, &serr) {
 			l.reject(req, serr.StatusCode)
 		}
 
-		return
-	}
-
-	if !l.admit(req) {
 		return
 	}
 
@@ -832,17 +838,26 @@ func (l *Layer) IsLocal(host string, port uint16) bool {
 		return true
 	}
 
-	if _, ok := l.aliases[normalizeHost(host)]; !ok {
-		return false
-	}
-
 	for local := range *l.locals.Load() {
-		if local.Port() == port {
+		if local.Port() == port && l.Names(local.Addr(), host) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func (l *Layer) Names(local netip.Addr, host string) bool {
+	local = local.Unmap()
+	h := normalizeHost(host)
+
+	if h == local.String() {
+		return true
+	}
+
+	_, ok := l.aliases[local][h]
+
+	return ok
 }
 
 func sentByKey(via sip.Via) string {

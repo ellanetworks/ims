@@ -1120,3 +1120,62 @@ func TestTLSPreferredWithoutTLSListener(t *testing.T) {
 		t.Fatalf("state %s, want up", st)
 	}
 }
+
+func TestSharedServers(t *testing.T) {
+	sharedErr := fmt.Errorf("%w: 192.0.2.1:5060", settings.ErrSharedServer)
+
+	for name, tc := range map[string]struct {
+		reply func(context.Context, sip.Server) (int, error)
+		want  settings.TrunkState
+	}{
+		"every server shared": {func(context.Context, sip.Server) (int, error) { return 0, sharedErr }, settings.TrunkUnusable},
+		"other server answers": {func(_ context.Context, to sip.Server) (int, error) {
+			if to.Addr.Addr() == netip.MustParseAddr("192.0.2.1") {
+				return 0, sharedErr
+			}
+
+			return 200, nil
+		}, settings.TrunkUp},
+		"other server silent": {func(_ context.Context, to sip.Server) (int, error) {
+			if to.Addr.Addr() == netip.MustParseAddr("192.0.2.1") {
+				return 0, sharedErr
+			}
+
+			return 0, context.DeadlineExceeded
+		}, settings.TrunkDown},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sender := &fakeSender{}
+			sender.use(tc.reply)
+
+			h := start(t, sender, 1, trunk("a", 30*time.Second))
+			h.waitScheduled(1)
+
+			st := h.mon.TrunkStatus("a")
+			if st.State != tc.want {
+				t.Fatalf("state = %s, want %s", st.State, tc.want)
+			}
+
+			if st.Usable() != (tc.want == settings.TrunkUp) {
+				t.Fatalf("usable = %v", st.Usable())
+			}
+		})
+	}
+}
+
+func TestSharedServerReleased(t *testing.T) {
+	sender := &fakeSender{}
+	sender.answer(0, settings.ErrSharedServer)
+
+	h := start(t, sender, 2, trunk("a", 30*time.Second))
+	h.waitScheduled(1)
+
+	if s := h.state("a"); s != settings.TrunkUnusable {
+		t.Fatalf("state = %s, want unusable", s)
+	}
+
+	sender.answer(200, nil)
+	h.clock.advance(30 * time.Second)
+
+	eventually(t, "up", func() bool { return h.state("a") == settings.TrunkUp })
+}

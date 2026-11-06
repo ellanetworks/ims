@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -59,4 +60,43 @@ func TestOpenAPISpec(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestOpenAPISpecAllOfIsOpen(t *testing.T) {
+	var spec map[string]any
+	if err := yaml.Unmarshal(openapiSpec, &spec); err != nil {
+		t.Fatalf("invalid YAML: %v", err)
+	}
+
+	schemas, _ := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	var walk func(node any, path string)
+
+	walk = func(node any, path string) {
+		switch n := node.(type) {
+		case map[string]any:
+			if all, ok := n["allOf"].([]any); ok {
+				for i, m := range all {
+					member, _ := m.(map[string]any)
+					if ref, ok := member["$ref"].(string); ok {
+						member, _ = schemas[strings.TrimPrefix(ref, "#/components/schemas/")].(map[string]any)
+					}
+
+					if closed, ok := member["additionalProperties"].(bool); ok && !closed {
+						t.Errorf("%s/allOf/%d has additionalProperties: false; use unevaluatedProperties on the composing schema", path, i)
+					}
+				}
+			}
+
+			for k, v := range n {
+				walk(v, path+"/"+k)
+			}
+		case []any:
+			for i, v := range n {
+				walk(v, fmt.Sprintf("%s/%d", path, i))
+			}
+		}
+	}
+
+	walk(spec, "#")
 }

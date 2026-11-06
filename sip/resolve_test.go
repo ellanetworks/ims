@@ -523,6 +523,7 @@ type dnsServer struct {
 	tcp       atomic.Int32
 	asked     chan string
 	noEDNS    bool
+	bare      bool
 	plain     atomic.Int32
 	spoof     bool
 	owner     string
@@ -650,8 +651,11 @@ func (s *dnsServer) answer(query []byte, truncate bool) []byte {
 
 	if s.noEDNS && edns {
 		b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true, RCode: dnsmessage.RCodeFormatError})
-		_ = b.StartQuestions()
-		_ = b.Question(q)
+		if !s.bare {
+			_ = b.StartQuestions()
+			_ = b.Question(q)
+		}
+
 		out, _ := b.Finish()
 
 		return out
@@ -757,6 +761,8 @@ func TestSystemNAPTR(t *testing.T) {
 		notFound  bool
 		tcp       int32
 		noEDNS    bool
+		bare      bool
+		useVC     bool
 		plain     int32
 		spoof     bool
 		owner     string
@@ -767,6 +773,8 @@ func TestSystemNAPTR(t *testing.T) {
 		{name: "NXDOMAIN", rcode: dnsmessage.RCodeNameError, notFound: true},
 		{name: "malformed", malformed: true, notFound: true},
 		{name: "without EDNS", noEDNS: true, want: recs, plain: 1},
+		{name: "without EDNS, no question", noEDNS: true, bare: true, want: recs, plain: 1},
+		{name: "without EDNS, no question, TCP", noEDNS: true, bare: true, useVC: true, want: recs, plain: 1, tcp: 2},
 		{name: "spoofed first", spoof: true, want: recs},
 		{name: "foreign owner", owner: "evil.example.", notFound: true},
 		{name: "alias", alias: "naptr.provider.example.", want: recs},
@@ -774,10 +782,18 @@ func TestSystemNAPTR(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newDNSServer(t, &dnsServer{
 				records: recs, truncate: tt.truncate, malformed: tt.malformed, rcode: tt.rcode,
-				noEDNS: tt.noEDNS, spoof: tt.spoof, owner: tt.owner, alias: tt.alias,
+				noEDNS: tt.noEDNS, bare: tt.bare, spoof: tt.spoof, owner: tt.owner, alias: tt.alias,
 			})
 
-			d := &systemDNS{conf: "/nonexistent", servers: []netip.AddrPort{s.addr}}
+			conf := "/nonexistent"
+			if tt.useVC {
+				conf = filepath.Join(t.TempDir(), "resolv.conf")
+				if err := os.WriteFile(conf, []byte("options use-vc\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			d := &systemDNS{conf: conf, servers: []netip.AddrPort{s.addr}}
 
 			got, err := d.LookupNAPTR(t.Context(), "example.com")
 

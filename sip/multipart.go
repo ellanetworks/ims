@@ -146,12 +146,6 @@ func (p BodyPart) Encoding() error {
 	return p.checkEncoding()
 }
 
-// RFC 3959 section 4
-func (p BodyPart) IsEarlySession() bool {
-	d, _, err := p.Disposition()
-	return err == nil && d == DispositionEarlySession && p.MediaType() == "application/sdp"
-}
-
 // RFC 3261 section 7.4
 func (p BodyPart) checkEncoding() error {
 	if p.Header.Has("Content-Type") && p.MediaType() == "" {
@@ -384,19 +378,26 @@ func (m *Multipart) Encode() (contentType string, body []byte) {
 	return "multipart/" + sub + ";boundary=" + boundary, body
 }
 
+// RFC 3261 section 8.2.3
+// RFC 5621 section 9.3
 func (p BodyPart) Parts() ([]BodyPart, error) {
 	parts, err := p.Split()
 	if err != nil {
 		return nil, err
 	}
 
+	var usable []BodyPart
+
 	for _, part := range parts {
-		if err := part.checkEncoding(); err != nil {
+		switch err := part.checkEncoding(); {
+		case err == nil:
+			usable = append(usable, part)
+		case !part.Optional():
 			return nil, err
 		}
 	}
 
-	return parts, nil
+	return usable, nil
 }
 
 // RFC 2046 section 5.1
@@ -466,6 +467,7 @@ func (m *Multipart) find(match func(BodyPart) bool, byReference bool, depth int)
 	return BodyPart{}, false, nil
 }
 
+// RFC 5621 section 9.3
 func (p BodyPart) find(match func(BodyPart) bool, byReference bool, depth int) (BodyPart, bool, error) {
 	if !byReference {
 		if d, _, err := p.Disposition(); err == nil && d == DispositionByReference {
@@ -474,6 +476,10 @@ func (p BodyPart) find(match func(BodyPart) bool, byReference bool, depth int) (
 	}
 
 	if err := p.checkEncoding(); err != nil {
+		if p.Optional() {
+			return BodyPart{}, false, nil
+		}
+
 		return BodyPart{}, false, err
 	}
 

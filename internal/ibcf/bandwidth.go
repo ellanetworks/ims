@@ -20,6 +20,7 @@ const (
 
 const (
 	defaultPtime       = 20 * time.Millisecond
+	minPtime           = time.Millisecond
 	policedPacketRate  = 100
 	policedHeadroom    = 1.25
 	bwInfo             = "bw-info"
@@ -44,6 +45,7 @@ func packetRates(md *sdp.Media) (maxRate, minRate float64) {
 		ptime = defaultPtime
 	}
 
+	ptime = max(ptime, minPtime)
 	maxRate = float64(time.Second) / float64(ptime)
 	minRate = maxRate
 
@@ -79,7 +81,7 @@ func interwork(s *sdp.Session, md *sdp.Media, from4, to4 bool) {
 		}
 
 		v := math.Ceil(float64(as) + sign*versionDelta(maxRate))
-		ls.SetBandwidth(sdp.BandwidthAS, uint64(max(1, v)))
+		ls.SetBandwidth(sdp.BandwidthAS, saturate(max(1, v)))
 	}
 
 	recalculate(md, to4, maxRate, minRate)
@@ -209,11 +211,15 @@ func parsePayloadTypes(def string) ([]string, bool) {
 		return nil, true
 	}
 
-	pts := strings.Split(def, ",")
+	var pts []string
 
-	for _, pt := range pts {
+	for _, pt := range strings.Split(def, ",") {
 		if len(pt) == 0 || len(pt) > 3 || strings.Trim(pt, "0123456789") != "" {
 			return nil, false
+		}
+
+		if !slices.Contains(pts, pt) {
+			pts = append(pts, pt)
 		}
 	}
 
@@ -494,7 +500,7 @@ func policed(md *sdp.Media) uint64 {
 		codec = max(codec, codecBitrates[strings.ToUpper(c.Encoding)])
 	}
 
-	payload := max(as*1000, codec)
+	payload := max(float64(as)*1000, float64(codec))
 	if payload == 0 {
 		return 0
 	}
@@ -504,5 +510,13 @@ func policed(md *sdp.Media) uint64 {
 
 	header := float64(rtpHeader+udpHeader+ipv6Header) * 8 * rate
 
-	return uint64(math.Ceil((float64(payload) + header) * policedHeadroom))
+	return saturate(math.Ceil((payload + header) * policedHeadroom))
+}
+
+func saturate(v float64) uint64 {
+	if v >= 0x1p64 {
+		return math.MaxUint64
+	}
+
+	return uint64(v)
 }

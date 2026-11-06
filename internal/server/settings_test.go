@@ -296,7 +296,9 @@ func TestAPIDuringRestarts(t *testing.T) {
 }
 
 func TestFailedSIPListenerRestartsTheCore(t *testing.T) {
-	srv := startIMS(t, testConfig(t))
+	cfg := testConfig(t)
+	cfg.SCSCF.Port = unusedPort(t)
+	srv := startIMS(t, cfg)
 	before := srv.core.Load()
 
 	var scscf netip.AddrPort

@@ -158,16 +158,8 @@ func (t *Transport) persistent(ctx context.Context, f sip.Flow) (*conn, error) {
 		return nil, err
 	}
 
-	c, err := t.pooled(f, true, true)
+	c, err := t.acquire(ctx, f, true, true, true)
 	if err != nil {
-		return nil, err
-	}
-
-	if _, err := t.await(ctx, c); err != nil {
-		if ctx.Err() != nil {
-			t.abandon(c)
-		}
-
 		return nil, err
 	}
 

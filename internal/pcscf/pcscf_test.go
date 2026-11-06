@@ -49,7 +49,7 @@ func TestRegisterGoesToTheICSCF(t *testing.T) {
 	pcscf := siptest.ListenLayer(t, layer, loopback)
 
 	late.h.Store(New(Config{
-		Proxy:     proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}),
+		Proxy:     proxy.New(proxy.Config{Layer: layer, Listeners: []netip.AddrPort{pcscf}}),
 		Port:      pcscf.Port(),
 		ICSCFPort: icscf.Addr().Port(),
 		Fallback:  fallback,
@@ -94,7 +94,7 @@ func TestCoreRequestsForThePCSCFGoToTheFallback(t *testing.T) {
 	pcscf := siptest.ListenLayer(t, layer, loopback)
 
 	late.h.Store(New(Config{
-		Proxy: proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}), Port: pcscf.Port(),
+		Proxy: proxy.New(proxy.Config{Layer: layer, Listeners: []netip.AddrPort{pcscf}}), Port: pcscf.Port(),
 		Trust: trust.New([]netip.Addr{loopback}, nil), Fallback: fallback,
 	}))
 
@@ -123,7 +123,7 @@ func newScene(t *testing.T) *scene {
 	pcscf := siptest.ListenLayer(t, layer, loopback)
 
 	late.h.Store(New(Config{
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Port: pcscf.Port()}),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Listeners: []netip.AddrPort{pcscf}}),
 		Port:       pcscf.Port(),
 		ICSCFPort:  icscf.Addr().Port(),
 		HomeDomain: homeDomain,

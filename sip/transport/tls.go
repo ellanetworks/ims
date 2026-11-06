@@ -30,7 +30,7 @@ var (
 
 	ErrNoPeerCertificate = errors.New("sip/transport: no peer certificate")
 
-	ErrUnauthorizedConnection = errors.New("sip/transport: inbound TLS connection not authorized for requests")
+	ErrUnauthorizedConnection = errors.New("sip/transport: TLS connection not authorized for requests")
 )
 
 var (
@@ -163,7 +163,16 @@ type verifier struct {
 }
 
 func (v *verifier) accepts(c *conn) bool {
-	return v != nil && len(c.peers) > 0 && v.verify(tls.ConnectionState{PeerCertificates: c.peers}) == nil
+	if v == nil || len(c.peers) == 0 {
+		return false
+	}
+
+	w := *v
+	if !c.inbound {
+		w.usage = x509.ExtKeyUsageServerAuth
+	}
+
+	return w.verify(tls.ConnectionState{PeerCertificates: c.peers}) == nil
 }
 
 func (t *Transport) reuseVerifier(f sip.Flow) *verifier {

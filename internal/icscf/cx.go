@@ -8,7 +8,6 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
-	"github.com/ellanetworks/ims/sip"
 )
 
 func (i *ICSCF) envelope() tgpp.Envelope {
@@ -102,28 +101,4 @@ func userUnknown(err error) bool {
 	var re *cx.ResultError
 
 	return errors.As(err, &re) && re.IsExperimental(tgpp.ResultErrorUserUnknown)
-}
-
-// TS 24.229 clause 5.4.3.2
-// TS 29.228 clause 6.1.4
-func (i *ICSCF) Serves(ctx context.Context, number sip.URI) (bool, error) {
-	if tel, converted, err := telURI(number); err == nil && converted {
-		number = tel
-	}
-
-	identity, err := sessionIdentity(number)
-	if err != nil {
-		return false, err
-	}
-
-	_, err = i.locationInfo(ctx, identity, false)
-
-	switch {
-	case err == nil, negative(err) && !userUnknown(err):
-		return true, nil
-	case userUnknown(err):
-		return false, nil
-	}
-
-	return false, err
 }

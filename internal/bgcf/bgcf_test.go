@@ -35,18 +35,21 @@ func ids(trunks []settings.Trunk) []string {
 
 func TestTrunks(t *testing.T) {
 	trunks := []settings.Trunk{
-		trunk("a", true), trunk("b", true), trunk("c", true), trunk("off", false), trunk("down", true), trunk("unknown", true),
+		trunk("a", true), trunk("b", true), trunk("c", true), trunk("off", false), trunk("down", true), trunk("unknown", true), trunk("unusable", true),
 	}
 
 	routes := []settings.SIPRoute{
 		{ID: "r0", Prefix: "", Trunks: []string{"a"}},
 		{ID: "r1", Prefix: "+1", Trunks: []string{"b", "a"}},
 		{ID: "r2", Prefix: "+1661", Trunks: []string{"c", "b"}},
-		{ID: "r3", Prefix: "+44", Trunks: []string{"off", "down", "b", "unknown"}},
+		{ID: "r3", Prefix: "+44", Trunks: []string{"off", "down", "unusable", "b", "unknown"}},
 		{ID: "r4", Prefix: "+33", Trunks: []string{"off", "down"}},
 	}
 
-	st := states{"a": settings.TrunkUp, "b": settings.TrunkUp, "c": settings.TrunkUp, "down": settings.TrunkDown, "unknown": settings.TrunkUnknown}
+	st := states{
+		"a": settings.TrunkUp, "b": settings.TrunkUp, "c": settings.TrunkUp, "down": settings.TrunkDown, "unknown": settings.TrunkUnknown,
+		"unusable": settings.TrunkUnusable,
+	}
 
 	tests := []struct {
 		name   string
@@ -57,7 +60,7 @@ func TestTrunks(t *testing.T) {
 		{"longest prefix", "+16617629239", []string{"c", "b"}, nil},
 		{"shorter overlapping prefix", "+15551234567", []string{"b", "a"}, nil},
 		{"default route", "+4915112345678", []string{"a"}, nil},
-		{"disabled and down trunks skipped, order kept", "+442079460000", []string{"b", "unknown"}, nil},
+		{"disabled, down and unusable trunks skipped, order kept", "+442079460000", []string{"b", "unknown"}, nil},
 		{"no usable trunk", "+33612345678", nil, ErrNoUsableTrunk},
 		{"not a global number", "16617629239", nil, nil},
 		{"empty number", "", nil, nil},

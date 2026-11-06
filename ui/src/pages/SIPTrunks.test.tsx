@@ -354,14 +354,14 @@ describe("SIP Trunks", () => {
     serve({
       trunks: [
         telnyx({
+          addresses: [
+            { host: "sip.telnyx.com", port: 5061, transport: "tls" },
+            { host: "192.0.2.10" },
+            { host: "telnyx.example" },
+          ],
           domain: "",
           inbound_cidrs: [],
           tls: { required: false, ca_certificates: CA_PEM },
-          effective: {
-            domain: "sip.telnyx.com",
-            inbound_cidrs: ["192.0.2.10/32"],
-            tls_identities: ["sip.telnyx.com", "telnyx.example"],
-          },
         }),
       ],
     });
@@ -383,6 +383,43 @@ describe("SIP Trunks", () => {
       "placeholder",
       "sip.telnyx.com\ntelnyx.example",
     );
+  });
+
+  it("derives the defaults from the form", async () => {
+    serve();
+
+    renderWithClient(<SIPTrunks />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Telnyx" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Edit Trunk" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "TLS" }));
+    const field = (name: string) =>
+      within(dialog).getByRole("textbox", { name });
+    const hosts = within(dialog).getAllByRole("textbox", { name: "Host" });
+    fireEvent.change(hosts[0], { target: { value: "sip.example.net" } });
+    fireEvent.change(hosts[1], { target: { value: "2001:db8::1" } });
+    for (const name of ["Domain", "Inbound CIDRs", "Identities"]) {
+      fireEvent.change(field(name), { target: { value: "" } });
+    }
+
+    expect(field("Domain")).toHaveAttribute("placeholder", "sip.example.net");
+    expect(field("Inbound CIDRs")).toHaveAttribute(
+      "placeholder",
+      "2001:db8::1/128",
+    );
+    expect(field("Identities")).toHaveAttribute(
+      "placeholder",
+      "sip.example.net",
+    );
+
+    fireEvent.change(field("Domain"), { target: { value: "example.net" } });
+    expect(field("Identities")).toHaveAttribute(
+      "placeholder",
+      "example.net\nsip.example.net",
+    );
+
+    fireEvent.change(field("CA Certificates"), { target: { value: "" } });
+    expect(field("Identities")).not.toHaveAttribute("placeholder");
   });
 
   it("shows no default where the trunk sets the value", async () => {

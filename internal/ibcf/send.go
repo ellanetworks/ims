@@ -38,7 +38,7 @@ func (s sender) done(r sent) {
 // SIPconnect 2.0 section 17.4
 func (b *IBCF) Send(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, req *sip.Request, srv sip.Server) (*sip.Response, error) {
 	if !b.noteServer(t, a, srv) {
-		return nil, fmt.Errorf("%w: %s", errSharedServer, srv.Addr)
+		return nil, fmt.Errorf("%w: %s", settings.ErrSharedServer, srv.Addr)
 	}
 
 	local, ok := b.local(srv.Transport, srv.Addr.Addr())

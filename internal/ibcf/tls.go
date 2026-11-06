@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/netip"
 	"slices"
 	"sync"
@@ -21,13 +22,10 @@ const reresolve = 10 * time.Minute
 
 var errNoTLSTrunk = errors.New("ibcf: TLS peer of no SIP trunk with TLS settings")
 
-var errSharedServer = errors.New("ibcf: TLS server of another SIP trunk")
-
 type peer struct {
 	trunk      string
 	address    settings.TrunkAddress
 	serverName string
-	rank       rank
 }
 
 type rank struct {
@@ -36,6 +34,23 @@ type rank struct {
 
 func (r rank) before(o rank) bool {
 	return r.trunk < o.trunk || r.trunk == o.trunk && r.address < o.address
+}
+
+func rankOf(trunks []settings.Trunk, id string, addr settings.TrunkAddress) rank {
+	r := rank{trunk: len(trunks), address: math.MaxInt}
+
+	i := slices.IndexFunc(trunks, func(o settings.Trunk) bool { return o.ID == id })
+	if i < 0 {
+		return r
+	}
+
+	r.trunk = i
+
+	if j := slices.Index(trunks[i].Addresses, addr); j >= 0 {
+		r.address = j
+	}
+
+	return r
 }
 
 type conflict struct {
@@ -54,7 +69,7 @@ func newPeers() *peers {
 }
 
 // RFC 5922 section 7.3
-func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server, r rank) (ok, first bool) {
+func (p *peers) note(trunks []settings.Trunk, t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) (ok, first bool) {
 	if srv.Transport != sip.TLS {
 		return true, false
 	}
@@ -74,8 +89,8 @@ func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Serve
 	old, known := p.peers[a]
 
 	switch {
-	case !known, r.before(old.rank):
-		p.peers[a] = peer{trunk: t.ID, address: addr, serverName: name, rank: r}
+	case !known, rankOf(trunks, t.ID, addr).before(rankOf(trunks, old.trunk, old.address)):
+		p.peers[a] = peer{trunk: t.ID, address: addr, serverName: name}
 	case old.trunk != t.ID:
 		k := conflict{server: a, trunk: t.ID}
 		first = !p.refused[k]
@@ -89,29 +104,13 @@ func (p *peers) note(t settings.Trunk, addr settings.TrunkAddress, srv sip.Serve
 
 // SIPconnect 2.0 section 17.2
 func (b *IBCF) noteServer(t settings.Trunk, addr settings.TrunkAddress, srv sip.Server) bool {
-	ok, first := b.peers.note(t, addr, srv, b.rankOf(t, addr))
+	ok, first := b.peers.note(b.cfg.Settings().Trunks, t, addr, srv)
 	if first {
 		b.log.Warn("SIP trunk not sent to a TLS server of another SIP trunk", slog.String("trunk", t.Name),
 			slog.String("server", srv.Addr.String()))
 	}
 
 	return ok
-}
-
-func (b *IBCF) rankOf(t settings.Trunk, addr settings.TrunkAddress) rank {
-	trunks := b.cfg.Settings().Trunks
-
-	r := rank{trunk: len(trunks), address: len(t.Addresses)}
-
-	if i := slices.IndexFunc(trunks, func(o settings.Trunk) bool { return o.ID == t.ID }); i >= 0 {
-		r.trunk = i
-	}
-
-	if i := slices.Index(t.Addresses, addr); i >= 0 {
-		r.address = i
-	}
-
-	return r
 }
 
 func (p *peers) prune(trunks []settings.Trunk) {
@@ -122,7 +121,7 @@ func (p *peers) prune(trunks []settings.Trunk) {
 
 	for a, pr := range p.peers {
 		i := slices.IndexFunc(trunks, func(t settings.Trunk) bool { return t.ID == pr.trunk })
-		if i < 0 || !trunks[i].TLS.Trusts() || !slices.Contains(trunks[i].Addresses, pr.address) {
+		if i < 0 || !trunks[i].Enabled || !trunks[i].TLS.Trusts() || !slices.Contains(trunks[i].Addresses, pr.address) {
 			delete(p.peers, a)
 		}
 	}

@@ -69,44 +69,101 @@ func TestUnknownNumberNotRoutedOn(t *testing.T) {
 	}
 }
 
-func TestServes(t *testing.T) {
+func breakoutRoute(h *harness) func(*sip.Request) {
+	return func(r *sip.Request) { r.Header.Add("Route", "<"+h.icscfURI()+";lr;"+BreakoutParam+">") }
+}
+
+// TS 24.229 clause 5.3.2.1
+func TestUnknownNumberBrokenOut(t *testing.T) {
 	tests := []struct {
-		name    string
-		target  string
-		answer  *hssAnswer
-		want    bool
-		failed  bool
-		queried string
+		name   string
+		target string
 	}{
-		{name: "subscriber", target: "tel:+15551230002", answer: &hssAnswer{result: success(diameter.ResultSuccess)}, want: true, queried: "tel:+15551230002"},
-		{
-			name: "not registered", target: "tel:+15551230002", want: true, queried: "tel:+15551230002",
-			answer: &hssAnswer{result: tgpp.Experimental(tgpp.ResultErrorIdentityNotRegistered)},
-		},
-		{name: "unknown", target: offNet, answer: userUnknownAnswer(), queried: offNet},
-		{name: "SIP URI with user=phone", target: "sip:+16617629239@" + homeDomain + ";user=phone", answer: userUnknownAnswer(), queried: offNet},
-		{name: "HSS unreachable", target: offNet, answer: &hssAnswer{result: success(diameter.ResultUnableToDeliver)}, failed: true, queried: offNet},
+		{"tel URI", offNet},
+		{"SIP URI with user=phone", "sip:+16617629239@" + homeDomain + ";user=phone"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, harnessOptions{})
-			h.hss.answerLIR(tt.answer)
+			u := h.fromSCSCF()
+			h.hss.answerLIR(userUnknownAnswer())
 
-			u, err := sip.ParseURI(tt.target)
-			if err != nil {
-				t.Fatal(err)
+			req := u.invite(tt.target, breakoutRoute(h))
+			u.send(req)
+
+			if lir := h.hss.nextLIR(t); lir.PublicIdentity != offNet || lir.Originating {
+				t.Fatalf("LIR %+v, want a terminating query for %s", lir, offNet)
 			}
 
-			got, err := h.ic.Serves(t.Context(), u)
+			got, f := h.ibcf.RecvRequest()
 
-			if lir := h.hss.nextLIR(t); lir.PublicIdentity != tt.queried || lir.Originating {
-				t.Fatalf("LIR %+v, want a terminating query for %s", lir, tt.queried)
+			if routes := routes(t, got); got.URI.String() != offNet || len(routes) != 1 ||
+				routes[0] != "sip:"+h.ibcf.Addr().String()+";lr" {
+				t.Fatalf("IBCF got %s with Route %v, want %s routed to the IBCF alone", got.URI, routes, offNet)
 			}
 
-			if got != tt.want || (err != nil) != tt.failed {
-				t.Fatalf("Serves = %v, %v, want %v, failed %v", got, err, tt.want, tt.failed)
-			}
+			res := sip.NewResponse(got, 486, "")
+			_ = res.Header.SetToTag(sip.NewTag())
+			h.ibcf.Send(f.Transport, f.Remote, res)
+
+			u.ack(req, u.wantFinal(486))
+			h.hss.noCx(t)
 		})
 	}
+}
+
+func TestUnknownNumberNotBrokenOut(t *testing.T) {
+	tests := []struct {
+		name   string
+		source func(h *harness) *ue
+		opts   harnessOptions
+		answer *hssAnswer
+		want   int
+	}{
+		{name: "from outside the trust domain", source: func(h *harness) *ue { return h.newUE(untrusted) }, want: 404},
+		{name: "no IBCF", source: (*harness).fromSCSCF, opts: harnessOptions{noIBCF: true}, want: 404},
+		{
+			name: "identity not registered", source: (*harness).fromSCSCF, want: 480,
+			answer: &hssAnswer{result: tgpp.Experimental(tgpp.ResultErrorIdentityNotRegistered)},
+		},
+		{name: "HSS unreachable", source: (*harness).fromSCSCF, want: 480, answer: &hssAnswer{result: success(diameter.ResultUnableToDeliver)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, tt.opts)
+			u := tt.source(h)
+
+			answer := tt.answer
+			if answer == nil {
+				answer = userUnknownAnswer()
+			}
+
+			h.hss.answerLIR(answer)
+
+			req := u.invite(offNet, breakoutRoute(h))
+			u.send(req)
+			h.hss.nextLIR(t)
+
+			u.ack(req, u.wantFinal(tt.want))
+			h.ibcf.RecvNone(quiet)
+			h.scscf.sock.RecvNone(quiet)
+		})
+	}
+}
+
+func TestKnownNumberNotBrokenOut(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	u := h.newUE(loopback)
+	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: h.scscf.uri()})
+
+	u.send(u.invite(offNet, breakoutRoute(h)))
+	h.hss.nextLIR(t)
+
+	if got, _ := h.scscf.recv(); got.URI.String() != offNet {
+		t.Fatalf("S-CSCF got %s, want %s", got.URI, offNet)
+	}
+
+	h.ibcf.RecvNone(quiet)
 }

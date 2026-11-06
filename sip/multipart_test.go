@@ -500,6 +500,22 @@ func TestBodyEncodings(t *testing.T) {
 		}
 	}
 
+	optional := NewBodyPart("application/x-unknown", []byte("x"))
+	optional.Header.Set("Content-Encoding", "gzip")
+	optional.Header.Set("Content-Disposition", "render;handling=optional")
+
+	var withOptional Envelope
+
+	withOptional.SetBodies(optional, NewBodyPart("application/sdp", []byte(mcpttSDP)))
+
+	if p, ok, err := withOptional.Content().FindFunc(BodyPart.IsSession); err != nil || !ok || string(p.Body) != mcpttSDP {
+		t.Errorf("SDP after an optional part of unknown encoding: %q, %v, %v", p.Body, ok, err)
+	}
+
+	if parts, err := withOptional.Content().Parts(); err != nil || len(parts) != 1 || !parts[0].IsSession() {
+		t.Errorf("Parts() with an optional part of unknown encoding: %v, %v", parts, err)
+	}
+
 	var e Envelope
 
 	e.SetBody("multipart/mixed boundary=a", []byte("--a\r\n\r\nx\r\n--a--"))

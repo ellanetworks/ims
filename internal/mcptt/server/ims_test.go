@@ -71,12 +71,16 @@ func newCore(t *testing.T, n *siptest.Net) *core {
 		subs: map[string]*regSub{},
 	}
 
-	c.l = transaction.New(n.Config(transaction.Config{Handler: c, Aliases: []string{scscfHost}}))
+	c.addr = n.Addr()
+	c.l = transaction.New(n.Config(transaction.Config{Handler: c, Aliases: map[netip.Addr][]string{c.addr.Addr(): {scscfHost}}}))
 
 	t.Cleanup(func() { _ = c.l.Close() })
 
-	c.addr = n.Serve(c.l)
-	c.p = proxy.New(proxy.Config{Layer: c.l, Port: c.addr.Port(), Clock: n.Clock()})
+	if err := c.l.Serve(c.addr); err != nil {
+		t.Fatal(err)
+	}
+
+	c.p = proxy.New(proxy.Config{Layer: c.l, Listeners: []netip.AddrPort{c.addr}, Clock: n.Clock()})
 
 	return c
 }

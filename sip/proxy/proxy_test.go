@@ -263,22 +263,34 @@ func TestPreprocess(t *testing.T) {
 	}
 }
 
-func TestIsLocalOnPort(t *testing.T) {
-	l, _ := siptest.NewLayer(t, transaction.Config{Aliases: []string{"ims.example.org"}})
+func TestIsLocalOnListeners(t *testing.T) {
+	external := netip.MustParseAddr("192.0.2.1")
+	l, _ := siptest.NewLayer(t, transaction.Config{Aliases: map[netip.Addr][]string{
+		loopback: {"ims.example.org"},
+		external: {"198.51.100.7", "border.example.org"},
+	}})
 	a := siptest.ListenLayer(t, l, loopback)
 	b := siptest.ListenLayer(t, l, loopback)
 
-	p := proxy.New(proxy.Config{Layer: l, Port: a.Port()})
+	if err := l.Serve(netip.AddrPortFrom(external, a.Port())); err != nil {
+		t.Fatal(err)
+	}
+
+	p := proxy.New(proxy.Config{Layer: l, Listeners: []netip.AddrPort{a}})
+	onA := ":" + strconv.Itoa(int(a.Port()))
 
 	cases := []struct {
 		uri  string
 		want bool
 	}{
 		{"sip:" + a.String(), true},
-		{"sip:ims.example.org:" + strconv.Itoa(int(a.Port())) + ";lr", true},
+		{"sip:ims.example.org" + onA + ";lr", true},
 		{"sip:" + b.String(), false},
 		{"sip:ims.example.org:" + strconv.Itoa(int(b.Port())) + ";lr", false},
 		{"sip:ims.example.org", false},
+		{"sip:" + external.String() + onA, false},
+		{"sip:198.51.100.7" + onA + ";lr", false},
+		{"sip:border.example.org" + onA + ";lr", false},
 	}
 
 	for _, c := range cases {
@@ -292,12 +304,12 @@ func TestIsLocalOnPort(t *testing.T) {
 		}
 	}
 
-	if u, _ := sip.ParseURI("sip:" + b.String()); !proxy.New(proxy.Config{Layer: l, Port: a.Port(), LocalPorts: []uint16{b.Port()}}).IsLocal(u) {
-		t.Errorf("IsLocal(%s) on a further local port = false, want true", u)
+	if u, _ := sip.ParseURI("sip:" + b.String()); !proxy.New(proxy.Config{Layer: l, Listeners: []netip.AddrPort{a, b}}).IsLocal(u) {
+		t.Errorf("IsLocal(%s) on a further listener = false, want true", u)
 	}
 
-	if u, _ := sip.ParseURI("sip:" + b.String()); !proxy.New(proxy.Config{Layer: l}).IsLocal(u) {
-		t.Errorf("IsLocal(%s) without a port = false, want true", u)
+	if u, _ := sip.ParseURI("sip:198.51.100.7" + onA); !proxy.New(proxy.Config{Layer: l}).IsLocal(u) {
+		t.Errorf("IsLocal(%s) without listeners = false, want true", u)
 	}
 }
 

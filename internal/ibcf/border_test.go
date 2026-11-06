@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -219,10 +220,10 @@ func TestTLSIncomingWithoutClientCertificateBye(t *testing.T) {
 func TestPeersPruned(t *testing.T) {
 	p := newPeers()
 	a := settings.TrunkAddress{Host: "carrier.example", Port: 5061, Transport: settings.SIPTransportTLS}
-	tr := settings.Trunk{ID: "t", Addresses: []settings.TrunkAddress{a}, TLS: settings.TrunkTLS{Pins: [][32]byte{{1}}}}
+	tr := settings.Trunk{ID: "t", Enabled: true, Addresses: []settings.TrunkAddress{a}, TLS: settings.TrunkTLS{Pins: [][32]byte{{1}}}}
 	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061"), Domain: "carrier.example"}
 
-	p.note(tr, a, srv, rank{})
+	p.note([]settings.Trunk{tr}, tr, a, srv)
 	p.prune([]settings.Trunk{tr})
 
 	if _, ok := p.get(srv.Addr); !ok {
@@ -238,7 +239,17 @@ func TestPeersPruned(t *testing.T) {
 		t.Fatal("peer of a changed address kept")
 	}
 
-	p.note(tr, a, srv, rank{})
+	disabled := tr
+	disabled.Enabled = false
+
+	p.note([]settings.Trunk{tr}, tr, a, srv)
+	p.prune([]settings.Trunk{disabled})
+
+	if _, ok := p.get(srv.Addr); ok {
+		t.Fatal("peer of a disabled trunk kept")
+	}
+
+	p.note([]settings.Trunk{tr}, tr, a, srv)
 	p.prune(nil)
 
 	if _, ok := p.get(srv.Addr); ok {
@@ -283,8 +294,8 @@ func TestTrunkDialogFlow(t *testing.T) {
 			b.peers.mu.Unlock()
 
 			if tc.dialed {
-				b.peers.note(tc.trunk, settings.TrunkAddress{Host: "198.51.100.1", Transport: settings.SIPTransportTLS},
-					sip.Server{Transport: sip.TLS, Addr: ephemeral}, rank{})
+				b.peers.note([]settings.Trunk{tc.trunk}, tc.trunk, settings.TrunkAddress{Host: "198.51.100.1", Transport: settings.SIPTransportTLS},
+					sip.Server{Transport: sip.TLS, Addr: ephemeral})
 			}
 
 			s.setTrunk(tc.trunk)
@@ -303,16 +314,18 @@ func TestPeersSharedServer(t *testing.T) {
 	a := settings.Trunk{ID: "a", Addresses: []settings.TrunkAddress{first, second}}
 	b := settings.Trunk{ID: "b", Addresses: []settings.TrunkAddress{first}}
 
+	trunks := []settings.Trunk{a, b}
+
 	for _, order := range [][]string{{"a", "b"}, {"b", "a"}} {
 		p := newPeers()
 
 		for _, id := range order {
-			tr, r := a, rank{trunk: 0}
+			tr := a
 			if id == "b" {
-				tr, r = b, rank{trunk: 1}
+				tr = b
 			}
 
-			p.note(tr, first, srv, r)
+			p.note(trunks, tr, first, srv)
 		}
 
 		if pr, _ := p.get(srv.Addr); pr.trunk != "a" {
@@ -320,19 +333,74 @@ func TestPeersSharedServer(t *testing.T) {
 		}
 
 		other := settings.TrunkAddress{Host: "a.carrier.example"}
-		p.note(b, other, srv, rank{trunk: 1})
+		p.note(trunks, b, other, srv)
 
-		if ok, first := p.note(b, other, srv, rank{trunk: 1}); ok || first {
+		if ok, first := p.note(trunks, b, other, srv); ok || first {
 			t.Fatalf("repeated refusal: ok %v, logged %v", ok, first)
 		}
 	}
 
 	p := newPeers()
-	p.note(a, second, srv, rank{address: 1})
-	p.note(a, first, srv, rank{address: 0})
-	p.note(a, second, srv, rank{address: 1})
+	p.note(trunks, a, second, srv)
+	p.note(trunks, a, first, srv)
+	p.note(trunks, a, second, srv)
 
 	if pr, _ := p.get(srv.Addr); pr.serverName != "a.carrier.example" {
 		t.Fatalf("server name %s, want the first address's", pr.serverName)
+	}
+}
+
+func TestPeersRankFollowsSettings(t *testing.T) {
+	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061")}
+	addr := settings.TrunkAddress{Host: "carrier.example", Transport: settings.SIPTransportTLS}
+	pins := settings.TrunkTLS{Pins: [][32]byte{{1}}}
+	a := settings.Trunk{ID: "a", Enabled: true, Addresses: []settings.TrunkAddress{addr}, TLS: pins}
+	b := settings.Trunk{ID: "b", Enabled: true, Addresses: []settings.TrunkAddress{addr}, TLS: pins}
+	c := settings.Trunk{ID: "c", Enabled: true, Addresses: []settings.TrunkAddress{addr}, TLS: pins}
+
+	p := newPeers()
+	p.note([]settings.Trunk{a, b, c}, b, addr, srv)
+
+	after := []settings.Trunk{b, c}
+	p.prune(after)
+
+	if ok, _ := p.note(after, c, addr, srv); ok {
+		t.Fatal("a later trunk took the server over after an earlier trunk was deleted")
+	}
+
+	reordered := []settings.Trunk{c, b}
+	p.prune(reordered)
+
+	if ok, _ := p.note(reordered, c, addr, srv); !ok {
+		t.Fatal("the first trunk did not take the server over")
+	}
+
+	if pr, _ := p.get(srv.Addr); pr.trunk != "c" {
+		t.Fatalf("server of trunk %s, want c", pr.trunk)
+	}
+}
+
+func TestSendToSharedServer(t *testing.T) {
+	s := newScene(t, false)
+	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("198.51.100.1:5061")}
+	addr := settings.TrunkAddress{Host: "198.51.100.1", Port: 5061, Transport: settings.SIPTransportTLS}
+	owner := s.trunk
+	owner.Addresses = []settings.TrunkAddress{addr}
+	owner.TLS = settings.TrunkTLS{Pins: [][32]byte{{1}}}
+	other := owner
+	other.ID, other.Name = "other", "Other"
+
+	s.mu.Lock()
+	s.st.Trunks = []settings.Trunk{owner, other}
+	s.mu.Unlock()
+
+	if !s.ibcf.noteServer(owner, addr, srv) {
+		t.Fatal("first trunk refused")
+	}
+
+	req := sip.NewRequest("OPTIONS", sip.URI{Scheme: "sip", Host: "198.51.100.1"})
+
+	if _, err := s.ibcf.Send(t.Context(), other, addr, req, srv); !errors.Is(err, settings.ErrSharedServer) {
+		t.Fatalf("err = %v, want ErrSharedServer", err)
 	}
 }

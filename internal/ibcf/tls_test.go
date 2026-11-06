@@ -594,12 +594,12 @@ func TestPeersKeepFirstTrunk(t *testing.T) {
 	second := settings.Trunk{ID: "second", Addresses: []settings.TrunkAddress{a}}
 	srv := sip.Server{Transport: sip.TLS, Addr: netip.MustParseAddrPort("192.0.2.1:5061"), Domain: "carrier.example"}
 
-	noted := func(tr settings.Trunk, r rank) bool {
-		ok, _ := p.note(tr, a, srv, r)
+	noted := func(tr settings.Trunk) bool {
+		ok, _ := p.note([]settings.Trunk{first, second}, tr, a, srv)
 		return ok
 	}
 
-	if !noted(first, rank{trunk: 0}) || noted(second, rank{trunk: 1}) || !noted(first, rank{trunk: 0}) {
+	if !noted(first) || noted(second) || !noted(first) {
 		t.Fatal("a second trunk took over a server")
 	}
 

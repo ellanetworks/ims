@@ -91,8 +91,12 @@ func (s *solo) config(tc transaction.Config, cfg Config) transaction.Config {
 		tc.Transport.MaxConnectionsPerAddress = func(netip.AddrPort) int { return MaxConnectionsPerSource }
 	}
 
-	for _, a := range cfg.Advertised {
-		tc.Aliases = append(tc.Aliases, a.String())
+	if len(cfg.Advertised) > 0 && tc.Aliases == nil {
+		tc.Aliases = make(map[netip.Addr][]string)
+	}
+
+	for local, a := range cfg.Advertised {
+		tc.Aliases[local] = append(tc.Aliases[local], a.String())
 	}
 
 	return tc

@@ -40,8 +40,6 @@ func testConfig(t *testing.T) testIMS {
 			DB:       config.DB{Path: filepath.Join(t.TempDir(), "ims.db")},
 			API:      config.API{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
 			SIP:      config.SIP{Addresses: []netip.Addr{loopback, loopback6}},
-			ICSCF:    config.ICSCF{Port: 5070},
-			SCSCF:    config.SCSCF{Port: 5080},
 			Diameter: config.Diameter{Address: loopback},
 		},
 		Peers: []settings.Peer{{

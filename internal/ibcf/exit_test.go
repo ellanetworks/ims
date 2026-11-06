@@ -135,6 +135,8 @@ func TestExitPrivacy(t *testing.T) {
 	}{
 		{"untrusted id", false, "id", false, true},
 		{"trusted id", true, "id", true, true},
+		{"untrusted header", false, "header", false, true},
+		{"trusted header", true, "header", true, true},
 		{"untrusted user", false, "user", true, true},
 		{"untrusted none", false, "none", true, false},
 		{"untrusted", false, "", true, false},
@@ -225,6 +227,44 @@ func TestExitWithoutOffer(t *testing.T) {
 	got := s.carrier.all("established", "answer")
 	if string(got["answer"].sdp) != "answer-a" {
 		t.Fatalf("trunk answer %q", got["answer"].sdp)
+	}
+}
+
+func TestExitOfferAfterOptionalPartOfUnknownEncoding(t *testing.T) {
+	s := newScene(t, false)
+
+	optional := sip.NewBodyPart("application/x-unknown", []byte("x"))
+	optional.Header.Set("Content-Encoding", "gzip")
+	optional.Header.Set("Content-Disposition", "render;handling=optional")
+
+	target, _ := sip.ParseURI("tel:" + carol)
+	req := sip.NewRequest("INVITE", target)
+
+	for _, fl := range []sip.Field{
+		f("Route", "<sip:"+internalAddr.String()+";lr>"),
+		f("From", "<sip:alice@"+home+">"),
+		f("To", "<tel:"+carol+">"),
+		f("P-Asserted-Identity", "<tel:"+alice+">"),
+	} {
+		req.Header.Add(fl.Name, fl.Value)
+	}
+
+	req.SetBodies(optional, ua.SDP([]byte("offer-1")))
+
+	if _, err := s.ims.a.Invite(context.Background(), req, s.ims.handler()); err != nil {
+		t.Fatal(err)
+	}
+
+	in := s.carrier.next("invite").req
+	if m := in.Message(); !hasSDP(m, "offer-1") {
+		t.Fatalf("trunk INVITE without the offer: %s", m)
+	}
+
+	_ = in.Accept(sdpOf("answer-1")...)
+
+	e := s.ims.all("established", "answer")
+	if string(e["answer"].sdp) != "answer-1" {
+		t.Fatalf("caller's answer %q", e["answer"].sdp)
 	}
 }
 
@@ -354,6 +394,7 @@ func TestExitForwarded(t *testing.T) {
 			header:  append(forwardedHistory("?Privacy=history"), f("From", "<sip:"+dave+"@sip.other.example>")),
 			from:    "sip:" + dave + "@" + home + ";user=phone",
 			served:  "sip:anonymous@anonymous.invalid",
+			privacy: "id",
 		},
 		{
 			name:    "diversion on a response",
@@ -370,6 +411,16 @@ func TestExitForwarded(t *testing.T) {
 			from:    "sip:" + dave + "@" + home + ";user=phone",
 			served:  "sip:" + bob + "@" + home + ";user=phone?Privacy=history",
 			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+			privacy: "id",
+		},
+		{
+			name:    "private forwarder and a caller with no privacy",
+			trusted: true,
+			header:  append(forwardedHistory("?Privacy=history"), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "none")),
+			from:    "sip:" + dave + "@" + home + ";user=phone",
+			served:  "sip:" + bob + "@" + home + ";user=phone?Privacy=history",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+			privacy: "id",
 		},
 		{
 			name:    "history privacy towards an untrusted trunk",
@@ -386,7 +437,15 @@ func TestExitForwarded(t *testing.T) {
 			from:    "sip:anonymous@anonymous.invalid",
 			served:  "sip:anonymous@anonymous.invalid",
 			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
-			privacy: "id",
+		},
+		{
+			name:    "caller with header privacy",
+			trusted: true,
+			header:  append(forwardedHistory(""), f("From", "<sip:"+dave+"@sip.other.example>"), f("Privacy", "header;user")),
+			from:    "sip:anonymous@anonymous.invalid",
+			served:  "sip:" + bob + "@" + home + ";user=phone",
+			pai:     "<sip:" + bob + "@" + home + ";user=phone>",
+			privacy: "user",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -665,5 +724,40 @@ func TestEffectiveTrunk(t *testing.T) {
 
 	if m := s.carrier.next("invite").req.Message(); m.URI.Host != "sip.carrier.example" {
 		t.Fatalf("Request-URI %s", m.URI)
+	}
+}
+
+// TS 24.229 clause 5.3.2.1
+func TestExitSource(t *testing.T) {
+	other := []netip.AddrPort{netip.MustParseAddrPort("10.0.0.9:5070")}
+
+	tests := []struct {
+		name         string
+		icscf, scscf []netip.AddrPort
+		accepted     bool
+	}{
+		{name: "S-CSCF", icscf: other, scscf: []netip.AddrPort{imsAddr}, accepted: true},
+		{name: "I-CSCF", icscf: []netip.AddrPort{imsAddr}, scscf: other, accepted: true},
+		{name: "other node", icscf: other, scscf: other},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newSceneWith(t, false, func(c *Config) { c.ICSCF, c.SCSCF = tt.icscf, tt.scscf })
+
+			s.call("offer-1")
+
+			if !tt.accepted {
+				if e := s.ims.next("failed"); e.res == nil || e.res.StatusCode != 403 {
+					t.Fatalf("got %+v, want 403", e.res)
+				}
+
+				s.carrier.none()
+
+				return
+			}
+
+			s.carrier.next("invite")
+		})
 	}
 }

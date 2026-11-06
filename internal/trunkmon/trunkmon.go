@@ -312,14 +312,14 @@ func (m *Monitor) round(p *probe, t settings.Trunk) {
 		return
 	}
 
-	alive := m.probe(p.ctx, t)
+	o := m.probe(p.ctx, t)
 
 	<-m.sem
 
-	m.finish(p, alive)
+	m.finish(p, o)
 }
 
-func (m *Monitor) finish(p *probe, alive bool) {
+func (m *Monitor) finish(p *probe, o outcome) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -328,19 +328,28 @@ func (m *Monitor) finish(p *probe, alive bool) {
 	}
 
 	p.running = false
-	m.record(p, alive)
+	m.record(p, o)
 	m.schedule(p, p.started.Add(p.trunk.KeepaliveInterval).Sub(m.cfg.Clock.Now()))
 }
 
-func (m *Monitor) record(p *probe, alive bool) {
+func (m *Monitor) record(p *probe, o outcome) {
 	id := p.trunk.ID
 	st := m.states[id].State
 
-	if alive {
+	switch o {
+	case answered:
 		p.failures = 0
 
 		if st != settings.TrunkUp {
 			m.transition(p.trunk, settings.TrunkUp)
+		}
+
+		return
+	case shared:
+		p.failures = 0
+
+		if st != settings.TrunkUnusable {
+			m.transition(p.trunk, settings.TrunkUnusable)
 		}
 
 		return
@@ -357,19 +366,30 @@ func (m *Monitor) transition(t settings.Trunk, to settings.TrunkState) {
 	m.states[t.ID] = settings.TrunkStatus{State: to, Since: m.cfg.Clock.Now()}
 
 	level := slog.LevelInfo
-	if to == settings.TrunkDown {
+	if to != settings.TrunkUp {
 		level = slog.LevelWarn
 	}
 
 	m.log.Log(m.life, level, "SIP trunk "+string(to), slog.String("trunk", t.Name), slog.String("id", t.ID))
 }
 
+type outcome int
+
+const (
+	silent outcome = iota
+	answered
+	shared
+)
+
 // RFC 3263 section 4.3
 // SIPconnect 2.0 section 17.4
-func (m *Monitor) probe(ctx context.Context, t settings.Trunk) bool {
+func (m *Monitor) probe(ctx context.Context, t settings.Trunk) outcome {
 	home := m.cfg.Settings.Get().Operator.HomeDomain()
 
 	allowed := m.cfg.Sender.Transports(t)
+
+	o := silent
+	tried := false
 
 	for _, a := range t.Addresses {
 		servers, err := m.resolve(ctx, a, allowed)
@@ -377,21 +397,32 @@ func (m *Monitor) probe(ctx context.Context, t settings.Trunk) bool {
 			m.log.Debug("SIP trunk address not resolved", slog.String("trunk", t.Name), slog.String("address", a.String()),
 				slog.Any("error", err))
 
+			tried = true
+
 			continue
 		}
 
 		for _, srv := range servers {
 			if ctx.Err() != nil {
-				return false
+				return silent
 			}
 
-			if m.ping(ctx, t, a, home, srv) {
-				return true
+			switch m.ping(ctx, t, a, home, srv) {
+			case answered:
+				return answered
+			case shared:
+				o = shared
+			default:
+				tried = true
 			}
 		}
 	}
 
-	return false
+	if tried {
+		return silent
+	}
+
+	return o
 }
 
 // SIPconnect 2.0 section 8.1
@@ -433,23 +464,25 @@ func permitted(servers []sip.Server, allowed []sip.Transport) []sip.Server {
 
 // RFC 3261 section 11
 // RFC 3263 section 4.3
-func (m *Monitor) ping(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, home string, srv sip.Server) bool {
+func (m *Monitor) ping(ctx context.Context, t settings.Trunk, a settings.TrunkAddress, home string, srv sip.Server) outcome {
 	sctx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
 	defer cancel()
 
 	res, err := m.cfg.Sender.Send(sctx, t, a, newOptions(t, home), srv)
 
 	switch {
+	case errors.Is(err, settings.ErrSharedServer):
+		return shared
 	case err != nil:
 		m.log.Debug("SIP trunk OPTIONS failed", slog.String("trunk", t.Name), slog.String("server", srv.Addr.String()),
 			slog.Any("error", err))
 
-		return false
+		return silent
 	case res == nil || res.StatusCode < 200 || res.StatusCode == 503:
-		return false
+		return silent
 	}
 
-	return true
+	return answered
 }
 
 // RFC 3261 section 8.1.1

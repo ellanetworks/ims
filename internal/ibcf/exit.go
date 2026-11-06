@@ -27,8 +27,8 @@ const anonymous = `"Anonymous" <sip:anonymous@anonymous.invalid>`
 func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 	in := r.Message()
 
-	if !slices.Contains(b.cfg.SCSCF, unmap(in.Flow.Remote)) {
-		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the S-CSCF", slog.String("source", in.Flow.Remote.String()))
+	if src := unmap(in.Flow.Remote); !slices.Contains(b.cfg.SCSCF, src) && !slices.Contains(b.cfg.ICSCF, src) {
+		b.log.WarnContext(ctx, "call to a SIP trunk from another node than the S-CSCF or the I-CSCF", slog.String("source", in.Flow.Remote.String()))
 
 		_ = r.Reject(403)
 
@@ -105,7 +105,12 @@ func (b *IBCF) exit(ctx context.Context, r *ua.Request) {
 
 	out := b.attempt(ctx, c)
 	if out == nil {
-		_ = r.Reject(503)
+		code := 503
+		if c.cancelled() {
+			code = 487
+		}
+
+		_ = r.Reject(code)
 
 		b.release(c)
 
@@ -335,10 +340,8 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 
 	out := sip.NewRequest("INVITE", uri)
 
-	hidden := !x.privacy.Has(sip.PrivacyNone) && (x.privacy.Has(sip.PrivacyID) || x.privacy.Has(sip.PrivacyUser))
-
 	from := x.caller
-	if hidden {
+	if withholds(x.privacy) || x.privacy.Has(sip.PrivacyUser) && !x.privacy.Has(sip.PrivacyNone) {
 		from, _ = sip.ParseAddress(anonymous)
 	}
 
@@ -349,21 +352,13 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 	out.Header.Add("To", "<"+uri.String()+">")
 	out.Header.Add("Call-ID", callID)
 
-	withheld := withholds(x.privacy)
-	if x.forwarder != nil {
-		withheld = x.forwarder.private
-	}
-
-	if t.Trusted || !withheld {
-		out.Header.Add("P-Asserted-Identity", x.asserted.String())
-	}
-
 	privacy := x.privacy
 
 	if x.forwarder != nil {
 		var served sip.URI
 
 		served, privacy = b.served(*x.forwarder, x.privacy, t.Trusted)
+		privacy = forwarderIdentity(privacy, x.forwarder.private)
 
 		target := uri.Clone()
 		if x.forwarder.cause != "" {
@@ -372,6 +367,10 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 
 		out.Header.Add("History-Info", "<"+served.String()+">;index=1")
 		out.Header.Add("History-Info", "<"+target.String()+">;index=1.1;mp=1")
+	}
+
+	if t.Trusted || !withholds(privacy) {
+		out.Header.Add("P-Asserted-Identity", x.asserted.String())
 	}
 
 	if len(privacy) > 0 {
@@ -416,10 +415,29 @@ func (b *IBCF) served(f forwarder, privacy sip.Privacy, trusted bool) (sip.URI, 
 	return u, privacy
 }
 
+// RFC 3325 section 7
+// RFC 3323 section 4.2
+// RFC 3323 section 5
+// TS 24.604 clause 4.5.2.6.2.2
+func forwarderIdentity(p sip.Privacy, private bool) sip.Privacy {
+	if !private {
+		return without(p, sip.PrivacyID, sip.PrivacyHeader)
+	}
+
+	return append(without(p, sip.PrivacyID, sip.PrivacyHeader, sip.PrivacyNone), sip.PrivacyID)
+}
+
 // RFC 3323 section 5
 // RFC 7044 section 10.1.2
 func withoutHistory(p sip.Privacy) sip.Privacy {
-	out := slices.DeleteFunc(slices.Clone(p), func(v string) bool { return strings.EqualFold(v, sip.PrivacyHistory) })
+	return without(p, sip.PrivacyHistory)
+}
+
+// RFC 3323 section 5
+func without(p sip.Privacy, values ...string) sip.Privacy {
+	out := slices.DeleteFunc(slices.Clone(p), func(v string) bool {
+		return slices.ContainsFunc(values, func(w string) bool { return strings.EqualFold(v, w) })
+	})
 
 	if !slices.ContainsFunc(out, func(v string) bool { return !strings.EqualFold(v, sip.PrivacyCritical) }) {
 		return nil

@@ -24,6 +24,8 @@ const (
 	resolveTimeout = 4 * time.Second
 )
 
+const BreakoutParam = "breakout"
+
 type Diameter interface {
 	Identity() diameter.Identity
 	NewSessionID() string
@@ -50,6 +52,7 @@ type Config struct {
 
 	Trust *trust.Domain
 	SCSCF SCSCF
+	IBCF  []netip.AddrPort
 
 	Resolver     Resolver
 	PSISubdomain func(host string) bool

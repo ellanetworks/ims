@@ -46,9 +46,11 @@ A carrier with an interconnect agreement can be trusted. Ella IMS then accepts t
 
 Ella IMS asserts the caller's number to every carrier, trusted or not. A caller who hides their number hides it from an untrusted carrier. A trusted carrier gets the number, with the request to keep it private.
 
-On a forwarded call, the number asserted is that of the subscriber who forwarded the call, and the carrier learns that this subscriber forwarded it. A forwarding subscriber who keeps their history private stays hidden from an untrusted carrier.
+On a forwarded call, the number asserted is that of the subscriber who forwarded the call, and the carrier learns that this subscriber forwarded it. A forwarding subscriber who keeps their history private stays hidden from an untrusted carrier. A trusted carrier gets their number, with the request to keep it private.
 
 A trunk's inbound CIDRs never overlap the IMS's own networks. A trunk that overlaps them after a change to the configuration file carries no calls, and its state is `unusable`. So does a trunk that requires TLS when the configuration file has no certificate for the IBCF.
+
+Two trunks can reach the same TLS server, when one names it by domain and the other by IP address. The server then belongs to the trunk created first. The other trunk doesn't send to it, and is `unusable` if it reaches no other server.
 
 ## Voice
 
@@ -60,7 +62,7 @@ The voice is relayed as it is, without transcoding. The phone and the carrier mu
 
 Ella IMS sends OPTIONS requests to each trunk with a keepalive interval. A trunk that stops answering is down, and routes skip it until it answers again.
 
-Over TLS, Ella IMS keeps a connection open to each of the carrier's servers, with or without OPTIONS requests.
+Over TLS, when the configuration file has no certificate for the IBCF, Ella IMS keeps a connection open to each of the carrier's servers, with or without OPTIONS requests. With a certificate, the carrier can open connections to Ella IMS, and Ella IMS keeps none open.
 
 ## What SIP trunks don't carry
 

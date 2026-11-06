@@ -73,7 +73,12 @@ func (r *route) next(ctx context.Context) (target, bool) {
 			return target{}, false
 		}
 
-		servers, ok := r.lookup(ctx, r.hops[r.at])
+		h := r.hops[r.at]
+
+		r.mu.Unlock()
+		servers, ok := r.lookup(ctx, h)
+		r.mu.Lock()
+
 		if !ok {
 			return target{}, false
 		}

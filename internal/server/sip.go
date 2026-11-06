@@ -115,18 +115,10 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		s.xfrm, kernel = x, x
 	}
 
-	aliases := op.SIPAliases()
-
-	if cfg.IBCF != nil {
-		for _, a := range cfg.IBCF.External.Advertised() {
-			aliases = append(aliases, a.String())
-		}
-	}
-
 	s.layer = transaction.New(roles.config(transaction.Config{
 		Network: ases.network,
 		Logger:  logger,
-		Aliases: aliases,
+		Aliases: sipAliases(cfg, op),
 		OnListenerFailed: func(local netip.AddrPort, err error) {
 			logger.Error("SIP listener failed: the core restarts", slog.String("address", local.String()), slog.Any("error", err))
 			failed(local, err)
@@ -220,8 +212,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
 		Proxy: proxy.New(proxy.Config{
-			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"},
-			LocalPorts: []uint16{ipsecServer, ipsecClients[0], ipsecClients[1]},
+			Layer: layer, Logger: logger, Supported: []string{"sec-agree"},
+			Listeners: append(s.bound(rolePCSCF), s.bound(rolePCSCFProtected)...),
 		}),
 		Port:          pcscfPort,
 		ICSCFPort:     icscfPort,
@@ -272,7 +264,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	ic := icscf.New(icscf.Config{
 		HomeDomain: homeDomain,
 		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
 		Port:       icscfPort,
 		Trust:      domain,
 		Resolver:   resolver,
@@ -280,6 +272,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
 		},
+		IBCF:                 s.bound(roleIBCF),
 		PSISubdomain:         resolver.Has,
 		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
@@ -290,7 +283,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 
 	roles.set(&role{name: roleICSCF, traceContext: trusted, handler: ic})
 
-	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort})
+	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleSCSCF)})
 
 	roles.set(&role{name: roleSCSCF, traceContext: trusted, handler: &scscfHandler{
 		log:       logger,
@@ -301,9 +294,6 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		sessions: s.registrar.Sessions(scscf.SessionConfig{
 			Proxy:     scscfProxy,
 			ICSCF:     s.bound(roleICSCF),
-			IBCF:      s.bound(roleIBCF),
-			BGCF:      breakout,
-			Directory: ic,
 			Numbering: numbering,
 
 			GroupNoAnswer: tm.groupNoAnswer,
@@ -401,6 +391,22 @@ func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, tm timers,
 	})
 
 	return nil
+}
+
+func sipAliases(cfg config.Config, op settings.Operator) map[netip.Addr][]string {
+	out := make(map[netip.Addr][]string)
+
+	for _, a := range cfg.SIP.Addresses {
+		out[a.Unmap()] = op.SIPAliases()
+	}
+
+	if cfg.IBCF != nil {
+		for local, a := range cfg.IBCF.External.Advertised() {
+			out[local] = append(out[local], a.String())
+		}
+	}
+
+	return out
 }
 
 func (s *sipServer) listen(ctx context.Context, label, name string, addrs []netip.Addr, port int) (uint16, error) {

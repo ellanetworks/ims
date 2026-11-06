@@ -35,6 +35,7 @@ import {
 } from "@/queries/sipTrunks";
 import { formatTimestamp } from "@/utils/dates";
 import { sipTransportLabels } from "@/utils/labels";
+import { trunkDefaults } from "@/utils/sipTrunks";
 
 export const DEFAULT_KEEPALIVE_INTERVAL = 30;
 
@@ -78,15 +79,9 @@ const validKeepalive = (value: string) =>
 
 const monospace = { fontFamily: "monospace", fontSize: "0.85rem" };
 
-const join = (values: string[] | string | undefined) =>
-  Array.isArray(values) ? values.join("\n") : (values ?? "");
-
-const defaultShown = (
-  set: string[] | string | undefined,
-  effective: string[] | string | undefined,
-) => {
-  const text = join(effective);
-  return join(set) !== "" || text === ""
+const defaultShown = (value: string, defaults: string[] | string) => {
+  const text = Array.isArray(defaults) ? defaults.join("\n") : defaults;
+  return value.trim() !== "" || text === ""
     ? {}
     : { placeholder: text, slotProps: { inputLabel: { shrink: true } } };
 };
@@ -216,6 +211,12 @@ export default function SIPTrunkDialog({
     ...(hasTls && { tls }),
   };
 
+  const defaults = trunkDefaults(
+    params.addresses.map((a) => a.host),
+    domain.trim(),
+    caPem !== "" || pinList.length > 0,
+  );
+
   const keepaliveError = validKeepalive(keepalive)
     ? undefined
     : "0, or 5 to 3600";
@@ -249,7 +250,7 @@ export default function SIPTrunkDialog({
         label="Domain"
         value={domain}
         onChange={(e) => setDomain(e.target.value)}
-        {...defaultShown(trunk?.domain, trunk?.effective.domain)}
+        {...defaultShown(domain, defaults.domain)}
       />
       <Stack spacing={1.5}>
         <FormLabel>Addresses</FormLabel>
@@ -327,7 +328,7 @@ export default function SIPTrunkDialog({
         onChange={(e) => setInboundCidrs(e.target.value)}
         multiline
         minRows={2}
-        {...defaultShown(trunk?.inbound_cidrs, trunk?.effective.inbound_cidrs)}
+        {...defaultShown(inboundCidrs, defaults.inboundCidrs)}
       />
       <TextField
         label="Keepalive Interval (s)"
@@ -402,10 +403,7 @@ export default function SIPTrunkDialog({
               onChange={(e) => setIdentities(e.target.value)}
               multiline
               minRows={2}
-              {...defaultShown(
-                trunk?.tls?.identities,
-                trunk?.effective.tls_identities,
-              )}
+              {...defaultShown(identities, defaults.identities)}
             />
           </Stack>
         </AccordionDetails>

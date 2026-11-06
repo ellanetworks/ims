@@ -1,6 +1,9 @@
 package settings
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type TrunkState string
 
@@ -10,6 +13,8 @@ const (
 	TrunkDown     TrunkState = "down"
 	TrunkUnusable TrunkState = "unusable"
 )
+
+var ErrSharedServer = errors.New("TLS server of another SIP trunk")
 
 type TrunkStatus struct {
 	State TrunkState
@@ -21,7 +26,7 @@ type TrunkStates interface {
 }
 
 func (s TrunkStatus) Usable() bool {
-	return s.State != TrunkDown
+	return s.State != TrunkDown && s.State != TrunkUnusable
 }
 
 func StatusOf(src TrunkStates, id string) TrunkStatus {

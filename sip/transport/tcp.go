@@ -90,15 +90,12 @@ func (t *Transport) write(c *conn, b []byte) error {
 }
 
 func (t *Transport) conn(ctx context.Context, f sip.Flow, dial, request bool) (*conn, error) {
-	c, err := t.pooled(f, dial, request)
-	if err != nil {
-		return nil, err
-	}
-
-	return t.await(ctx, c)
+	return t.acquire(ctx, f, dial, request, false)
 }
 
-func (t *Transport) pooled(f sip.Flow, dial, request bool) (*conn, error) {
+// SIPconnect 2.0 section 17.2
+// RFC 5922 section 7.3
+func (t *Transport) acquire(ctx context.Context, f sip.Flow, dial, request, own bool) (*conn, error) {
 	strict := request && f.Transport == sip.TLS
 
 	var v *verifier
@@ -106,6 +103,36 @@ func (t *Transport) pooled(f sip.Flow, dial, request bool) (*conn, error) {
 		v = t.reuseVerifier(f)
 	}
 
+	for range 2 {
+		c, err := t.pooled(f, dial, strict, v)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := t.await(ctx, c); err != nil {
+			if own && ctx.Err() != nil {
+				t.abandon(c)
+			}
+
+			return nil, err
+		}
+
+		if !strict || c.inbound || v.accepts(c) {
+			return c, nil
+		}
+
+		c.abort()
+		t.abandon(c)
+
+		if !dial {
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("%w: %s", ErrUnauthorizedConnection, f)
+}
+
+func (t *Transport) pooled(f sip.Flow, dial, strict bool, v *verifier) (*conn, error) {
 	t.mu.Lock()
 
 	if t.closed {
@@ -484,7 +511,11 @@ func (t *Transport) readTCP(c *conn) {
 
 			return
 		default:
-			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			switch {
+			case errors.Is(err, io.EOF) && c.flow.Transport == sip.TLS:
+				c.abort()
+			case errors.Is(err, io.EOF):
+			case !errors.Is(err, net.ErrClosed):
 				t.log.Debug("SIP connection closed", slog.String("flow", c.flow.String()), slog.Any("error", err))
 			}
 

@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/ellanetworks/core/diameter/cx"
-	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -44,10 +44,6 @@ type SessionConfig struct {
 	Proxy *proxy.Proxy
 
 	ICSCF []netip.AddrPort
-	IBCF  []netip.AddrPort
-
-	BGCF      *bgcf.BGCF
-	Directory Directory
 
 	Numbering func() Numbering
 
@@ -377,23 +373,13 @@ func (s *Sessions) routeOnward(ctx context.Context, tx *transaction.ServerTransa
 		return
 	}
 
-	next, pick := "I-CSCF", s.icscf
-
-	switch b := s.breakout(ctx, out, onNet); b {
-	case offNet:
-		next, pick = "IBCF", s.ibcf
-
+	if _, global := globalNumber(out.URI); global {
 		withoutAccessNetworkChargingInfo(&out.Header)
-	case noUsableTrunk:
-		s.log.InfoContext(ctx, "no usable SIP trunk for the number", slog.String("request-uri", out.URI.String()))
-		s.answer(ctx, tx, sip.NewResponse(req, 503, ""))
-
-		return
 	}
 
-	to, ok := pick(req.Flow)
+	to, ok := s.icscf(req.Flow)
 	if !ok {
-		s.log.WarnContext(ctx, "no "+next+" listener for an originating request", slog.String("local", req.Flow.Local.String()))
+		s.log.WarnContext(ctx, "no I-CSCF listener for an originating request", slog.String("local", req.Flow.Local.String()))
 		s.answer(ctx, tx, sip.NewResponse(req, 500, ""))
 
 		return
@@ -405,6 +391,10 @@ func (s *Sessions) routeOnward(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	route.Params.Set("lr", "")
+
+	if breakout(out, onNet) {
+		route.Params.Set(icscf.BreakoutParam, "")
+	}
 
 	r := out.Clone()
 	r.Header.Prepend("Route", "<"+route.String()+">")
@@ -1033,26 +1023,6 @@ func (s *Sessions) icscf(in sip.Flow) (proxy.Target, bool) {
 	}
 
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: in.Local, Remote: s.cfg.ICSCF[i]}}, true
-}
-
-func (s *Sessions) ibcf(in sip.Flow) (proxy.Target, bool) {
-	local := in.Local.Addr().Unmap()
-
-	i := slices.IndexFunc(s.cfg.IBCF, func(l netip.AddrPort) bool { return l.Addr().Unmap() == local })
-	if i < 0 {
-		i = slices.IndexFunc(s.cfg.IBCF, func(l netip.AddrPort) bool { return l.Addr().Unmap().Is4() == local.Is4() })
-	}
-
-	if i < 0 {
-		return proxy.Target{}, false
-	}
-
-	tr := sip.UDP
-	if in.Transport == sip.TCP {
-		tr = sip.TCP
-	}
-
-	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: in.Local, Remote: s.cfg.IBCF[i]}}, true
 }
 
 func (s *Sessions) forward(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, to proxy.Target, opts proxy.Options) {

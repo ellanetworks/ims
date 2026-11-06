@@ -105,7 +105,7 @@ func (b *IBCF) relay(c *call) b2bua.RelayConfig {
 		TimerC:   timerC,
 		Request:  c.request,
 		Response: c.response,
-		Final:    final,
+		Final:    c.final,
 	}
 
 	if c.media != nil {
@@ -236,6 +236,43 @@ func (c *call) ending(fromTrunk bool, method string) {
 			c.outcome.bye = proxy.Caller
 		}
 	}
+}
+
+func (c *call) cancelled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.outcome.cancelled
+}
+
+// RFC 3261 section 9.2
+func (c *call) final(res *sip.Response, err error) ua.Reply {
+	if c.cancelled() {
+		return ua.Reply{Code: 487}
+	}
+
+	return final(res, err)
+}
+
+// RFC 3261 section 9.2
+// RFC 3261 section 17.2.3
+func (c *call) cancels(cancel *sip.Request) bool {
+	via, err := cancel.Header.TopVia()
+	if err != nil || via.Branch() == "" {
+		return false
+	}
+
+	invite, err := c.initial.Header.TopVia()
+
+	return err == nil && via.Branch() == invite.Branch() && strings.EqualFold(via.Host, invite.Host) && sentByPort(via) == sentByPort(invite)
+}
+
+func sentByPort(v sip.Via) uint16 {
+	if v.Port == 0 {
+		return sip.DefaultPortFor(v.Transport)
+	}
+
+	return v.Port
 }
 
 func (c *call) abandon() {
@@ -383,7 +420,6 @@ func crossing(_, _ *b2bua.Leg, _ sip.Message, p sip.BodyPart) bool {
 // RFC 3261 section 8.2.3
 // RFC 3261 section 21.4.13
 // RFC 5621 section 8.4
-// RFC 3959 section 4
 func screen(req *sip.Request) error {
 	if req.Method == "ACK" || req.Method == "CANCEL" {
 		return nil
@@ -405,7 +441,7 @@ func screen(req *sip.Request) error {
 			return unsupportedEncoding(err)
 		case err != nil:
 			return &sip.StatusError{StatusCode: 400, Err: err}
-		case !p.IsSession() && !p.IsEarlySession() && !crossing(nil, nil, nil, p):
+		case !p.IsSession() && !crossing(nil, nil, nil, p):
 			return &sip.StatusError{StatusCode: 415, Header: sip.Header{{Name: "Accept", Value: accepted}}, Err: errBody}
 		}
 	}
@@ -437,8 +473,11 @@ func (c *call) withheld(m sip.Message) bool {
 	return c.outbound && withholds(c.exit.privacy)
 }
 
+// RFC 3325 section 7
+// TS 24.607 clause 4.5.2.1
+// TS 24.607 clause 4.5.2.9
 func withholds(p sip.Privacy) bool {
-	return p.Has(sip.PrivacyID) && !p.Has(sip.PrivacyNone)
+	return (p.Has(sip.PrivacyID) || p.Has(sip.PrivacyHeader)) && !p.Has(sip.PrivacyNone)
 }
 
 // TS 24.229 clause 4.5.2

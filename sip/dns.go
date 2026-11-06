@@ -407,7 +407,7 @@ func (d *systemDNS) query(ctx context.Context, conf resolvConf, fqdn string, qty
 	return dnsResult{}, last
 }
 
-// RFC 6891 section 7
+// RFC 6891 section 6.2.2
 func exchange(ctx context.Context, server netip.AddrPort, q dnsmessage.Question, conf resolvConf) (dnsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, conf.timeout)
 	defer cancel()
@@ -429,7 +429,7 @@ func exchangeOnce(ctx context.Context, server netip.AddrPort, q dnsmessage.Quest
 	}
 
 	if !tcp {
-		answer, err := exchangeUDP(ctx, server, query, func(msg []byte) bool { return matches(msg, id, q) })
+		answer, err := exchangeUDP(ctx, server, query, func(msg []byte) bool { return matches(msg, id, q) || edns && rejectsEDNS(msg, id) })
 		if err != nil {
 			return dnsResult{}, err
 		}
@@ -445,7 +445,7 @@ func exchangeOnce(ctx context.Context, server netip.AddrPort, q dnsmessage.Quest
 		return dnsResult{}, err
 	}
 
-	if !matches(answer, id, q) {
+	if !matches(answer, id, q) && (!edns || !rejectsEDNS(answer, id)) {
 		return dnsResult{}, errors.New("sip: DNS answer to another query")
 	}
 
@@ -506,6 +506,20 @@ func matches(msg []byte, id uint16, q dnsmessage.Question) bool {
 	got := questions[0]
 
 	return got.Type == q.Type && got.Class == q.Class && sameName(got.Name, q.Name)
+}
+
+// RFC 6891 section 7
+func rejectsEDNS(msg []byte, id uint16) bool {
+	var p dnsmessage.Parser
+
+	h, err := p.Start(msg)
+	if err != nil || h.ID != id || !h.Response || h.RCode != dnsmessage.RCodeFormatError {
+		return false
+	}
+
+	questions, err := p.AllQuestions()
+
+	return err == nil && len(questions) == 0 && !hasOPT(&p)
 }
 
 // RFC 1035 section 2.3.3
@@ -687,7 +701,7 @@ func parseAnswer(msg []byte, q dnsmessage.Question, edns bool) (dnsResult, bool,
 	return dnsResult{notFound: true, ttl: negativeTTL(&p)}, false, nil
 }
 
-// RFC 1035 section 3.3.1
+// RFC 1034 section 4.3.2
 func canonical(name dnsmessage.Name, aliases map[string]dnsRecord) (dnsmessage.Name, uint32) {
 	ttl := uint32(1<<32 - 1)
 

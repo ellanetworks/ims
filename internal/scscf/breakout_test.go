@@ -1,14 +1,14 @@
 package scscf
 
 import (
-	"errors"
-	"slices"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/bgcf"
-	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/sip"
+	"github.com/ellanetworks/ims/sip/siptest"
 )
 
 const (
@@ -16,20 +16,18 @@ const (
 	offNetTel = "tel:+16617629239"
 )
 
-func routedBGCF(prefix string) *bgcf.BGCF {
-	return bgcfWith(prefix, true)
-}
+func icscfRoute(t *testing.T, sh *sessionHarness, req *sip.Request) sip.URI {
+	t.Helper()
 
-func bgcfWith(prefix string, enabled bool) *bgcf.BGCF {
-	s := settings.Settings{
-		Trunks:    []settings.Trunk{{ID: "carrier", Name: "Carrier", Enabled: enabled}},
-		SIPRoutes: []settings.SIPRoute{{ID: "r", Prefix: prefix, Trunks: []string{"carrier"}}},
+	routes, err := req.Header.Routes()
+	if err != nil || len(routes) != 1 || routes[0].URI.HostPort() != sh.icscf.Addr().String() || !routes[0].URI.IsLooseRouter() {
+		t.Fatalf("Route = %v, %v, want the I-CSCF alone", req.Header.Values("Route"), err)
 	}
 
-	return bgcf.New(func() settings.Settings { return s }, nil)
+	return routes[0].URI
 }
 
-func TestBreakoutToTheIBCF(t *testing.T) {
+func TestBreakoutAllowed(t *testing.T) {
 	tests := []struct {
 		name   string
 		target string
@@ -41,120 +39,112 @@ func TestBreakoutToTheIBCF(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sh := newSessionHarness(t)
-			sh.bgcf = routedBGCF("+1661")
-			sh.restart()
 
 			req := sh.originating("INVITE", tt.target, "<"+testMSISDN+">")
 			req.Header.Add("P-Charging-Vector", `icid-value=1234;access-network-charging-info="x";orig-ioi=home`)
 			sh.orig.Send(sip.UDP, sh.scscf, req)
 
-			got, f := sh.ibcf.RecvRequest()
-
-			routes, _ := got.Header.Routes()
+			got, f := sh.icscf.RecvRequest()
 
 			switch rr, _ := got.Header.RecordRoutes(); {
 			case got.URI.String() != tt.target:
 				t.Fatalf("Request-URI = %s, want %s unmodified", got.URI, tt.target)
-			case len(routes) != 1 || routes[0].URI.HostPort() != sh.ibcf.Addr().String() || !routes[0].URI.IsLooseRouter():
-				t.Fatalf("Route = %v, want the IBCF alone", got.Header.Values("Route"))
+			case !icscfRoute(t, sh, got).Params.Has(icscf.BreakoutParam):
+				t.Fatalf("Route = %v, want the I-CSCF allowed to break out", got.Header.Values("Route"))
 			case len(rr) != 1 || rr[0].URI.User != rrOriginating:
 				t.Fatalf("Record-Route = %v, want the S-CSCF's", got.Header.Values("Record-Route"))
 			case got.Header.Get("P-Charging-Vector") != "icid-value=1234;orig-ioi=home":
 				t.Fatalf("P-Charging-Vector = %q, want it without access-network-charging-info", got.Header.Get("P-Charging-Vector"))
 			case got.Header.Has("P-Served-User"):
-				t.Fatal("P-Served-User forwarded to the IBCF")
+				t.Fatal("P-Served-User forwarded to the I-CSCF")
 			}
 
-			if q := sh.directory.queries(); !slices.Equal(q, []string{tt.target}) {
-				t.Fatalf("translations %v, want %s", q, tt.target)
-			}
-
-			reply(t, sh.ibcf, got, f, 486, "carrier")
+			reply(t, sh.icscf, got, f, 486, "carrier")
 
 			if res := final(t, sh.orig); res.StatusCode != 486 {
 				t.Fatalf("caller got %q, want 486", res.StartLine())
 			}
-
-			sh.icscf.RecvNone(quiet)
 		})
 	}
 }
 
-func TestNoBreakout(t *testing.T) {
+func TestBreakoutNotAllowed(t *testing.T) {
 	tests := []struct {
-		name      string
-		bgcf      *bgcf.BGCF
-		method    string
-		target    string
-		known     bool
-		err       error
-		translate bool
+		name   string
+		method string
+		target string
+		anci   bool
 	}{
-		{name: "number in the HSS", bgcf: routedBGCF("+1"), target: offNetTel, known: true, translate: true},
-		{name: "registered number", bgcf: routedBGCF("+1"), target: testTel},
-		{name: "translation failed", bgcf: routedBGCF("+1"), target: offNetTel, err: errors.New("HSS down"), translate: true},
-		{name: "no SIP route", bgcf: routedBGCF("+44"), target: offNetTel},
-		{name: "no BGCF", target: offNetTel},
-		{name: "short number under a country code", bgcf: routedBGCF("+1"), target: "tel:+1911"},
-		{name: "SIP URI", bgcf: routedBGCF("+1"), target: "sip:+16617629239@" + homeDomain},
-		{name: "MESSAGE", bgcf: routedBGCF("+1"), method: "MESSAGE", target: offNetTel},
-		{name: "SUBSCRIBE", bgcf: routedBGCF("+1"), method: "SUBSCRIBE", target: offNetTel},
+		{name: "short number under a country code", target: "tel:+1911"},
+		{name: "SIP URI", target: "sip:+16617629239@" + homeDomain, anci: true},
+		{name: "MESSAGE", method: "MESSAGE", target: offNetTel},
+		{name: "SUBSCRIBE", method: "SUBSCRIBE", target: offNetTel},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sh := newSessionHarness(t)
-			sh.bgcf = tt.bgcf
-			sh.directory.known = map[string]bool{tt.target: tt.known}
-			sh.directory.err = tt.err
-			sh.restart()
 
 			method := tt.method
 			if method == "" {
 				method = "INVITE"
 			}
 
-			sh.orig.Send(sip.UDP, sh.scscf, sh.originating(method, tt.target, "<"+testMSISDN+">"))
+			req := sh.originating(method, tt.target, "<"+testMSISDN+">")
+			req.Header.Add("P-Charging-Vector", `icid-value=1234;access-network-charging-info="x"`)
+			sh.orig.Send(sip.UDP, sh.scscf, req)
 
-			if got, _ := sh.icscf.RecvRequest(); got.Method != method {
+			got, _ := sh.icscf.RecvRequest()
+			if got.Method != method {
 				t.Fatalf("I-CSCF got %s, want %s", got.Method, method)
 			}
 
-			sh.ibcf.RecvNone(quiet)
+			if icscfRoute(t, sh, got).Params.Has(icscf.BreakoutParam) {
+				t.Fatalf("Route = %v, want no breakout", got.Header.Values("Route"))
+			}
 
-			if q := sh.directory.queries(); tt.translate != (len(q) > 0) {
-				t.Fatalf("translations %v, want any %v", q, tt.translate)
+			if anci := strings.Contains(got.Header.Get("P-Charging-Vector"), "access-network-charging-info"); anci != tt.anci {
+				t.Fatalf("P-Charging-Vector = %q, want access-network-charging-info %v", got.Header.Get("P-Charging-Vector"), tt.anci)
 			}
 		})
 	}
 }
 
-func TestBreakoutWithoutUsableTrunk(t *testing.T) {
-	sh := newSessionHarness(t)
-	sh.bgcf = bgcfWith("+1", false)
-	sh.restart()
+// TS 24.229 clause 5.4.3.3
+func TestRetargetedBreakout(t *testing.T) {
+	sh, as := newISCHarness(t, func(as *siptest.Socket) []cx.InitialFilterCriteria {
+		term := cx.SessionCaseTerminatingRegistered
 
-	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", offNetTel, "<"+testMSISDN+">"))
+		return []cx.InitialFilterCriteria{iscTrigger(as, cx.DefaultHandlingSessionContinued,
+			methodSPT("INVITE"), cx.ServicePointTrigger{SessionCase: &term})}
+	})
 
-	if res := final(t, sh.orig); res.StatusCode != 503 {
-		t.Fatalf("got %q, want 503", res.StartLine())
+	req := sh.terminating("INVITE", testTel)
+	req.Header.Add("P-Charging-Vector", `icid-value=1234;access-network-charging-info="x"`)
+	sh.icscf.Send(sip.UDP, sh.scscf, req)
+
+	got, _ := as.RecvRequest()
+
+	diverted := proxied(got, as, false)
+	diverted.URI = sip.URI{Scheme: "tel", User: "+16617629239"}
+	as.Send(sip.UDP, sh.scscf, diverted)
+
+	if res, _ := sh.icscf.RecvResponse(); res.StatusCode != 100 {
+		t.Fatalf("I-CSCF got %q, want 100", res.StartLine())
 	}
 
-	sh.icscf.RecvNone(quiet)
-	sh.ibcf.RecvNone(quiet)
-}
+	out, _ := sh.icscf.RecvRequest()
 
-func TestBreakoutOfUnusableTrunkForAKnownNumber(t *testing.T) {
-	sh := newSessionHarness(t)
-	sh.bgcf = bgcfWith("+1", false)
-	sh.directory.known = map[string]bool{offNetTel: true}
-	sh.restart()
-
-	sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", offNetTel, "<"+testMSISDN+">"))
-
-	if got, _ := sh.icscf.RecvRequest(); got.URI.String() != offNetTel {
-		t.Fatalf("I-CSCF got %s, want %s", got.URI, offNetTel)
+	switch {
+	case out.Method != "INVITE" || out.URI.String() != offNetTel:
+		t.Fatalf("I-CSCF got:\n%s\nwant the retargeted INVITE", out)
+	case !icscfRoute(t, sh, out).Params.Has(icscf.BreakoutParam):
+		t.Fatalf("Route = %v, want the I-CSCF allowed to break out", out.Header.Values("Route"))
+	case strings.Contains(out.Header.Get("P-Charging-Vector"), "access-network-charging-info"):
+		t.Fatalf("P-Charging-Vector = %q, want it without access-network-charging-info", out.Header.Get("P-Charging-Vector"))
 	}
+
+	sh.term.RecvNone(quiet)
 }
 
 func TestWithoutAccessNetworkChargingInfo(t *testing.T) {

@@ -40,9 +40,7 @@ type Config struct {
 
 	Supported []string
 
-	Port uint16
-
-	LocalPorts []uint16
+	Listeners []netip.AddrPort
 
 	TimerC time.Duration
 
@@ -54,14 +52,13 @@ type Config struct {
 }
 
 type Proxy struct {
-	layer      *transaction.Layer
-	log        *slog.Logger
-	supported  []string
-	port       uint16
-	localPorts []uint16
-	timerC     time.Duration
-	clock      transaction.Clock
-	secret     string
+	layer     *transaction.Layer
+	log       *slog.Logger
+	supported []string
+	listeners []netip.AddrPort
+	timerC    time.Duration
+	clock     transaction.Clock
+	secret    string
 
 	dialogLifetime time.Duration
 	lingerBye      time.Duration
@@ -137,16 +134,15 @@ func New(cfg Config) *Proxy {
 	}
 
 	p := &Proxy{
-		layer:      cfg.Layer,
-		log:        cfg.Logger,
-		supported:  cfg.Supported,
-		port:       cfg.Port,
-		localPorts: slices.Clone(cfg.LocalPorts),
-		timerC:     cfg.TimerC,
-		clock:      cfg.Clock,
-		secret:     rand.Text(),
-		contexts:   make(map[*transaction.ServerTransaction]*responseContext),
-		dialogs:    make(map[string]*Dialog),
+		layer:     cfg.Layer,
+		log:       cfg.Logger,
+		supported: cfg.Supported,
+		listeners: slices.Clone(cfg.Listeners),
+		timerC:    cfg.TimerC,
+		clock:     cfg.Clock,
+		secret:    rand.Text(),
+		contexts:  make(map[*transaction.ServerTransaction]*responseContext),
+		dialogs:   make(map[string]*Dialog),
 
 		dialogLifetime: cfg.DialogLifetime,
 		lingerBye:      64 * cfg.Layer.T1(),
@@ -216,7 +212,11 @@ func (p *Proxy) IsLocal(u sip.URI) bool {
 		port = sip.DefaultPort
 	}
 
-	return (p.port == 0 || port == p.port || slices.Contains(p.localPorts, port)) && p.layer.IsLocal(u.Host, port)
+	if len(p.listeners) == 0 {
+		return p.layer.IsLocal(u.Host, port)
+	}
+
+	return slices.ContainsFunc(p.listeners, func(l netip.AddrPort) bool { return l.Port() == port && p.layer.Names(l.Addr(), u.Host) })
 }
 
 func (p *Proxy) Preprocess(req *sip.Request) (*sip.Request, []sip.URI, error) {

@@ -66,7 +66,10 @@ On the **SIP Trunks** page, the trunk's **State** should be `up` within a minute
 
 If it is `down`, check the firewall and the carrier's settings.
 
-If it is `unusable`, check that the trunk's **Inbound CIDRs** don't overlap `sip.addresses` or `sip.trusted_networks` in `ims.yaml`.
+If it is `unusable`, check that:
+
+- The trunk's **Inbound CIDRs** don't overlap `sip.addresses` or `sip.trusted_networks` in `ims.yaml`.
+- If the trunk's **TLS** > **Required** is checked, `ibcf.external.tls` is set in `ims.yaml`.
 
 ## 7. Place a test call
 
