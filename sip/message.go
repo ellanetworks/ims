@@ -14,9 +14,22 @@ type Transport string
 const (
 	UDP Transport = "UDP"
 	TCP Transport = "TCP"
+	TLS Transport = "TLS"
 )
 
-const DefaultPort = 5060
+const (
+	DefaultPort    = 5060
+	DefaultTLSPort = 5061
+)
+
+// RFC 3261 section 18.1.1
+func DefaultPortFor(tr Transport) uint16 {
+	if strings.EqualFold(string(tr), string(TLS)) {
+		return DefaultTLSPort
+	}
+
+	return DefaultPort
+}
 
 type Flow struct {
 	Transport Transport

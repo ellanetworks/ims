@@ -51,7 +51,7 @@ func tryBenchAgent(b *testing.B, name string, configure func(*ua.Config)) (*benc
 	_ = c.Close()
 
 	cfg := ua.Config{
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			target := req.URI
 			if r, err := req.Header.TopRoute(); err == nil {
 				target = r.URI
@@ -363,7 +363,7 @@ func netAgent(b *testing.B, n *siptest.Net, name string, configure func(*ua.Conf
 	addr := n.Addr()
 
 	cfg := ua.Config{
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			remote, err := netip.ParseAddr(req.URI.Host)
 			if err != nil {
 				return err

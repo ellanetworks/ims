@@ -2,11 +2,13 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -19,6 +21,8 @@ type Settings struct {
 	Policy      Policy
 	CallRecords CallRecords
 	IPSMGW      IPSMGW
+	Trunks      []Trunk
+	SIPRoutes   []SIPRoute
 }
 
 type Operator struct {
@@ -31,7 +35,13 @@ type Numbering struct {
 	CountryCode         string
 	NationalPrefix      string
 	InternationalPrefix string
+	MinNationalDigits   int
 }
+
+const (
+	DefaultMinNationalDigits = 7
+	MaxMinNationalDigits     = 15
+)
 
 // TS 23.003 clause 13.2
 func (o Operator) HomeDomain() string {
@@ -100,7 +110,7 @@ func (s Settings) Validate() error {
 		return err
 	}
 
-	return nil
+	return s.validateSIPTrunks()
 }
 
 func (s Settings) keepsPCRF(had bool) error {
@@ -132,6 +142,8 @@ func (n Numbering) Validate() error {
 		return invalidf("numbering.international_prefix must be up to 4 digits")
 	case n.NationalPrefix != "" && n.NationalPrefix == n.InternationalPrefix:
 		return invalidf("numbering.national_prefix and numbering.international_prefix must differ")
+	case n.MinNationalDigits < 0 || n.MinNationalDigits > MaxMinNationalDigits:
+		return invalidf("numbering.min_national_digits must be between 0 and %d", MaxMinNationalDigits)
 	}
 
 	return nil
@@ -146,6 +158,12 @@ type Store interface {
 	UpdatePolicy(ctx context.Context, p Policy) error
 	UpdateCallRecords(ctx context.Context, c CallRecords) error
 	UpdateIPSMGW(ctx context.Context, g IPSMGW) error
+	CreateTrunk(ctx context.Context, t Trunk) error
+	UpdateTrunk(ctx context.Context, t Trunk) error
+	DeleteTrunk(ctx context.Context, id string) error
+	CreateSIPRoute(ctx context.Context, r SIPRoute) error
+	UpdateSIPRoute(ctx context.Context, r SIPRoute) error
+	DeleteSIPRoute(ctx context.Context, id string) error
 }
 
 type Live struct {
@@ -153,21 +171,41 @@ type Live struct {
 	check func(context.Context, Settings) error
 
 	current atomic.Pointer[Settings]
+	runtime atomic.Pointer[Settings]
 
-	mu      sync.Mutex
-	changed chan struct{}
-	causes  []trace.SpanContext
+	mu         sync.Mutex
+	trunkGuard func(Trunk) error
+	changed    chan struct{}
+	causes     []trace.SpanContext
 }
 
 func NewLive(store Store, initial Settings, check func(context.Context, Settings) error) *Live {
 	l := &Live{store: store, check: check, changed: make(chan struct{})}
-	l.current.Store(&initial)
+	l.publish(&initial)
 
 	return l
 }
 
 func (l *Live) Get() Settings {
 	return *l.current.Load()
+}
+
+func (l *Live) Runtime() Settings {
+	return *l.runtime.Load()
+}
+
+func (l *Live) publish(s *Settings) {
+	rt := *s
+	rt.Trunks = make([]Trunk, 0, len(s.Trunks))
+
+	for _, t := range s.Trunks {
+		if e := t.Effective(); l.checkTrunk(e) == nil {
+			rt.Trunks = append(rt.Trunks, e)
+		}
+	}
+
+	l.current.Store(s)
+	l.runtime.Store(&rt)
 }
 
 func (l *Live) UpdateOperator(ctx context.Context, o Operator) error {
@@ -257,6 +295,143 @@ func (l *Live) UpdateCallRecords(ctx context.Context, c CallRecords) error {
 	}, func() error { return l.store.UpdateCallRecords(ctx, c) })
 }
 
+func (l *Live) CreateTrunk(ctx context.Context, t Trunk) (Trunk, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Trunk{}, fmt.Errorf("SIP trunk ID: %w", err)
+	}
+
+	t.ID = id.String()
+
+	err = l.change(ctx, func(next *Settings) error {
+		if err := t.TLS.checkCurrent(TrunkTLS{}, time.Now()); err != nil {
+			return err
+		}
+
+		if err := l.checkTrunk(t.Effective()); err != nil {
+			return err
+		}
+
+		next.Trunks = append(slices.Clone(next.Trunks), t)
+
+		return nil
+	}, func() error { return l.store.CreateTrunk(ctx, t) })
+
+	return t, err
+}
+
+func (l *Live) UpdateTrunk(ctx context.Context, t Trunk) error {
+	return l.change(ctx, func(next *Settings) error {
+		i, ok := next.trunk(t.ID)
+		if !ok {
+			return kindError{ErrNotFound, "SIP trunk not found"}
+		}
+
+		if err := t.TLS.checkCurrent(next.Trunks[i].TLS, time.Now()); err != nil {
+			return err
+		}
+
+		if err := l.checkTrunk(t.Effective()); err != nil {
+			return err
+		}
+
+		next.Trunks = slices.Clone(next.Trunks)
+		next.Trunks[i] = t
+
+		return nil
+	}, func() error { return l.store.UpdateTrunk(ctx, t) })
+}
+
+func (l *Live) SetTrunkGuard(guard func(Trunk) error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.trunkGuard = guard
+	l.publish(l.current.Load())
+}
+
+func (l *Live) Usable(id string) bool {
+	_, ok := l.Runtime().Trunk(id)
+	return ok
+}
+
+func (l *Live) checkTrunk(t Trunk) error {
+	if l.trunkGuard == nil {
+		return nil
+	}
+
+	err := l.trunkGuard(t)
+
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrInvalid):
+		return err
+	default:
+		return kindError{ErrInvalid, err.Error()}
+	}
+}
+
+func (l *Live) DeleteTrunk(ctx context.Context, id string) error {
+	return l.change(ctx, func(next *Settings) error {
+		i, ok := next.trunk(id)
+		if !ok {
+			return kindError{ErrNotFound, "SIP trunk not found"}
+		}
+
+		if err := next.trunkInUse(id); err != nil {
+			return err
+		}
+
+		next.Trunks = slices.Delete(slices.Clone(next.Trunks), i, i+1)
+
+		return nil
+	}, func() error { return l.store.DeleteTrunk(ctx, id) })
+}
+
+func (l *Live) CreateSIPRoute(ctx context.Context, r SIPRoute) (SIPRoute, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return SIPRoute{}, fmt.Errorf("SIP route ID: %w", err)
+	}
+
+	r.ID = id.String()
+
+	err = l.change(ctx, func(next *Settings) error {
+		next.SIPRoutes = append(slices.Clone(next.SIPRoutes), r)
+		return nil
+	}, func() error { return l.store.CreateSIPRoute(ctx, r) })
+
+	return r, err
+}
+
+func (l *Live) UpdateSIPRoute(ctx context.Context, r SIPRoute) error {
+	return l.change(ctx, func(next *Settings) error {
+		i, ok := next.sipRoute(r.ID)
+		if !ok {
+			return kindError{ErrNotFound, "SIP route not found"}
+		}
+
+		next.SIPRoutes = slices.Clone(next.SIPRoutes)
+		next.SIPRoutes[i] = r
+
+		return nil
+	}, func() error { return l.store.UpdateSIPRoute(ctx, r) })
+}
+
+func (l *Live) DeleteSIPRoute(ctx context.Context, id string) error {
+	return l.change(ctx, func(next *Settings) error {
+		i, ok := next.sipRoute(id)
+		if !ok {
+			return kindError{ErrNotFound, "SIP route not found"}
+		}
+
+		next.SIPRoutes = slices.Delete(slices.Clone(next.SIPRoutes), i, i+1)
+
+		return nil
+	}, func() error { return l.store.DeleteSIPRoute(ctx, id) })
+}
+
 func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save func() error) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -281,7 +456,7 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save
 		return fmt.Errorf("save settings: %w", err)
 	}
 
-	l.current.Store(&next)
+	l.publish(&next)
 
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		l.causes = append(l.causes[max(0, len(l.causes)+1-maxCauses):], sc)

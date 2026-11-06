@@ -55,6 +55,10 @@ func TestCallRecordLifecycle(t *testing.T) {
 	r.CallingParty = []string{"sip:+15551230001@example.org;user=phone"}
 	r.CalledParty = "tel:+15551230002"
 	r.Alerted = true
+	r.InTrunk, r.InTrunkName = "carrier-a", "Carrier A"
+	saveCalls(t, d, r)
+
+	r.OutTrunk, r.OutTrunkName = "carrier-b", "Carrier B"
 	saveCalls(t, d, r)
 
 	r.SIPStatus, r.Outcome = 200, OutcomeAnswered
@@ -160,6 +164,12 @@ func TestCallRecordConstraints(t *testing.T) {
 		},
 		"ended and incomplete": func(r *CallRecord) {
 			ended(r, 486, OutcomeBusy, PartyCallee).Incomplete = true
+		},
+		"incoming trunk without its name": func(r *CallRecord) {
+			r.InTrunk = "carrier"
+		},
+		"outgoing trunk name without its trunk": func(r *CallRecord) {
+			r.OutTrunkName = "Carrier"
 		},
 	}
 

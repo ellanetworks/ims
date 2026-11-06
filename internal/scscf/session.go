@@ -16,6 +16,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/lifetime"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -344,7 +345,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 }
 
 // TS 24.229 clause 5.4.3.2
-func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
+func (s *Sessions) routeOnward(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, c *chain, first bool) {
 	req := tx.Request()
 
 	if out.Method == "MESSAGE" && out.Content().MediaType() == contentTypeSMS {
@@ -357,8 +358,10 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	out.Header.Del("P-Served-User")
 	withoutRegistrationToken(&out.Header)
 
-	if u, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain); ok {
-		s.log.DebugContext(ctx, "home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()))
+	u, onNet, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain)
+	if ok {
+		s.log.DebugContext(ctx, "home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()),
+			slog.Bool("on-net", onNet))
 		out.URI = u
 	}
 
@@ -368,6 +371,10 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 		s.answer(ctx, tx, sip.NewResponse(req, 404, ""))
 
 		return
+	}
+
+	if _, global := globalNumber(out.URI); global {
+		withoutAccessNetworkChargingInfo(&out.Header)
 	}
 
 	to, ok := s.icscf(req.Flow)
@@ -384,6 +391,10 @@ func (s *Sessions) toICSCF(ctx context.Context, tx *transaction.ServerTransactio
 	}
 
 	route.Params.Set("lr", "")
+
+	if breakout(out, onNet) {
+		route.Params.Set(icscf.BreakoutParam, "")
+	}
 
 	r := out.Clone()
 	r.Header.Prepend("Route", "<"+route.String()+">")

@@ -42,6 +42,7 @@ import {
   type CallOutcome,
   type CallRecord,
 } from "@/queries/callRecords";
+import { listSIPTrunks } from "@/queries/sipTrunks";
 import {
   callerOf,
   calleeOf,
@@ -72,7 +73,23 @@ const outcomesOf = (param: string): CallOutcome[] =>
     .split(",")
     .filter((o): o is CallOutcome => CALL_OUTCOMES.includes(o as CallOutcome));
 
-const columns: GridColDef<CallRecord>[] = [
+const trunksOf = (
+  record: CallRecord,
+  trunkName: (id: string) => string | undefined,
+): string => {
+  const name = (id?: string, stored?: string) =>
+    id ? (trunkName(id) ?? stored ?? id) : undefined;
+  const names = [
+    name(record.in_trunk_id, record.in_trunk_name),
+    name(record.out_trunk_id, record.out_trunk_name),
+  ].filter((n) => n !== undefined);
+
+  return names.length > 0 ? names.join(" → ") : "—";
+};
+
+const columnsFor = (
+  trunkName: (id: string) => string | undefined,
+): GridColDef<CallRecord>[] => [
   {
     field: "requested_at",
     headerName: "Time",
@@ -112,6 +129,13 @@ const columns: GridColDef<CallRecord>[] = [
       row.duration_ms !== undefined ? formatDuration(row.duration_ms) : "—",
   },
   {
+    field: "trunk",
+    headerName: "Trunk",
+    flex: 1,
+    minWidth: 150,
+    valueGetter: (_value, row) => trunksOf(row, trunkName),
+  },
+  {
     field: "media",
     headerName: "Media",
     width: 120,
@@ -133,7 +157,8 @@ const gridSx = {
 };
 
 export default function Calls() {
-  const editable = useAuth().can("call_record:update_retention");
+  const auth = useAuth();
+  const editable = auth.can("call_record:update_retention");
   const [search, setSearch] = useSearchParamState("search");
   const [outcomeParam, setOutcomeParam] = useSearchParamState("outcome");
   const [timeRange, setTimeRange] = useTimeRangeSearchParams({
@@ -185,6 +210,16 @@ export default function Calls() {
     refetchInterval: (query) =>
       query.state.data?.in_progress ? CALLS_REFRESH_MS : false,
   });
+
+  const trunks = useQuery({
+    queryKey: ["sip-trunks"],
+    queryFn: listSIPTrunks,
+    enabled: auth.can("sip_trunk:read"),
+  });
+  const columns = useMemo(
+    () => columnsFor((id) => trunks.data?.find((t) => t.id === id)?.name),
+    [trunks.data],
+  );
 
   const shown = selected ? (record.data ?? selected) : null;
 

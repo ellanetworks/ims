@@ -22,7 +22,7 @@ func Pair(ctx context.Context, local netip.AddrPort, control func(network, addre
 	}()
 
 	for {
-		tl, err := tcp(ctx, local, control)
+		tl, err := TCP(ctx, local, control)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -46,7 +46,7 @@ func Pair(ctx context.Context, local netip.AddrPort, control func(network, addre
 	}
 }
 
-func tcp(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*net.TCPListener, error) {
+func TCP(ctx context.Context, local netip.AddrPort, control func(network, address string, c syscall.RawConn) error) (*net.TCPListener, error) {
 	lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
 		if err := sockopt.ReusePort(network, address, c); err != nil {
 			return err

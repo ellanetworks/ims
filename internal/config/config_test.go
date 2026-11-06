@@ -25,6 +25,8 @@ const (
 
 	mcptt = "mcptt:\n  media:\n    address: 10.0.0.5\n"
 
+	ibcf = "ibcf:\n  external:\n    addresses: [{address: 203.0.113.5}]\n"
+
 	n5TLS = n5 + `  tls:
     ca: /etc/ims/tls/ca.crt
     cert: /etc/ims/tls/ims.crt
@@ -156,6 +158,81 @@ func TestLoadMCPTT(t *testing.T) {
 	}
 }
 
+func TestLoadIBCF(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+ibcf))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := &IBCF{
+		Port:     5085,
+		External: IBCFExternal{Addresses: []IBCFAddress{{Address: netip.MustParseAddr("203.0.113.5")}}},
+		Media:    IBCFMedia{MinPort: 10000, MaxPort: 19999},
+	}
+	if !reflect.DeepEqual(cfg.IBCF, want) {
+		t.Errorf("IBCF = %+v, want %+v", cfg.IBCF, want)
+	}
+
+	if cfg, err = Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter)); err != nil || cfg.IBCF != nil {
+		t.Errorf("without ibcf: %+v, %v", cfg.IBCF, err)
+	}
+
+	if _, err = Load(writeConfig(t, validDB+validAPI+"sip:\n  addresses: [10.0.0.5]\n"+validDiameter+
+		"ibcf:\n  external:\n    addresses: [{address: 203.0.113.5}, {address: \"2001:db8::5\"}]\n")); err != nil {
+		t.Errorf("an IPv4 and an IPv6 external address: %v", err)
+	}
+}
+
+func TestLoadIBCFLab(t *testing.T) {
+	dir := t.TempDir()
+	cert, key := filepath.Join(dir, "ibcf.crt"), filepath.Join(dir, "ibcf.key")
+
+	for _, path := range []string{cert, key} {
+		if err := os.WriteFile(path, []byte("pem"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg, err := Load(writeConfig(t, validDB+validAPI+"sip:\n  addresses: [10.0.0.5]\n"+validDiameter+`ibcf:
+  port: 5085
+  external:
+    addresses:
+      - address: 10.208.0.2
+        advertise: 104.155.128.8
+    tls:
+      cert: `+cert+`
+      key: `+key+`
+  media:
+    min_port: 10000
+    max_port: 10999
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := &IBCF{
+		Port: 5085,
+		External: IBCFExternal{
+			Addresses: []IBCFAddress{{Address: netip.MustParseAddr("10.208.0.2"), Advertise: netip.MustParseAddr("104.155.128.8")}},
+			TLS:       &IBCFTLS{Cert: cert, Key: key},
+		},
+		Media: IBCFMedia{MinPort: 10000, MaxPort: 10999},
+	}
+	if !reflect.DeepEqual(cfg.IBCF, want) {
+		t.Errorf("IBCF = %+v, want %+v", cfg.IBCF, want)
+	}
+
+	if adv := cfg.IBCF.External.Advertised(); !reflect.DeepEqual(adv, map[netip.Addr]netip.Addr{
+		netip.MustParseAddr("10.208.0.2"): netip.MustParseAddr("104.155.128.8"),
+	}) {
+		t.Errorf("Advertised() = %v", adv)
+	}
+
+	if !cfg.IBCF.External.Certificate() {
+		t.Error("Certificate() = false, want true")
+	}
+}
+
 func TestLoadTelemetry(t *testing.T) {
 	valid := validDB + validAPI + validSIP + validDiameter
 
@@ -248,6 +325,59 @@ func TestLoadInvalid(t *testing.T) {
 			valid + validDiameter + mcptt + "    min_port: 5000\n    max_port: 5100\n",
 			"pcscf.port 5060 is in the range of the legs' ports of mcptt.media on 10.0.0.5",
 		},
+		{"ibcf without external addresses", valid + validDiameter + "ibcf:\n  port: 5085\n", "ibcf.external.addresses needs at least one address"},
+		{"ibcf unspecified external address", valid + validDiameter + "ibcf:\n  external:\n    addresses: [{address: 0.0.0.0}]\n", "ibcf.external.addresses: 0.0.0.0 must be a specific address"},
+		{"ibcf external addresses of one family", valid + validDiameter + "ibcf:\n  external:\n    addresses: [{address: 203.0.113.5}, {address: 203.0.113.6}]\n", "at most one IPv4 and one IPv6 address"},
+		{"ibcf removed external port", valid + validDiameter + ibcf + "    port: 5070\n", "field port not found"},
+		{"ibcf removed advertised addresses", valid + validDiameter + ibcf + "    advertised_addresses: [198.51.100.5]\n", "field advertised_addresses not found"},
+		{"ibcf removed keepalive", valid + validDiameter + ibcf + "  keepalive:\n    failures: 3\n", "field keepalive not found"},
+		{"removed trgw", valid + validDiameter + ibcf + "trgw:\n  min_port: 30000\n", "field trgw not found"},
+		{"ibcf port on a role port", valid + validDiameter + ibcf + "  port: 5070\n", "icscf.port and ibcf.port are both 5070"},
+		{
+			"ibcf external address on a SIP address",
+			valid + validDiameter + "ibcf:\n  external:\n    addresses: [{address: 10.0.0.5}]\n",
+			"ibcf.external.addresses: 10.0.0.5 is in sip.addresses",
+		},
+		{
+			"ibcf external address in the trust domain",
+			valid + "  trusted_networks: [203.0.113.0/24]\n" + validDiameter + ibcf,
+			"ibcf.external.addresses: 203.0.113.5 is in sip.trusted_networks",
+		},
+		{
+			"ibcf TLS port on the mcptt control port",
+			valid + validDiameter + "mcptt:\n  media:\n    address: 203.0.113.5\n    control_port: 5061\n" + ibcf,
+			"the IBCF SIP TLS port and mcptt.media.control_port are both 5061 on 203.0.113.5",
+		},
+		{
+			"ibcf external port in the mcptt media range",
+			valid + validDiameter + "mcptt:\n  media:\n    address: 203.0.113.5\n    min_port: 5000\n    max_port: 5100\n" + ibcf,
+			"the IBCF SIP port 5060 is in the range of the legs' ports of mcptt.media on 203.0.113.5",
+		},
+		{"ibcf advertise family", valid + validDiameter + "ibcf:\n  external:\n    addresses: [{address: 203.0.113.5, advertise: \"2001:db8::5\"}]\n", "advertise 2001:db8::5 is not of the family of 203.0.113.5"},
+		{"ibcf advertise unspecified", valid + validDiameter + "ibcf:\n  external:\n    addresses: [{address: 203.0.113.5, advertise: 0.0.0.0}]\n", "advertise 0.0.0.0 must be a specific address"},
+		{"ibcf media odd min port", valid + validDiameter + ibcf + "  media:\n    min_port: 30001\n", "ibcf.media.min_port 30001 is odd"},
+		{"ibcf media low min port", valid + validDiameter + ibcf + "  media:\n    min_port: 1000\n", "must be between 1024 and 65535"},
+		{"ibcf media empty range", valid + validDiameter + ibcf + "  media:\n    min_port: 30000\n    max_port: 30000\n", "leaves no pair of ports"},
+		{"ibcf media range over SIP", valid + validDiameter + ibcf + "  media:\n    min_port: 5000\n", "pcscf.port 5060 is in the range of ibcf.media ports on 10.0.0.5"},
+		{"ibcf media range over the IP-SM-GW", valid + validDiameter + ibcf + "  media:\n    min_port: 5090\n  port: 5000\n", "the IP-SM-GW port 5100 is in the range of ibcf.media ports on 10.0.0.5"},
+		{
+			"ibcf media range over the external port",
+			validDB + validAPI + "sip:\n  addresses: [10.0.0.5]\npcscf:\n  port: 5260\n  ipsec:\n    server_port: 5263\n    client_ports: [5264, 5265]\nicscf:\n  port: 5270\nscscf:\n  port: 5280\n" + validDiameter + ibcf + "  port: 5285\n  media:\n    min_port: 5000\n    max_port: 5099\n",
+			"the IBCF SIP port 5060 is in the range of ibcf.media ports on 203.0.113.5",
+		},
+		{"ibcf media over mcptt media", valid + validDiameter + ibcf + "  media:\n    max_port: 20100\n" + mcptt, "the ranges of ibcf.media ports and mcptt.media ports overlap on 10.0.0.5"},
+		{"ibcf media over the n5 notify port", valid + validDiameter + ibcf + strings.Replace(n5, "port: 7778", "port: 12000", 1), "n5.notify.port 12000 is in the range of ibcf.media ports on 10.0.0.5"},
+		{"ibcf media over the api", validDB + "api:\n  address: 0.0.0.0\n  port: 12000\n" + validSIP + validDiameter + ibcf, "api.port 12000 is in the range of ibcf.media ports on 10.0.0.5"},
+		{"ibcf tls cert without key", valid + validDiameter + ibcf + "    tls:\n      cert: /nonexistent.crt\n", "must both be set, or neither"},
+		{"ibcf tls cert missing", valid + validDiameter + ibcf + "    tls:\n      cert: /nonexistent.crt\n      key: /nonexistent.key\n", "/nonexistent"},
+		{"ibcf removed tls port", valid + validDiameter + ibcf + "    tls:\n      port: 5061\n", "field port not found"},
+		{"ibcf tls port on the api", validDB + "api:\n  address: 0.0.0.0\n  port: 5061\n" + validSIP + validDiameter + ibcf, "the IBCF SIP TLS port and api.port are both 5061 on 203.0.113.5"},
+		{
+			"n5 notify port on the IBCF TLS port",
+			valid + validDiameter + ibcf + strings.Replace(strings.Replace(n5, "port: 7778", "port: 5061", 1), "address: 10.0.0.5", "address: 203.0.113.5", 1),
+			"n5.notify.port and the IBCF SIP TLS port are both 5061 on 203.0.113.5",
+		},
+		{"n5 notify port on the ibcf", valid + validDiameter + ibcf + strings.Replace(n5, "port: 7778", "port: 5085", 1), "n5.notify.port and ibcf.port are both 5085"},
 		{"n5 notify port on mcptt", valid + validDiameter + mcptt + strings.Replace(n5, "port: 7778", "port: 5090", 1), "n5.notify.port and mcptt.port are both 5090"},
 		{
 			"n5 notify port on the API",

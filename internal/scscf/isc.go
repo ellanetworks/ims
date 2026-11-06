@@ -136,7 +136,7 @@ func (s *Sessions) resume(ctx context.Context, tx *transaction.ServerTransaction
 
 	if !c.originating() && !sameTarget(out.URI, c.ruri, s.r.cfg.HomeDomain) {
 		s.log.DebugContext(ctx, "request retargeted by an AS", slog.String("from", c.ruri.String()), slog.String("to", out.URI.String()))
-		s.toICSCF(ctx, tx, out, c, false)
+		s.routeOnward(ctx, tx, out, c, false)
 
 		return
 	}
@@ -176,7 +176,7 @@ func (s *Sessions) next(ctx context.Context, tx *transaction.ServerTransaction, 
 
 	switch {
 	case c.originating():
-		s.toICSCF(ctx, tx, out, c, first)
+		s.routeOnward(ctx, tx, out, c, first)
 	case c.sescase == cx.SessionCaseTerminatingUnregistered:
 		s.log.DebugContext(ctx, "request to an unregistered user", slog.String("impu", c.served.URI.String()))
 		s.answer(ctx, tx, sip.NewResponse(tx.Request(), 480, ""))

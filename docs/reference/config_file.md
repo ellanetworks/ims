@@ -51,11 +51,21 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
         - `min_port` (int, optional): The first port of the voice legs. Even. Default `20000`.
         - `max_port` (int, optional): The last port of the voice legs. Default `20999`.
         - `control_port` (int, optional): The port of the floor control channels, outside the voice legs' range. Default `21000`.
+- `ibcf` (object, optional): The IBCF, the border towards [SIP trunks](../explanation/sip_trunks.md). When absent, the IBCF doesn't run and opens no ports.
+    - `port` (int, optional): The SIP port of the IBCF on each of `sip.addresses`, towards the I-CSCF and the S-CSCF. Default `5085`.
+    - `external` (object): Where carriers reach Ella IMS, on SIP port `5060`, UDP and TCP, and TLS port `5061`.
+        - `addresses` (list of objects): One IPv4 address, one IPv6 address, or one of each.
+            - `address` (string): The IP address. A specific address, not `0.0.0.0` or `::`, neither in `sip.addresses` nor in `sip.trusted_networks`.
+            - `advertise` (string, optional): The public address, of the same family, when Ella IMS is behind a 1:1 NAT that keeps ports. Default `address`.
+        - `tls` (object, optional): Ella IMS's certificate, to accept TLS connections from carriers.
+            - `cert` (string): The path to the PEM certificate chain, the leaf first.
+            - `key` (string): The path to the PEM private key.
+    - `media` (object, optional): The UDP ports of the voice of calls over SIP trunks, on `sip.addresses` and on `ibcf.external.addresses`. Two ports per call on each.
+        - `min_port` (int, optional): The first port. Even, from `1024`. Default `10000`.
+        - `max_port` (int, optional): The last port. Default `19999`.
 - `telemetry` (object, optional): The [traces](observability.md#traces).
     - `enabled` (boolean, optional): Export traces. Default `false`.
     - `otlp_endpoint` (string): The `host:port` of an OTLP/gRPC collector, over plain gRPC. Required when `enabled` is `true`.
-
-The SIP ports (`pcscf.port`, `pcscf.ipsec.*`, `icscf.port`, `scscf.port`, `mcptt.port`) must all differ, must not be `5100`, which the built-in IP-SM-GW takes, and must differ from `api.port` when the API listens on a SIP address. The IPsec ports cannot be `5060` or `5061`. On a SIP address, the MCPTT media ports must not include a SIP port.
 
 ## Example
 
@@ -78,6 +88,18 @@ icscf:
   port: 5070
 scscf:
   port: 5080
+ibcf:
+  port: 5085
+  external:
+    addresses:
+      - address: 10.0.0.5
+        advertise: 203.0.113.5
+    tls:
+      cert: /etc/ims/tls/ibcf.crt
+      key: /etc/ims/tls/ibcf.key
+  media:
+    min_port: 10000
+    max_port: 19999
 diameter:
   address: 10.3.0.5
   port: 3868

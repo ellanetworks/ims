@@ -13,6 +13,7 @@ description: An IP Multimedia Subsystem for private 4G and 5G networks - easy to
 ## Key features
 
 - **Voice and video calls** over 4G (VoLTE) and 5G (VoNR).
+- **SIP trunks**: connect your private network to the public phone network.
 - **SIM-based authentication** with your existing HSS (IMS-AKA over Cx), and IPsec between phones and the IMS.
 - **Voice QoS** from the 4G or 5G core: PCRF over Rx, or PCF over N5 with optional mutual TLS.
 - **Application Servers**: connect voicemail, conferencing, supplementary services and other services, routed per subscriber by your HSS (iFCs over ISC).

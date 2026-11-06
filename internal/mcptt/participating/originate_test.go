@@ -72,7 +72,7 @@ func TestOriginate(t *testing.T) {
 	a, err := ua.New(ua.Config{
 		Transaction: n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: addr.Addr().String(), Port: addr.Port()}},
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			tr, to, err := sip.NextHop(req)
 			if err != nil {
 				return err

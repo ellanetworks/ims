@@ -5,12 +5,15 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
+	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -385,4 +388,30 @@ func TestTrustByRole(t *testing.T) {
 	orig.Header.Add("P-Asserted-Identity", "<sip:alice@"+imsRealm+">")
 	outsider.Send(sip.UDP, scscf, orig)
 	wantResponse(t, outsider, 403, "MESSAGE")
+}
+
+func TestSIPAliasesByAddress(t *testing.T) {
+	internal := netip.MustParseAddr("10.0.0.5")
+	external := netip.MustParseAddr("192.0.2.5")
+	public := netip.MustParseAddr("198.51.100.5")
+	op := settings.Operator{MCC: "001", MNC: "01"}
+
+	cfg := config.Config{
+		SIP:  config.SIP{Addresses: []netip.Addr{internal}},
+		IBCF: &config.IBCF{External: config.IBCFExternal{Addresses: []config.IBCFAddress{{Address: external, Advertise: public}}}},
+	}
+
+	got := sipAliases(cfg, op)
+
+	if !slices.Equal(got[internal], op.SIPAliases()) {
+		t.Errorf("aliases of %s = %v, want %v", internal, got[internal], op.SIPAliases())
+	}
+
+	if !slices.Equal(got[external], []string{public.String()}) {
+		t.Errorf("aliases of %s = %v, want [%s]", external, got[external], public)
+	}
+
+	if len(got) != 2 {
+		t.Errorf("aliases = %v, want only %s and %s", got, internal, external)
+	}
 }

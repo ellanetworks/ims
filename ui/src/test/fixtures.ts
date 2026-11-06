@@ -16,6 +16,7 @@ export const operator: Operator = {
     country_code: "1",
     national_prefix: "",
     international_prefix: "",
+    min_national_digits: 7,
   },
 };
 

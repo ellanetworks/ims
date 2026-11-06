@@ -21,7 +21,7 @@ This path returns the home domain, the host names the IMS answers to, and the SI
 | `home_domain`            | string | Home network domain name, derived from the MCC and MNC. |
 | `aliases`                | array  | Host names the IMS answers to. |
 | `listeners`              | array  | SIP listeners. |
-| `listeners[].role`       | string | `pcscf`, `pcscf-protected`, `icscf` or `scscf`. |
+| `listeners[].role`       | string | `pcscf`, `pcscf-protected`, `icscf`, `scscf`, `ibcf`, `ibcf-external` or `ibcf-external-tls`. |
 | `listeners[].address`    | string | Address and port. |
 | `listeners[].transports` | array  | Transports of the listener. |
 

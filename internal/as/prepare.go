@@ -15,8 +15,8 @@ const resolveTimeout = 2 * time.Second
 // RFC 3261 section 8.1.2
 // RFC 3261 section 18.1.1
 // RFC 3263
-func Prepare(ctx context.Context, locals []netip.AddrPort, resolver *sip.Resolver) func(req *sip.Request) error {
-	return func(req *sip.Request) error {
+func Prepare(ctx context.Context, locals []netip.AddrPort, resolver *sip.Resolver) func(context.Context, *sip.Request) error {
+	return func(_ context.Context, req *sip.Request) error {
 		target := req.URI
 
 		switch route, err := req.Header.TopRoute(); {

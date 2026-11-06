@@ -21,7 +21,11 @@ import (
 
 const ServiceName = "ella-ims"
 
-const RoleKey = attribute.Key("ella.ims.role")
+const (
+	RoleKey    = attribute.Key("ella.ims.role")
+	ICIDKey    = attribute.Key("ella.ims.icid")
+	TrunkIDKey = attribute.Key("ella.ims.trunk.id")
+)
 
 var Propagator = propagation.TraceContext{}
 

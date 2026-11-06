@@ -41,6 +41,7 @@ type Config struct {
 	Diameter  Diameter  `yaml:"diameter"`
 	N5        *N5       `yaml:"n5"`
 	MCPTT     *MCPTT    `yaml:"mcptt"`
+	IBCF      *IBCF     `yaml:"ibcf"`
 	Telemetry Telemetry `yaml:"telemetry"`
 }
 
@@ -187,6 +188,10 @@ func Load(path string) (Config, error) {
 		cfg.MCPTT.applyDefaults()
 	}
 
+	if cfg.IBCF != nil {
+		cfg.IBCF.applyDefaults()
+	}
+
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -236,6 +241,12 @@ func (c Config) validate() error {
 
 	if c.MCPTT != nil {
 		if err := c.validateMCPTT(*c.MCPTT); err != nil {
+			return err
+		}
+	}
+
+	if c.IBCF != nil {
+		if err := c.validateIBCF(*c.IBCF); err != nil {
 			return err
 		}
 	}
@@ -303,6 +314,24 @@ func (c Config) validateN5(n N5) error {
 		}{"mcptt.port", c.SIP.Addresses, c.MCPTT.Port})
 	}
 
+	if c.IBCF != nil {
+		ext := c.IBCF.External.Addrs()
+
+		taken = append(taken, struct {
+			name string
+			addr []netip.Addr
+			port int
+		}{"ibcf.port", c.SIP.Addresses, c.IBCF.Port})
+
+		for _, p := range externalPorts() {
+			taken = append(taken, struct {
+				name string
+				addr []netip.Addr
+				port int
+			}{p.name, ext, p.port})
+		}
+	}
+
 	for _, t := range taken {
 		if t.port == n.Notify.Port && slices.ContainsFunc(t.addr, func(b netip.Addr) bool { return overlaps(a, b) }) {
 			return fmt.Errorf("n5.notify.port and %s are both %d on %s", t.name, t.port, a)
@@ -342,6 +371,10 @@ func (c Config) sipPorts() []namedPort {
 
 	if c.MCPTT != nil {
 		ports = append(ports, namedPort{"mcptt.port", c.MCPTT.Port})
+	}
+
+	if c.IBCF != nil {
+		ports = append(ports, namedPort{"ibcf.port", c.IBCF.Port})
 	}
 
 	return ports

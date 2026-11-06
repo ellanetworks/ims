@@ -63,7 +63,7 @@ func (e *env) agent(addr, outbound netip.AddrPort, configure func(*ua.Config)) *
 	cfg := ua.Config{
 		Transaction: e.n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: addr.Addr().String(), Port: addr.Port()}},
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			to := outbound
 			if !to.IsValid() {
 				a, err := netip.ParseAddr(req.URI.Host)

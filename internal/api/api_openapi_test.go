@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -59,4 +60,50 @@ func TestOpenAPISpec(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestOpenAPISpecCompositionIsOpen(t *testing.T) {
+	var spec map[string]any
+	if err := yaml.Unmarshal(openapiSpec, &spec); err != nil {
+		t.Fatalf("invalid YAML: %v", err)
+	}
+
+	schemas, _ := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	var walk func(node any, path string)
+
+	walk = func(node any, path string) {
+		switch n := node.(type) {
+		case map[string]any:
+			for _, kw := range []string{"allOf", "anyOf", "oneOf"} {
+				members, _ := n[kw].([]any)
+				if _, props := n["properties"]; kw != "allOf" && !props {
+					continue
+				}
+
+				for i, m := range members {
+					member, _ := m.(map[string]any)
+					if ref, ok := member["$ref"].(string); ok {
+						member, _ = schemas[strings.TrimPrefix(ref, "#/components/schemas/")].(map[string]any)
+					}
+
+					for _, closing := range []string{"additionalProperties", "unevaluatedProperties"} {
+						if open, ok := member[closing].(bool); ok && !open {
+							t.Errorf("%s/%s/%d has %s: false; use unevaluatedProperties on the composing schema", path, kw, i, closing)
+						}
+					}
+				}
+			}
+
+			for k, v := range n {
+				walk(v, path+"/"+k)
+			}
+		case []any:
+			for i, v := range n {
+				walk(v, fmt.Sprintf("%s/%d", path, i))
+			}
+		}
+	}
+
+	walk(spec, "#")
 }

@@ -2,12 +2,16 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -21,18 +25,31 @@ var errNoConn = errors.New("no connection for the flow")
 
 var crlf = []byte("\r\n")
 
-const drainTimeout = time.Second
+const (
+	drainTimeout = time.Second
+	flushPoll    = 10 * time.Millisecond
+)
 
 type conn struct {
-	flow  sip.Flow
-	ready chan struct{}
-	nc    *net.TCPConn
-	err   error
+	flow    sip.Flow
+	ready   chan struct{}
+	done    chan struct{}
+	nc      net.Conn
+	tcp     *net.TCPConn
+	err     error
+	inbound bool
+	slot    bool
+	peers   []*x509.Certificate
 
 	wmu    sync.Mutex
 	active atomic.Int64
 	limit  atomic.Int64
 	closed atomic.Bool
+	ponged atomic.Bool
+}
+
+func newConn(f sip.Flow) *conn {
+	return &conn{flow: f, ready: make(chan struct{}), done: make(chan struct{})}
 }
 
 func (c *conn) touch() {
@@ -46,17 +63,33 @@ func (c *conn) lastActive() time.Time {
 func (c *conn) close() {
 	c.closed.Store(true)
 
-	if c.nc != nil {
-		_ = c.nc.Close()
+	if c.tcp == nil {
+		return
 	}
+
+	if tc, ok := c.nc.(*tls.Conn); ok {
+		go closeTLS(tc, c.tcp)
+		return
+	}
+
+	_ = c.tcp.Close()
+}
+
+// RFC 8446 section 6.1
+func closeTLS(tc *tls.Conn, raw *net.TCPConn) {
+	timer := time.AfterFunc(drainTimeout, func() { _ = raw.Close() })
+	defer timer.Stop()
+
+	_ = tc.Close()
 }
 
 func (c *conn) abort() {
-	if c.nc != nil {
-		_ = c.nc.SetLinger(0)
-	}
+	c.closed.Store(true)
 
-	c.close()
+	if c.tcp != nil {
+		_ = c.tcp.SetLinger(0)
+		_ = c.tcp.Close()
+	}
 }
 
 func (t *Transport) write(c *conn, b []byte) error {
@@ -75,7 +108,50 @@ func (t *Transport) write(c *conn, b []byte) error {
 	return nil
 }
 
-func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, error) {
+func (t *Transport) conn(ctx context.Context, f sip.Flow, dial, request bool) (*conn, error) {
+	return t.acquire(ctx, f, dial, request, false)
+}
+
+// SIPconnect 2.0 section 17.2
+// RFC 5922 section 7.3
+func (t *Transport) acquire(ctx context.Context, f sip.Flow, dial, request, own bool) (*conn, error) {
+	strict := request && f.Transport == sip.TLS
+
+	var v *verifier
+	if strict {
+		v = t.reuseVerifier(f)
+	}
+
+	for range 2 {
+		c, err := t.pooled(f, dial, strict, v)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := t.await(ctx, c); err != nil {
+			if own && ctx.Err() != nil {
+				t.abandon(c)
+			}
+
+			return nil, err
+		}
+
+		if !strict || c.inbound || v.accepts(c) {
+			return c, nil
+		}
+
+		c.abort()
+		t.abandon(c)
+
+		if !dial {
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("%w: %s", ErrUnauthorizedConnection, f)
+}
+
+func (t *Transport) pooled(f sip.Flow, dial, strict bool, v *verifier) (*conn, error) {
 	t.mu.Lock()
 
 	if t.closed {
@@ -90,6 +166,16 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 		ok = false
 	}
 
+	if ok && strict && c.inbound && !v.accepts(c) {
+		t.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrUnauthorizedConnection, f)
+	}
+
+	if !ok && f.Transport == sip.TLS {
+		c = t.reusable(f, v, strict)
+		ok = c != nil
+	}
+
 	switch {
 	case ok:
 		t.mu.Unlock()
@@ -97,7 +183,7 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 		t.mu.Unlock()
 		return nil, errNoConn
 	default:
-		c = &conn{flow: f, ready: make(chan struct{})}
+		c = newConn(f)
 		t.conns[f] = c
 		t.wg.Add(1)
 		t.mu.Unlock()
@@ -105,6 +191,10 @@ func (t *Transport) conn(ctx context.Context, f sip.Flow, dial bool) (*conn, err
 		go t.dial(c)
 	}
 
+	return c, nil
+}
+
+func (t *Transport) await(ctx context.Context, c *conn) (*conn, error) {
 	select {
 	case <-c.ready:
 	case <-ctx.Done():
@@ -147,6 +237,12 @@ func (t *Transport) dial(c *conn) {
 		t.awaitAccept(c)
 	}
 
+	sc := nc
+
+	if err == nil && c.flow.Transport == sip.TLS {
+		sc, err = t.clientHandshake(nc, c.flow)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -171,9 +267,16 @@ func (t *Transport) dial(c *conn) {
 		return
 	}
 
-	c.nc = nc.(*net.TCPConn)
+	c.tcp = nc.(*net.TCPConn)
+	c.nc = sc
+
+	if tc, ok := sc.(*tls.Conn); ok {
+		c.peers = tc.ConnectionState().PeerCertificates
+	}
+
 	c.limit.Store(int64(t.idleTimeout))
 	c.touch()
+	t.index(c)
 	t.wg.Add(1)
 
 	go t.readTCP(c)
@@ -223,53 +326,152 @@ func (t *Transport) accept(l *listener) {
 		backoff = 0
 
 		f := sip.Flow{Transport: sip.TCP, Local: l.local, Remote: unmap(nc.RemoteAddr().(*net.TCPAddr).AddrPort())}
-		c := &conn{flow: f, ready: make(chan struct{}), nc: nc}
-		c.limit.Store(int64(min(t.firstTimeout, t.idleTimeout)))
-		c.touch()
-		close(c.ready)
 
-		t.mu.Lock()
+		if !t.admit(f, nc) {
+			continue
+		}
 
-		if t.closed {
-			t.mu.Unlock()
+		if l.tls != nil {
+			f.Transport = sip.TLS
+			if !t.startHandshake(l, f, nc) {
+				return
+			}
 
-			_ = nc.Close()
+			continue
+		}
 
+		if !t.register(f, nc, nc, nil) {
 			return
 		}
-
-		if old := t.conns[f]; old != nil && old.nc == nil && !old.closed.Load() {
-			t.adopt(old, nc)
-			t.mu.Unlock()
-
-			continue
-		}
-
-		if len(t.conns) >= t.maxConns {
-			t.mu.Unlock()
-			t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
-			c.abort()
-
-			continue
-		}
-
-		if old := t.conns[f]; old != nil {
-			old.close()
-		}
-
-		t.conns[f] = c
-		t.wg.Add(1)
-
-		go t.readTCP(c)
-
-		t.mu.Unlock()
-
-		t.log.Debug("SIP connection accepted", slog.String("flow", f.String()))
 	}
 }
 
-func (t *Transport) adopt(c *conn, nc *net.TCPConn) {
+func (t *Transport) admit(f sip.Flow, nc *net.TCPConn) bool {
+	if t.acceptFunc != nil && !t.acceptFunc(f.Local, f.Remote) {
+		t.log.Debug("SIP connection refused: source not allowed", slog.String("flow", f.String()))
+
+		_ = nc.SetLinger(0)
+		_ = nc.Close()
+
+		return false
+	}
+
+	a := f.Remote.Addr()
+
+	t.mu.Lock()
+
+	if limit := t.limitAt(f.Local); limit > 0 && t.inbound[a] >= limit {
+		t.mu.Unlock()
+		t.log.Warn("SIP connection refused: too many connections from the address", slog.String("flow", f.String()),
+			slog.Int("limit", limit))
+
+		_ = nc.SetLinger(0)
+		_ = nc.Close()
+
+		return false
+	}
+
+	t.inbound[a]++
+	t.mu.Unlock()
+
+	return true
+}
+
+func (t *Transport) limitAt(local netip.AddrPort) int {
+	if t.maxPerAddr == nil {
+		return 0
+	}
+
+	return t.maxPerAddr(local)
+}
+
+func (t *Transport) release(a netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.releaseLocked(a)
+}
+
+func (t *Transport) releaseLocked(a netip.Addr) {
+	if n := t.inbound[a]; n > 1 {
+		t.inbound[a] = n - 1
+	} else {
+		delete(t.inbound, a)
+	}
+}
+
+func (t *Transport) register(f sip.Flow, raw *net.TCPConn, nc net.Conn, peers []*x509.Certificate) bool {
+	c := newConn(f)
 	c.nc = nc
+	c.tcp = raw
+	c.inbound = true
+	c.peers = peers
+	c.limit.Store(int64(min(t.firstTimeout, t.idleTimeout)))
+	c.touch()
+	close(c.ready)
+
+	t.mu.Lock()
+
+	if t.closed {
+		t.releaseLocked(f.Remote.Addr())
+		t.mu.Unlock()
+
+		_ = raw.Close()
+
+		return false
+	}
+
+	if old := t.conns[f]; old != nil && old.nc == nil && !old.closed.Load() {
+		if f.Transport == sip.TLS {
+			t.releaseLocked(f.Remote.Addr())
+			t.mu.Unlock()
+			t.log.Debug("SIP TLS connection refused: a dial on the flow is pending", slog.String("flow", f.String()))
+			c.abort()
+
+			return true
+		}
+
+		old.slot = true
+		t.adopt(old, raw, nc)
+		t.mu.Unlock()
+
+		return true
+	}
+
+	if len(t.conns)+int(t.handshaking.Load()) >= t.maxConns {
+		t.releaseLocked(f.Remote.Addr())
+		t.mu.Unlock()
+		t.log.Warn("SIP connection refused: too many connections", slog.String("flow", f.String()), slog.Int("limit", t.maxConns))
+		c.abort()
+
+		return true
+	}
+
+	if old := t.conns[f]; old != nil {
+		old.close()
+	}
+
+	c.slot = true
+	t.conns[f] = c
+
+	if len(peers) > 0 {
+		t.index(c)
+	}
+
+	t.wg.Add(1)
+
+	go t.readTCP(c)
+
+	t.mu.Unlock()
+
+	t.log.Debug("SIP connection accepted", slog.String("flow", f.String()))
+
+	return true
+}
+
+func (t *Transport) adopt(c *conn, raw *net.TCPConn, nc net.Conn) {
+	c.nc = nc
+	c.tcp = raw
 	c.limit.Store(int64(t.idleTimeout))
 	c.touch()
 	close(c.ready)
@@ -328,7 +530,11 @@ func (t *Transport) readTCP(c *conn) {
 
 			return
 		default:
-			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			switch {
+			case errors.Is(err, io.EOF) && c.flow.Transport == sip.TLS && !c.inbound:
+				t.abortFlushed(c)
+			case errors.Is(err, io.EOF):
+			case !errors.Is(err, net.ErrClosed):
 				t.log.Debug("SIP connection closed", slog.String("flow", c.flow.String()), slog.Any("error", err))
 			}
 
@@ -337,6 +543,30 @@ func (t *Transport) readTCP(c *conn) {
 			return
 		}
 	}
+}
+
+// RFC 8446 section 6.1
+func (t *Transport) abortFlushed(c *conn) {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+
+	if tc, ok := c.nc.(*tls.Conn); ok {
+		_ = tc.CloseWrite()
+	}
+
+	if rc, err := c.tcp.SyscallConn(); err == nil {
+		deadline := time.Now().Add(drainTimeout)
+
+		for time.Now().Before(deadline) {
+			if n, err := sockopt.Unsent(rc); err != nil || n == 0 {
+				break
+			}
+
+			time.Sleep(flushPoll)
+		}
+	}
+
+	c.abort()
 }
 
 func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
@@ -357,7 +587,10 @@ func (t *Transport) tooLarge(c *conn, err *sip.TooLargeError) {
 		return
 	}
 
-	_ = c.nc.CloseWrite()
+	if cw, ok := c.nc.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+
 	_ = c.nc.SetReadDeadline(time.Now().Add(drainTimeout))
 	_, _ = io.CopyN(io.Discard, c.nc, int64(t.maxSize))
 }
@@ -377,6 +610,15 @@ func (t *Transport) forget(c *conn, cause error) {
 	if t.conns[c.flow] == c {
 		delete(t.conns, c.flow)
 	}
+
+	t.unindex(c)
+
+	if c.slot {
+		c.slot = false
+		t.releaseLocked(c.flow.Remote.Addr())
+	}
+
+	close(c.done)
 
 	closed := t.closed
 	t.mu.Unlock()
@@ -400,6 +642,7 @@ func (r idleReader) Read(p []byte) (int, error) {
 		n, err := r.c.nc.Read(p)
 		if n > 0 {
 			r.c.touch()
+
 			return n, nil
 		}
 
@@ -409,4 +652,60 @@ func (r idleReader) Read(p []byte) (int, error) {
 
 		return n, err
 	}
+}
+
+type peerKey struct {
+	local netip.AddrPort
+	addr  netip.Addr
+}
+
+func keyOf(f sip.Flow) peerKey {
+	return peerKey{local: f.Local, addr: f.Remote.Addr()}
+}
+
+func (t *Transport) index(c *conn) {
+	if c.flow.Transport != sip.TLS {
+		return
+	}
+
+	k := keyOf(c.flow)
+	t.peers[k] = append(t.peers[k], c)
+}
+
+func (t *Transport) unindex(c *conn) {
+	if c.flow.Transport != sip.TLS {
+		return
+	}
+
+	k := keyOf(c.flow)
+
+	cs := slices.DeleteFunc(t.peers[k], func(x *conn) bool { return x == c })
+	if len(cs) == 0 {
+		delete(t.peers, k)
+	} else {
+		t.peers[k] = cs
+	}
+}
+
+// SIPconnect 2.0 section 17.1.1.2
+// SIPconnect 2.0 section 17.2
+// RFC 5922 section 7.4
+func (t *Transport) reusable(f sip.Flow, v *verifier, strict bool) *conn {
+	var found *conn
+
+	for _, c := range t.peers[keyOf(f)] {
+		if c.closed.Load() || c.nc == nil || strict && !v.accepts(c) {
+			continue
+		}
+
+		if !c.inbound {
+			return c
+		}
+
+		if found == nil {
+			found = c
+		}
+	}
+
+	return found
 }

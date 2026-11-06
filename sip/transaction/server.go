@@ -63,16 +63,21 @@ func newServer(l *Layer, req *sip.Request) *ServerTransaction {
 
 func (tx *ServerTransaction) startSpan(parent context.Context, links []trace.SpanContext) {
 	l := tx.layer
+	ctx := context.Background()
 
-	opts := []trace.SpanStartOption{
-		trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(tx.req)...),
-		trace.WithLinks(validLinks(links)...),
+	if !l.spanless(tx.req) {
+		opts := []trace.SpanStartOption{
+			trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(l.requestAttributes(tx.req, trace.SpanKindServer)...),
+			trace.WithLinks(validLinks(links)...),
+		}
+
+		_, s := l.tracer.Start(parent, spanName(tx.req.Method), opts...)
+
+		tx.span = span{Span: s}
+		ctx = trace.ContextWithSpan(ctx, s)
 	}
 
-	_, s := l.tracer.Start(parent, spanName(tx.req.Method), opts...)
-
-	tx.span = span{Span: s}
-	tx.ctx, tx.cancel = context.WithCancelCause(lifetime.With(l.ctx, trace.ContextWithSpan(context.Background(), s)))
+	tx.ctx, tx.cancel = context.WithCancelCause(lifetime.With(l.ctx, ctx))
 	tx.finish = func(err error) {
 		tx.span.end(nil, err, serverFailed)
 

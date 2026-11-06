@@ -848,7 +848,7 @@ func (s *Session) sendAck(ctx context.Context, c *clientInvite, ch Change) {
 
 	s.decorate(ack)
 
-	if err := s.a.cfg.Prepare(ack); err != nil {
+	if err := s.a.cfg.Prepare(ctx, ack); err != nil {
 		s.ackFailed(ctx, err)
 		return
 	}

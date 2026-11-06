@@ -2,13 +2,16 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,6 +46,8 @@ var (
 	ErrUnsupportedTransport = errors.New("sip/transport: unsupported transport")
 
 	ErrConnectionLost = errors.New("sip/transport: connection lost")
+
+	ErrNoTLSConfig = errors.New("sip/transport: no TLS configuration")
 )
 
 type Handler interface {
@@ -63,6 +68,10 @@ type Config struct {
 
 	MaxConnections int
 
+	MaxConnectionsPerAddress func(local netip.AddrPort) int
+
+	Accept func(local, remote netip.AddrPort) bool
+
 	IdleTimeout         time.Duration
 	FirstMessageTimeout time.Duration
 	DialTimeout         time.Duration
@@ -76,6 +85,8 @@ type Config struct {
 	OnListenerFailed func(local netip.AddrPort, err error)
 
 	OnConnectionLost func(f sip.Flow, err error)
+
+	TLSClientOptions func(f sip.Flow) (TLSOptions, error)
 }
 
 type Transport struct {
@@ -85,6 +96,8 @@ type Transport struct {
 	control      func(network, address string, c syscall.RawConn) error
 	maxSize      int
 	maxConns     int
+	maxPerAddr   func(local netip.AddrPort) int
+	acceptFunc   func(local, remote netip.AddrPort) bool
 	idleTimeout  time.Duration
 	firstTimeout time.Duration
 	dialTimeout  time.Duration
@@ -94,6 +107,7 @@ type Transport struct {
 	trace        func(m sip.Message, f sip.Flow, sent bool)
 	onFailed     func(local netip.AddrPort, err error)
 	onLost       func(f sip.Flow, err error)
+	tlsClient    func(f sip.Flow) (TLSOptions, error)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -101,8 +115,13 @@ type Transport struct {
 	mu        sync.Mutex
 	closed    bool
 	listeners map[netip.AddrPort]*listener
+	secure    map[netip.AddrPort]*listener
 	conns     map[sip.Flow]*conn
+	peers     map[peerKey][]*conn
+	inbound   map[netip.Addr]int
 	wg        sync.WaitGroup
+
+	handshaking atomic.Int64
 
 	pongs *pongs
 }
@@ -111,6 +130,8 @@ type listener struct {
 	local netip.AddrPort
 	udp   *net.UDPConn
 	tcp   *net.TCPListener
+	tls   *tls.Config
+	hold  io.Closer
 	buf   []byte
 }
 
@@ -126,6 +147,8 @@ func New(cfg Config) *Transport {
 		control:      cfg.Control,
 		maxSize:      cfg.MaxMessageSize,
 		maxConns:     cfg.MaxConnections,
+		maxPerAddr:   cfg.MaxConnectionsPerAddress,
+		acceptFunc:   cfg.Accept,
 		idleTimeout:  cfg.IdleTimeout,
 		firstTimeout: cfg.FirstMessageTimeout,
 		dialTimeout:  cfg.DialTimeout,
@@ -135,8 +158,12 @@ func New(cfg Config) *Transport {
 		trace:        cfg.Trace,
 		onFailed:     cfg.OnListenerFailed,
 		onLost:       cfg.OnConnectionLost,
+		tlsClient:    cfg.TLSClientOptions,
 		listeners:    make(map[netip.AddrPort]*listener),
+		secure:       make(map[netip.AddrPort]*listener),
 		conns:        make(map[sip.Flow]*conn),
+		peers:        make(map[peerKey][]*conn),
+		inbound:      make(map[netip.Addr]int),
 		pongs:        newPongs(),
 	}
 
@@ -295,7 +322,9 @@ func (t *Transport) sendUDPTraced(l *listener, m sip.Message, f sip.Flow, b []by
 }
 
 func (t *Transport) sendTCPTraced(ctx context.Context, m sip.Message, f sip.Flow, b []byte, dial bool) error {
-	c, err := t.conn(ctx, f, dial)
+	_, request := m.(*sip.Request)
+
+	c, err := t.conn(ctx, f, dial, request)
 	if err != nil {
 		return err
 	}
@@ -319,7 +348,7 @@ func (t *Transport) sendOnFlow(ctx context.Context, m sip.Message) error {
 	switch f.Transport {
 	case sip.UDP:
 		err = t.sendUDPTraced(l, m, f, m.Bytes())
-	case sip.TCP:
+	case sip.TCP, sip.TLS:
 		ensureContentLength(m.Env())
 		err = t.sendTCPTraced(ctx, m, f, m.Bytes(), true)
 	}
@@ -423,7 +452,7 @@ func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
 		return err
 	}
 
-	if f.Transport == sip.TCP {
+	if f.Transport != sip.UDP {
 		ensureContentLength(&r.Envelope)
 	}
 
@@ -438,10 +467,10 @@ func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
 		if err := t.sendUDPTraced(l, r, f, b); err != nil {
 			return err
 		}
-	case sip.TCP:
+	case sip.TCP, sip.TLS:
 		err := t.sendTCPTraced(ctx, r, f, b, false)
 		if err != nil && ctx.Err() == nil {
-			if f.Remote, err = tcpDestination(via); err != nil {
+			if f.Remote, err = tcpDestination(via, f.Transport); err != nil {
 				return err
 			}
 
@@ -459,7 +488,13 @@ func (t *Transport) sendResponse(ctx context.Context, r *sip.Response) error {
 }
 
 func (t *Transport) listener(f sip.Flow) (*listener, error) {
-	if f.Transport != sip.UDP && f.Transport != sip.TCP {
+	listeners := t.listeners
+
+	switch f.Transport {
+	case sip.UDP, sip.TCP:
+	case sip.TLS:
+		listeners = t.secure
+	default:
 		return nil, fmt.Errorf("%w %q", ErrUnsupportedTransport, f.Transport)
 	}
 
@@ -470,7 +505,7 @@ func (t *Transport) listener(f sip.Flow) (*listener, error) {
 		return nil, ErrClosed
 	}
 
-	l, ok := t.listeners[f.Local]
+	l, ok := listeners[f.Local]
 	if !ok {
 		return nil, fmt.Errorf("%w %s", ErrNoListener, f.Local)
 	}
@@ -527,21 +562,39 @@ func (t *Transport) pause(d time.Duration) bool {
 func (t *Transport) fail(l *listener, err error) {
 	t.mu.Lock()
 
-	if t.closed || t.listeners[l.local] != l {
+	listeners := t.listeners
+	if l.tls != nil {
+		listeners = t.secure
+	}
+
+	if t.closed || listeners[l.local] != l {
 		t.mu.Unlock()
 		return
 	}
 
-	delete(t.listeners, l.local)
+	delete(listeners, l.local)
 	t.mu.Unlock()
 
-	_ = l.tcp.Close()
-	_ = l.udp.Close()
+	l.close()
 
 	t.log.Error("SIP listener failed", slog.String("local", l.local.String()), slog.Any("error", err))
 
 	if t.onFailed != nil {
 		go t.onFailed(l.local, err)
+	}
+}
+
+func (l *listener) close() {
+	if l.hold != nil {
+		_ = l.hold.Close()
+	}
+
+	if l.tcp != nil {
+		_ = l.tcp.Close()
+	}
+
+	if l.udp != nil {
+		_ = l.udp.Close()
 	}
 }
 
@@ -557,8 +610,11 @@ func (t *Transport) Close() error {
 	t.cancel()
 
 	for _, l := range t.listeners {
-		_ = l.tcp.Close()
-		_ = l.udp.Close()
+		l.close()
+	}
+
+	for _, l := range t.secure {
+		l.close()
 	}
 
 	for _, c := range t.conns {

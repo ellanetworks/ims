@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/ellanetworks/core/diameter/rx"
@@ -294,21 +293,6 @@ func TestNoCallRecordForAnUnregisteredUE(t *testing.T) {
 
 	if l := s.callRecords(t, rec); len(l) != 0 {
 		t.Fatalf("records = %+v, want none", l)
-	}
-}
-
-func TestAcceptedMedia(t *testing.T) {
-	answer := strings.Join([]string{
-		"v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0",
-		"m=audio 5000 RTP/AVP 116", "m=video 0 RTP/AVP 99", "m=audio 5002 RTP/AVP 116", "m=text 5004 RTP/AVP 98",
-	}, "\r\n") + "\r\n"
-
-	if got := acceptedMedia([]byte(answer)); !slices.Equal(got, []string{"audio", "text"}) {
-		t.Fatalf("acceptedMedia = %v, want audio and text, not the rejected video", got)
-	}
-
-	if got := acceptedMedia([]byte("not SDP")); got != nil {
-		t.Fatalf("acceptedMedia of no SDP = %v", got)
 	}
 }
 

@@ -290,6 +290,7 @@ type harness struct {
 	hss   *fakeHSS
 	icscf netip.AddrPort
 	scscf *fakeSCSCF
+	ibcf  *siptest.Socket
 	ic    *ICSCF
 }
 
@@ -299,13 +300,18 @@ type harnessOptions struct {
 
 	scscfAddr netip.Addr
 
-	down bool
+	down   bool
+	noIBCF bool
 
 	hosts         map[string][]netip.Addr
 	psiSubdomains []string
 }
 
 type fakeDNS map[string][]netip.Addr
+
+func (d fakeDNS) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
 
 func (d fakeDNS) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	return "", nil, &net.DNSError{Err: "no such host", Name: "_" + service + "._" + proto + "." + name, IsNotFound: true}
@@ -377,15 +383,21 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 	layer, _ := siptest.NewLayer(t, transaction.Config{
 		Handler: late,
 		Logger:  slog.New(slog.DiscardHandler),
-		Aliases: []string{homeDomain, "scscf." + homeDomain},
+		Aliases: map[netip.Addr][]string{loopback: {homeDomain, "scscf." + homeDomain}},
 		T1:      testT1,
 	})
 	h.icscf = siptest.ListenLayer(t, layer, loopback)
+	h.ibcf = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	var ibcf []netip.AddrPort
+	if !o.noIBCF {
+		ibcf = []netip.AddrPort{h.ibcf.Addr()}
+	}
 
 	h.ic = New(Config{
 		HomeDomain: homeDomain,
 		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Port: h.icscf.Port()}),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Listeners: []netip.AddrPort{h.icscf}}),
 		Port:       h.icscf.Port(),
 		Trust:      trust.New([]netip.Addr{loopback}, nil),
 		Resolver:   &sip.Resolver{DNS: fakeDNS(o.hosts)},
@@ -393,6 +405,7 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 			return slices.Contains(o.psiSubdomains, host)
 		},
 		SCSCF:     SCSCF{Name: scscfName, Capabilities: o.capabilities, Listeners: []netip.AddrPort{sock.Addr()}},
+		IBCF:      ibcf,
 		HSSRealm:  func() string { return homeDomain },
 		Diameter:  loop,
 		CxTimeout: cxTimeout,

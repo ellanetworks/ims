@@ -7,6 +7,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 )
 
+// TS 24.229 clause 4.4.1
 var boundary = []string{
 	"P-Asserted-Identity",
 	"P-Access-Network-Info",
@@ -61,12 +62,34 @@ func (d *Domain) Trusted(a netip.Addr) bool {
 	return false
 }
 
+func (d *Domain) Overlaps(p netip.Prefix) bool {
+	p = p.Masked()
+
+	for _, n := range d.networks {
+		if n.Overlaps(p) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func StripRequest(r *sip.Request) {
 	for _, name := range boundary {
 		r.Header.Del(name)
 	}
 
-	r.URI = stripURIParams(r.URI)
+	r.URI = StripURI(r.URI)
+}
+
+func Boundary(name string) bool {
+	for _, b := range boundary {
+		if strings.EqualFold(b, name) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func StripResponse(r *sip.Response) {
@@ -78,7 +101,9 @@ func StripResponse(r *sip.Response) {
 	r.Header.Del("P-Charging-Function-Addresses")
 }
 
-func stripURIParams(u sip.URI) sip.URI {
+// TS 24.229 clause 4.4.12
+// TS 24.229 clause 4.4.15
+func StripURI(u sip.URI) sip.URI {
 	u = u.Clone()
 
 	switch {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
 )
@@ -416,6 +417,73 @@ func TestOriginatingHomeLocalNumber(t *testing.T) {
 
 	if to, _ := got.Header.To(); !strings.Contains(to.URI.User, "phone-context") {
 		t.Errorf("To = %s, want it as dialled", to)
+	}
+}
+
+func TestOriginatingOnNetNumbers(t *testing.T) {
+	tests := []struct {
+		name, uri, want string
+		breakout        bool
+	}{
+		{"international form", "tel:+447700900123", "tel:+447700900123", true},
+		{"international prefix", "tel:00447700900123;phone-context=" + homeDomain, "tel:+447700900123", true},
+		{"national prefix", "tel:07700900123;phone-context=" + homeDomain, "tel:+447700900123", true},
+		{"bare national number", "tel:7700900123;phone-context=" + homeDomain, "tel:+447700900123", true},
+		{"short code", "sip:11833;phone-context=" + homeDomain + "@" + homeDomain + ";user=phone", "tel:+4411833", false},
+		{"country code as context", "tel:2079460000;phone-context=+44", "tel:+442079460000", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sh := newSessionHarness(t)
+			sh.numbering = Numbering{CountryCode: "44", NationalPrefix: "0", InternationalPrefix: "00", MinNationalDigits: 7}
+			sh.restart()
+
+			sh.orig.Send(sip.UDP, sh.scscf, sh.originating("INVITE", tt.uri, "<"+testMSISDN+">"))
+
+			got, _ := sh.icscf.RecvRequest()
+			if got.URI.String() != tt.want {
+				t.Fatalf("Request-URI = %s, want %s", got.URI, tt.want)
+			}
+
+			if icscfRoute(t, sh, got).Params.Has(icscf.BreakoutParam) != tt.breakout {
+				t.Fatalf("Route = %v, want breakout %v", got.Header.Values("Route"), tt.breakout)
+			}
+		})
+	}
+}
+
+func TestNormaliseOnNet(t *testing.T) {
+	uk := Numbering{CountryCode: "44", NationalPrefix: "0", InternationalPrefix: "00", MinNationalDigits: 7}
+	us := Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011", MinNationalDigits: 7}
+	never := uk
+	never.MinNationalDigits = 0
+
+	tests := []struct {
+		name string
+		n    Numbering
+		in   string
+		want bool
+	}{
+		{"international prefix", uk, "tel:00447700900123;phone-context=" + homeDomain, false},
+		{"national prefix", uk, "tel:07700900123;phone-context=" + homeDomain, false},
+		{"national number without a prefix", uk, "tel:7700900123;phone-context=" + homeDomain, false},
+		{"short code", uk, "tel:11833;phone-context=" + homeDomain, true},
+		{"six-digit service code", uk, "tel:118118;phone-context=" + homeDomain, true},
+		{"country code as context", uk, "tel:2079460000;phone-context=+44", true},
+		{"national prefix under a country code context", uk, "tel:02071234567;phone-context=+44", true},
+		{"international prefix under a country code context", uk, "tel:00447700900123;phone-context=+44", true},
+		{"US 10-digit dialling", us, "tel:6617629239;phone-context=" + homeDomain, false},
+		{"US 11-digit dialling", us, "tel:16617629239;phone-context=" + homeDomain, false},
+		{"bare digits never break out", never, "tel:7700900123;phone-context=" + homeDomain, true},
+		{"national prefix with no bare-digit breakout", never, "tel:07700900123;phone-context=" + homeDomain, false},
+	}
+
+	for _, tt := range tests {
+		u, _ := sip.ParseURI(tt.in)
+		if _, onNet, ok := tt.n.normalise(u, homeDomain); !ok || onNet != tt.want {
+			t.Errorf("%s: normalise(%s) on-net = %v, %v, want %v", tt.name, tt.in, onNet, ok, tt.want)
+		}
 	}
 }
 
@@ -997,7 +1065,7 @@ func TestNormalise(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, ok := n.normalise(u, homeDomain)
+			got, _, ok := n.normalise(u, homeDomain)
 			switch {
 			case tt.want == "" && ok:
 				t.Errorf("normalise(%s) = %s, want it unchanged", tt.in, got)
@@ -1008,7 +1076,7 @@ func TestNormalise(t *testing.T) {
 	}
 
 	u, _ := sip.ParseURI("tel:02079460000;phone-context=" + homeDomain)
-	if _, ok := (Numbering{}).normalise(u, homeDomain); ok {
+	if _, _, ok := (Numbering{}).normalise(u, homeDomain); ok {
 		t.Error("normalised without a numbering rule")
 	}
 }
@@ -1146,6 +1214,13 @@ func TestTargetSetOrder(t *testing.T) {
 	audioOnly := binding("sip:audioonly@ue", `;video="FALSE";+g.3gpp.icsi-ref=`+mmtelParam, 3)
 	mcptt := binding("sip:mcptt@ue", `;+g.3gpp.mcptt;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mcptt"`, 0)
 
+	const imei = "<urn:gsma:imei:35633228-076423-0>"
+
+	stackVoice := binding("sip:volte@ue", `;+sip.instance="`+imei+`";audio;video;+g.3gpp.icsi-ref=`+mmtelParam, 4)
+	stackVoice.Contact.Instance = imei
+	stackRCS := binding("sip:rcs@ue", `;+sip.instance="`+imei+`";reg-id=1`, 5)
+	stackRCS.Contact.Instance, stackRCS.Contact.RegID = imei, 1
+
 	predicates := func(values ...string) sip.Header {
 		var h sip.Header
 		for _, v := range values {
@@ -1181,6 +1256,8 @@ func TestTargetSetOrder(t *testing.T) {
 		{"negated value", []db.Binding{videoCapable, audioOnly}, accept(`;video="!TRUE"`), "sip:audioonly@ue"},
 		{"MCPTT client required", []db.Binding{voice, mcptt}, mcpttOnly, "sip:mcptt@ue"},
 		{"no MCPTT client", []db.Binding{voice}, mcpttOnly, ""},
+		{"one instance, newest stack without preferences", []db.Binding{stackVoice, stackRCS}, nil, "sip:rcs@ue"},
+		{"one instance, MMTel stack for an MMTel call", []db.Binding{stackVoice, stackRCS}, accept(""), "sip:volte@ue"},
 		{"malformed predicate left out", []db.Binding{voice, mcptt}, predicates(`*;+g.3gpp.mcptt;require;explicit`, `*;audio;+sip.x="#>=y";require`), "sip:mcptt@ue"},
 	}
 

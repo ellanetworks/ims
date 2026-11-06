@@ -11,6 +11,7 @@ import Operator from "@/pages/Operator";
 import Profile from "@/pages/Profile";
 import Registrations from "@/pages/Registrations";
 import SingleSignOn from "@/pages/SingleSignOn";
+import SIPTrunks from "@/pages/SIPTrunks";
 import UserDetail from "@/pages/UserDetail";
 import Users from "@/pages/Users";
 import PushToTalk from "@/pages/mcptt/PushToTalk";
@@ -39,6 +40,11 @@ const pages: { path: string; element: ReactElement; permission: Permission }[] =
   [
     { path: "/dashboard", element: <Dashboard />, permission: "diameter:read" },
     { path: "/cores", element: <Cores />, permission: "diameter:read" },
+    {
+      path: "/sip-trunks",
+      element: <SIPTrunks />,
+      permission: "sip_trunk:read",
+    },
     { path: "/operator", element: <Operator />, permission: "operator:read" },
     {
       path: "/registrations",

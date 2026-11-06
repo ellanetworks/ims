@@ -71,12 +71,16 @@ func newCore(t *testing.T, n *siptest.Net) *core {
 		subs: map[string]*regSub{},
 	}
 
-	c.l = transaction.New(n.Config(transaction.Config{Handler: c, Aliases: []string{scscfHost}}))
+	c.addr = n.Addr()
+	c.l = transaction.New(n.Config(transaction.Config{Handler: c, Aliases: map[netip.Addr][]string{c.addr.Addr(): {scscfHost}}}))
 
 	t.Cleanup(func() { _ = c.l.Close() })
 
-	c.addr = n.Serve(c.l)
-	c.p = proxy.New(proxy.Config{Layer: c.l, Port: c.addr.Port(), Clock: n.Clock()})
+	if err := c.l.Serve(c.addr); err != nil {
+		t.Fatal(err)
+	}
+
+	c.p = proxy.New(proxy.Config{Layer: c.l, Listeners: []netip.AddrPort{c.addr}, Clock: n.Clock()})
 
 	return c
 }
@@ -476,6 +480,10 @@ func (c *core) subscriptions() []*sip.Response {
 // RFC 3263 section 4.2
 type dns struct{ core netip.AddrPort }
 
+func (d dns) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
 func (d dns) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	if service == "sip" && proto == "udp" && name == scscfHost {
 		return "", []*net.SRV{{Target: "scscf1.ims.example.com.", Port: d.core.Port()}}, nil
@@ -485,7 +493,7 @@ func (d dns) LookupSRV(_ context.Context, service, proto, name string) (string, 
 }
 
 func (d dns) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
-	if host == "scscf1.ims.example.com" {
+	if strings.TrimSuffix(host, ".") == "scscf1.ims.example.com" {
 		return []netip.Addr{d.core.Addr()}, nil
 	}
 
@@ -583,7 +591,7 @@ func (w *imsWorld) user(name string, i int, alias string, kamailio bool) {
 	a, err := ua.New(ua.Config{
 		Transaction: w.n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: u.contact},
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			req.Flow = sip.Flow{Transport: sip.UDP, Local: u.addr, Remote: w.core.addr}
 			req.Header.Prepend("Via", sip.NewVia(sip.UDP, u.addr).String())
 

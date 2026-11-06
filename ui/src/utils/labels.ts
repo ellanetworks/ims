@@ -3,6 +3,7 @@ import type {
   DiameterTransport,
 } from "@/queries/diameter";
 import type { PolicyInterface } from "@/queries/policy";
+import type { SIPTransport } from "@/queries/sipTrunks";
 
 export const applicationLabels: Record<DiameterApplication, string> = {
   cx: "HSS",
@@ -30,3 +31,9 @@ export const mediaLabels: Record<string, string> = {
 
 export const mediaText = (media: string[]): string =>
   media.map((m) => mediaLabels[m] ?? m).join(", ") || "—";
+
+export const sipTransportLabels: Record<SIPTransport, string> = {
+  udp: "UDP",
+  tcp: "TCP",
+  tls: "TLS",
+};

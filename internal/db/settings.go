@@ -16,9 +16,9 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 
 	o := &s.Operator
 
-	if err := d.conn.QueryRowContext(ctx, `SELECT mcc, mnc, country_code, national_prefix, international_prefix
-		FROM operator WHERE id = 1`).Scan(&o.MCC, &o.MNC, &o.Numbering.CountryCode, &o.Numbering.NationalPrefix,
-		&o.Numbering.InternationalPrefix); err != nil {
+	if err := d.conn.QueryRowContext(ctx, `SELECT mcc, mnc, country_code, national_prefix, international_prefix,
+		min_national_digits FROM operator WHERE id = 1`).Scan(&o.MCC, &o.MNC, &o.Numbering.CountryCode,
+		&o.Numbering.NationalPrefix, &o.Numbering.InternationalPrefix, &o.Numbering.MinNationalDigits); err != nil {
 		return settings.Settings{}, fmt.Errorf("get operator: %w", err)
 	}
 
@@ -27,6 +27,14 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 	}
 
 	if s.Routes, err = d.routes(ctx); err != nil {
+		return settings.Settings{}, err
+	}
+
+	if s.Trunks, err = d.trunks(ctx); err != nil {
+		return settings.Settings{}, err
+	}
+
+	if s.SIPRoutes, err = d.sipRoutes(ctx); err != nil {
 		return settings.Settings{}, err
 	}
 
@@ -141,8 +149,8 @@ func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) (err error
 	defer d.observe(poolWrite, &err)()
 
 	if _, err := d.conn.ExecContext(ctx, `UPDATE operator SET mcc = ?, mnc = ?, country_code = ?, national_prefix = ?,
-		international_prefix = ? WHERE id = 1`, o.MCC, o.MNC, o.Numbering.CountryCode, o.Numbering.NationalPrefix,
-		o.Numbering.InternationalPrefix); err != nil {
+		international_prefix = ?, min_national_digits = ? WHERE id = 1`, o.MCC, o.MNC, o.Numbering.CountryCode,
+		o.Numbering.NationalPrefix, o.Numbering.InternationalPrefix, o.Numbering.MinNationalDigits); err != nil {
 		return fmt.Errorf("update operator: %w", err)
 	}
 

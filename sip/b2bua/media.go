@@ -1,6 +1,11 @@
 package b2bua
 
-import "github.com/ellanetworks/ims/sip/ua"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/ellanetworks/ims/sip/ua"
+)
 
 // RFC 3264
 type Exchange struct {
@@ -10,6 +15,8 @@ type Exchange struct {
 	Initial bool
 
 	Offer []byte
+
+	Dialog *ua.Session
 
 	Value any
 
@@ -21,9 +28,11 @@ type Exchange struct {
 type Media interface {
 	Offer(x *Exchange) ([]byte, error)
 
-	Answer(x *Exchange, s *ua.Session, sdp []byte) ([]byte, error)
+	Answer(x *Exchange, dialog *ua.Session, sdp []byte) ([]byte, error)
 
-	End(x *Exchange, s *ua.Session)
+	End(x *Exchange, dialog *ua.Session)
+
+	Dialog(dialog *ua.Session, state ua.State)
 }
 
 func (p *Relay) begin(x *Exchange) ([]byte, error) {
@@ -41,15 +50,15 @@ func (p *Relay) begin(x *Exchange) ([]byte, error) {
 	return sdp, err
 }
 
-func (p *Relay) answerOf(x *Exchange, s *ua.Session, sdp []byte) ([]byte, error) {
+func (p *Relay) answerOf(x *Exchange, pr *pair, sdp []byte) ([]byte, error) {
 	if p.cfg.Media == nil {
 		return sdp, nil
 	}
 
-	return p.cfg.Media.Answer(x, s, sdp)
+	return p.cfg.Media.Answer(x, pr.b, sdp)
 }
 
-func (p *Relay) end(x *Exchange, s *ua.Session) {
+func (p *Relay) end(x *Exchange, pr *pair) {
 	if x == nil || x.ended {
 		return
 	}
@@ -63,8 +72,21 @@ func (p *Relay) end(x *Exchange, s *ua.Session) {
 		}
 	}
 
+	if p.cfg.Media == nil {
+		return
+	}
+
+	var dialog *ua.Session
+	if pr != nil {
+		dialog = pr.b
+	}
+
+	p.cfg.Media.End(x, dialog)
+}
+
+func (p *Relay) dialog(pr *pair, state ua.State) {
 	if p.cfg.Media != nil {
-		p.cfg.Media.End(x, s)
+		p.cfg.Media.Dialog(pr.b, state)
 	}
 }
 
@@ -73,3 +95,33 @@ func (p *Relay) endAll() {
 		p.end(p.open[0], nil)
 	}
 }
+
+type Rejection struct {
+	Reply ua.Reply
+	Err   error
+}
+
+func (r *Rejection) Error() string {
+	if r.Err == nil {
+		return fmt.Sprintf("sip/b2bua: media refused with %d", r.Reply.Code)
+	}
+
+	return fmt.Sprintf("sip/b2bua: media refused with %d: %v", r.Reply.Code, r.Err)
+}
+
+func (r *Rejection) Unwrap() error { return r.Err }
+
+// RFC 3261 section 21.4.26
+func refusal(err error) ua.Reply {
+	if r := (*Rejection)(nil); errors.As(err, &r) {
+		return r.Reply
+	}
+
+	return ua.Reply{Code: 488}
+}
+
+type mediaError struct{ err error }
+
+func (e *mediaError) Error() string { return e.err.Error() }
+
+func (e *mediaError) Unwrap() error { return e.err }

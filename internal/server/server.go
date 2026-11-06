@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/mcptt"
 	"github.com/ellanetworks/ims/internal/oidc"
@@ -25,6 +27,7 @@ import (
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
+	"github.com/ellanetworks/ims/internal/trunkmon"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
 	"github.com/ellanetworks/ims/ui"
@@ -38,6 +41,8 @@ const (
 	tracerName = "github.com/ellanetworks/ims/internal/server"
 	roleIMS    = "ims"
 )
+
+const trunkMediaTimeout = 60 * time.Second
 
 const (
 	ShutdownTimeout = mcpttStopTime + pcscf.DefaultPolicyTimeout + diameterDisconnectTime + recordsFlushTime +
@@ -65,10 +70,14 @@ type Server struct {
 	NoAnswerTimeout  time.Duration
 	MediaLossTimeout time.Duration
 	GroupNoAnswer    time.Duration
-	ASTimeout        time.Duration
-	PruneInterval    time.Duration
-	BcryptCost       int
-	TracerProvider   trace.TracerProvider
+
+	TrunkMediaTimeout      time.Duration
+	TrunkKeepaliveFailures int
+
+	ASTimeout      time.Duration
+	PruneInterval  time.Duration
+	BcryptCost     int
+	TracerProvider trace.TracerProvider
 
 	tracerProvider  trace.TracerProvider
 	shutdownTracing func(context.Context) error
@@ -90,6 +99,8 @@ type Server struct {
 
 	ipsmgw           atomic.Pointer[ipsmgw.AS]
 	ipsmgwHomeDomain string
+
+	trunks *trunkmon.Monitor
 
 	core       atomic.Pointer[core]
 	stopFollow context.CancelFunc
@@ -207,9 +218,30 @@ func (s *Server) Start(ctx context.Context) error {
 	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
 	s.metrics = newMetrics(database, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
 		return live.Get().Peers, coreView{s}.Peers()
-	})
+	}, func() []settings.Trunk { return live.Get().Trunks })
 
 	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
+
+	s.guardTrunks(ctx, live)
+
+	if cfg.IBCF != nil {
+		if s.trunks, err = trunkmon.Start(trunkmon.Config{
+			Settings: runtimeSettings{live},
+			Resolve:  ibcf.SystemResolve,
+			Sender:   ibcfSender{s},
+			Metrics:  s.metrics.trunks,
+			Failures: s.TrunkKeepaliveFailures,
+			Logger:   s.Logger,
+		}); err != nil {
+			_ = s.records.Close(ctx)
+			_ = apiLn.Close()
+			_ = database.Close()
+
+			s.stopTracing(ctx)
+
+			return err
+		}
+	}
 
 	if cfg.MCPTT != nil {
 		if err := s.startMCPTT(ctx, initial.Operator.HomeDomain()); err != nil {
@@ -252,6 +284,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.core.Store(c)
 	s.resubscribeMCPTT(ctx)
 	s.resubscribeIPSMGW(ctx)
+	s.reprobeTrunks()
 
 	view := coreView{s}
 
@@ -262,6 +295,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Registrations:  view,
 		Policy:         view,
 		CallRecords:    database,
+		SIPTrunks:      s.trunkStates(),
 		Frontend:       ui.FS(),
 		Ready:          func(ctx context.Context) error { return s.ready(ctx, database) },
 		Metrics:        s.metrics.registry,
@@ -372,7 +406,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 		}
 	}
 
-	sipServer, err := startSIP(ctx, cfg, st, s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
+	sipServer, err := startSIP(ctx, cfg, st, s.settings.Runtime, s.settings.Changed, s.trunkStates(), s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
 		s.metrics, s.IPsec, sipFailed, s.ases, s.tracerProvider, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
@@ -393,6 +427,7 @@ func (s *Server) numbering() scscf.Numbering {
 		CountryCode:         n.CountryCode,
 		NationalPrefix:      n.NationalPrefix,
 		InternationalPrefix: n.InternationalPrefix,
+		MinNationalDigits:   n.MinNationalDigits,
 	}
 }
 
@@ -558,6 +593,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	s.core.Store(c)
 	s.resubscribeMCPTT(ctx)
 	s.resubscribeIPSMGW(ctx)
+	s.reprobeTrunks()
 	s.Logger.InfoContext(ctx, "restarted "+why, c.attrs()...)
 
 	return nil
@@ -625,6 +661,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.stopFollow()
 	<-s.followDone
+
+	if s.trunks != nil {
+		if err := s.trunks.Shutdown(ctx); err != nil {
+			s.Logger.WarnContext(ctx, "failed to stop the SIP trunk monitor cleanly", slog.Any("error", err))
+		}
+	}
 
 	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
 	s.stopMCPTT(mcpttCtx)
@@ -710,6 +752,7 @@ func (s *Server) timers() timers {
 		mediaLossTimeout: s.MediaLossTimeout,
 		groupNoAnswer:    s.GroupNoAnswer,
 		asTimeout:        s.ASTimeout,
+		trunkMedia:       cmp.Or(s.TrunkMediaTimeout, trunkMediaTimeout),
 	}
 }
 

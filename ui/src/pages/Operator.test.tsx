@@ -11,6 +11,7 @@ const operator: OperatorSettings = {
     country_code: "1",
     national_prefix: "",
     international_prefix: "",
+    min_national_digits: 7,
   },
 };
 
@@ -70,7 +71,7 @@ describe("Operator", () => {
     expect(rows()).toEqual([
       "001 / 01",
       "ims.mnc001.mcc001.3gppnetwork.org",
-      "Country Code1National PrefixN/AInternational PrefixN/A",
+      "Country Code1National PrefixN/AInternational PrefixN/AMinimum National Digits7",
     ]);
     expect(
       screen.queryByRole("button", { name: "Edit Home Network Domain" }),
@@ -170,8 +171,36 @@ describe("Operator", () => {
         country_code: "33",
         national_prefix: "0",
         international_prefix: "00",
+        min_national_digits: 7,
       },
     });
+  });
+
+  it("keeps and sets the minimum national digits", async () => {
+    const bodies = serve((body) => json(200, { result: body }));
+
+    renderWithClient(<Operator />);
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Numbering" }));
+
+    expect(
+      screen.getByRole("textbox", { name: "Minimum National Digits" }),
+    ).toHaveValue("7");
+    fill("Minimum National Digits", "16");
+    expect(screen.getByText("0 to 15")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update" })).toBeDisabled();
+    fill("Minimum National Digits", "0");
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0].numbering).toEqual({
+      ...operator.numbering,
+      min_national_digits: 0,
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(rows()[2]).toContain("Minimum National Digits0");
   });
 
   it("shows the server error and keeps the form", async () => {

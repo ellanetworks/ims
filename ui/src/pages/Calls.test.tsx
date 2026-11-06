@@ -7,7 +7,34 @@ import { callRecord } from "@/test/fixtures";
 import { formatRecentTimestamp } from "@/utils/dates";
 import { json, renderWithClient, stubApi } from "@/test/render";
 
-const answered = callRecord();
+const TRUNK_ID = "0199a4d2-7c1e-7b3a-9f00-000000000001";
+
+const DELETED_TRUNK_ID = "0199a4d2-7c1e-7b3a-9f00-000000000002";
+
+const UNNAMED_TRUNK_ID = "0199a4d2-7c1e-7b3a-9f00-000000000003";
+
+const answered = callRecord({
+  out_trunk_id: TRUNK_ID,
+  out_trunk_name: "Old Telnyx",
+});
+
+const incoming = callRecord({
+  id: 4,
+  icid: "D4",
+  calling_party: ["tel:+15559870004"],
+  requested_at: "2026-10-08T11:55:00.000Z",
+  in_trunk_id: DELETED_TRUNK_ID,
+  in_trunk_name: "Bandwidth",
+});
+
+const forwarded = callRecord({
+  id: 5,
+  icid: "E5",
+  calling_party: ["tel:+15559870005"],
+  requested_at: "2026-10-08T11:50:00.000Z",
+  in_trunk_id: UNNAMED_TRUNK_ID,
+  out_trunk_id: TRUNK_ID,
+});
 
 const busy = callRecord({
   id: 2,
@@ -56,6 +83,10 @@ const serve = (items: CallRecord[], details: CallRecord[] = items) => {
     vi.fn(
       stubApi({
         ...detailRoutes,
+        "/api/v1/sip-trunks": () =>
+          json(200, {
+            result: { items: [{ id: TRUNK_ID, name: "Telnyx" }] },
+          }),
         "/api/v1/call-records": (url) => {
           urls.push(url.search);
           const outcomes = url.searchParams.getAll("outcome");
@@ -113,14 +144,14 @@ afterEach(() => {
 
 describe("Calls", () => {
   it("lists the calls", async () => {
-    serve([ringing, busy, answered]);
+    serve([ringing, busy, answered, incoming, forwarded]);
 
     renderCalls();
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Calls (3)" }),
+      await screen.findByRole("heading", { level: 1, name: "Calls (5)" }),
     ).toBeInTheDocument();
-    await screen.findByText(shown(answered));
+    await screen.findAllByText("Telnyx");
 
     expect(cells(shown(answered))).toEqual([
       shown(answered),
@@ -128,13 +159,17 @@ describe("Calls", () => {
       "+15551230002",
       "answered",
       "1:05",
+      "Telnyx",
       "",
     ]);
+    expect(cells(shown(incoming))[5]).toBe("Bandwidth");
+    expect(cells(shown(forwarded))[5]).toBe(`${UNNAMED_TRUNK_ID} → Telnyx`);
     expect(cells(shown(busy))).toEqual([
       shown(busy),
       "+15551230003",
       "+15551230001",
       "busy",
+      "—",
       "—",
       "—",
     ]);

@@ -55,19 +55,32 @@ func newTraceHarness(t *testing.T) *traceHarness {
 func newTraceHarnessLinked(t *testing.T, links func(*sip.Request) []trace.SpanContext) *traceHarness {
 	t.Helper()
 
+	return newTraceHarnessWith(t, func(c *transaction.Config) { c.SpanLinks = links })
+}
+
+func newTraceHarnessWith(t *testing.T, configure func(*transaction.Config)) *traceHarness {
+	t.Helper()
+
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	clock := siptest.NewClock()
 
-	l, tu := siptest.NewLayer(t, transaction.Config{
+	cfg := transaction.Config{
 		Clock:          clock,
 		TracerProvider: tp,
 		TraceContext: func(f sip.Flow) bool {
 			return f.Remote.Addr() == trustedPeer.Addr() || f.Remote == servedA || f.Remote == servedB
 		},
-		SpanAttributes: func(f sip.Flow) []attribute.KeyValue { return []attribute.KeyValue{roleKey.String(f.Local.String())} },
-		SpanLinks:      links,
-	})
+		SpanAttributes: func(req *sip.Request, _ trace.SpanKind) []attribute.KeyValue {
+			return []attribute.KeyValue{roleKey.String(req.Flow.Local.String())}
+		},
+	}
+
+	if configure != nil {
+		configure(&cfg)
+	}
+
+	l, tu := siptest.NewLayer(t, cfg)
 
 	for _, a := range []netip.AddrPort{servedA, servedB} {
 		if err := l.Serve(a); err != nil {
@@ -225,6 +238,54 @@ func TestServerSpanOfUntrustedFlowStartsATrace(t *testing.T) {
 
 	wantAttr(t, s, "error.type", "500")
 	wantNoAttr(t, s, "network.peer.address")
+	wantNoAttr(t, s, "ella.ims.icid")
+}
+
+func TestUntracedRequestHasNoServerSpan(t *testing.T) {
+	h := newTraceHarnessWith(t, func(c *transaction.Config) {
+		c.Untraced = func(req *sip.Request) bool { return req.Method == "OPTIONS" }
+	})
+
+	h.untrusted.Send(sip.UDP, servedA, tracedRequest("OPTIONS", untrustedPeer, servedA))
+
+	got := h.tu.NextRequest()
+	if sc := trace.SpanContextFromContext(got.Ctx); sc.IsValid() {
+		t.Fatalf("handler context holds span %v", sc)
+	}
+
+	h.respond(got, 200)
+	h.untrusted.RecvResponse()
+
+	h.untrusted.Send(sip.UDP, servedA, tracedRequest("MESSAGE", untrustedPeer, servedA))
+	h.respond(h.tu.NextRequest(), 200)
+
+	if s := h.ended(1)[0]; s.Name() != "MESSAGE" {
+		t.Fatalf("span %s, want only the MESSAGE", s.Name())
+	}
+}
+
+func TestRequestWithoutSpan(t *testing.T) {
+	h := newTraceHarness(t)
+
+	ctx, parent := h.tracer.Start(context.Background(), "parent")
+
+	rs := siptest.NewResponses(t)
+	if _, err := h.l.Request(transaction.WithoutSpan(ctx), newFlowRequest("OPTIONS", sip.UDP, servedA, untrustedPeer), rs); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := h.untrusted.RecvRequest()
+	if req.Header.Has("traceparent") {
+		t.Fatalf("trace context sent: %q", req.Header.Get("traceparent"))
+	}
+
+	h.untrusted.Send(sip.UDP, servedA, sip.NewResponse(req, 200, ""))
+	wantCode(t, rs.Next(), 200)
+	parent.End()
+
+	if s := h.ended(1)[0]; s.Name() != "parent" {
+		t.Fatalf("span %s, want only the parent", s.Name())
+	}
 }
 
 func TestClientSpanPropagatesWithinTrustDomain(t *testing.T) {

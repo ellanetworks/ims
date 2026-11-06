@@ -68,6 +68,7 @@ nav:
     - Install the Android MCPTT App: how_to/install_android_app.md
     - Enable Push-to-Talk: how_to/enable_push_to_talk.md
     - Enable SMS over IP: how_to/enable_sms_over_ip.md
+    - Connect to a SIP Trunk: how_to/connect_to_a_sip_trunk.md
   - Reference:
     - reference/index.md
     - API:
@@ -80,6 +81,7 @@ nav:
       - Diameter: reference/api/diameter.md
       - Policy: reference/api/policy.md
       - SIP: reference/api/sip.md
+      - SIP Trunks: reference/api/sip_trunks.md
       - Registrations: reference/api/registrations.md
       - Call Records: reference/api/call_records.md
       - IP-SM-GW: reference/api/ip_sm_gw.md
@@ -103,6 +105,7 @@ nav:
     - Single Sign-On: explanation/single_sign_on.md
     - Push-to-Talk: explanation/push_to_talk.md
     - SMS over IP: explanation/sms_over_ip.md
+    - SIP Trunks: explanation/sip_trunks.md
 plugins:
   - search
   - glightbox

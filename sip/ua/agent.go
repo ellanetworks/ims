@@ -119,7 +119,7 @@ type Config struct {
 
 	Transaction transaction.Config
 
-	Prepare func(req *sip.Request) error
+	Prepare func(ctx context.Context, req *sip.Request) error
 
 	Respond func(req *sip.Request, res *sip.Response)
 
@@ -1024,7 +1024,7 @@ func (a *Agent) reply(tx *transaction.ServerTransaction, code int, extra ...sip.
 func (a *Agent) prepareAndSend(ctx context.Context, req *sip.Request, h transaction.ClientHandler) (*transaction.ClientTransaction, error) {
 	out := req.Clone()
 
-	if err := a.cfg.Prepare(out); err != nil {
+	if err := a.cfg.Prepare(ctx, out); err != nil {
 		return nil, fmt.Errorf("sip/ua: prepare %s: %w", req.Method, err)
 	}
 

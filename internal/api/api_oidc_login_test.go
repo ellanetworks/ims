@@ -443,7 +443,16 @@ func TestOIDCLoginRefusals(t *testing.T) {
 			return oidcLogin{cookie: func(*http.Cookie) *http.Cookie { return nil }}
 		}, "failed"},
 		"a forged login cookie": {func(*testAPI) oidcLogin {
-			return oidcLogin{cookie: func(c *http.Cookie) *http.Cookie { c.Value = "A" + c.Value[1:]; return c }}
+			return oidcLogin{cookie: func(c *http.Cookie) *http.Cookie {
+				forged := "A"
+				if c.Value[0] == 'A' {
+					forged = "B"
+				}
+
+				c.Value = forged + c.Value[1:]
+
+				return c
+			}}
 		}, "failed"},
 		"an expired login": {func(a *testAPI) oidcLogin {
 			return oidcLogin{between: func() { a.now = a.now.Add(10 * time.Minute) }}

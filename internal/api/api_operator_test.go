@@ -32,11 +32,23 @@ func (m *memStore) UpdatePolicy(context.Context, settings.Policy) error { return
 func (m *memStore) UpdateCallRecords(context.Context, settings.CallRecords) error { return m.err }
 func (m *memStore) UpdateIPSMGW(context.Context, settings.IPSMGW) error           { return m.err }
 
+func (m *memStore) CreateTrunk(context.Context, settings.Trunk) error { return m.err }
+
+func (m *memStore) UpdateTrunk(context.Context, settings.Trunk) error { return m.err }
+
+func (m *memStore) DeleteTrunk(context.Context, string) error { return m.err }
+
+func (m *memStore) CreateSIPRoute(context.Context, settings.SIPRoute) error { return m.err }
+
+func (m *memStore) UpdateSIPRoute(context.Context, settings.SIPRoute) error { return m.err }
+
+func (m *memStore) DeleteSIPRoute(context.Context, string) error { return m.err }
+
 func defaultSettings() settings.Settings {
 	return settings.Settings{
 		Operator: settings.Operator{
 			MCC: "001", MNC: "01",
-			Numbering: settings.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"},
+			Numbering: settings.Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011", MinNationalDigits: 7},
 		},
 		Routes:      []settings.Route{{Application: settings.ApplicationCx}, {Application: settings.ApplicationRx}},
 		Policy:      settings.Policy{Interface: settings.PolicyNone},
@@ -99,7 +111,7 @@ func TestGetOperator(t *testing.T) {
 		t.Fatalf("status = %d, want 200", code)
 	}
 
-	want := Operator{MCC: "001", MNC: "01", Numbering: Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011"}}
+	want := Operator{MCC: "001", MNC: "01", Numbering: Numbering{CountryCode: "1", NationalPrefix: "1", InternationalPrefix: "011", MinNationalDigits: 7}}
 	if got := decodeResult[Operator](t, body); got != want {
 		t.Fatalf("operator = %+v, want %+v", got, want)
 	}
@@ -113,13 +125,27 @@ func TestUpdateOperator(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", code, body)
 	}
 
-	want := Operator{MCC: "208", MNC: "10", Numbering: Numbering{CountryCode: "33", NationalPrefix: "0", InternationalPrefix: "00"}}
+	want := Operator{MCC: "208", MNC: "10", Numbering: Numbering{CountryCode: "33", NationalPrefix: "0", InternationalPrefix: "00", MinNationalDigits: 7}}
 	if got := decodeResult[Operator](t, body); got != want {
 		t.Fatalf("response = %+v, want %+v", got, want)
 	}
 
 	if got := operatorResponse(s.Get().Operator); got != want {
 		t.Fatalf("stored = %+v, want %+v", got, want)
+	}
+}
+
+func TestUpdateOperatorMinNationalDigits(t *testing.T) {
+	s := newFakeSettings()
+
+	code, body := serve(t, Config{Settings: s}, http.MethodPut, "/api/v1/operator",
+		strings.Replace(validOperator, `"international_prefix": "00"`, `"international_prefix": "00", "min_national_digits": 0`, 1))
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", code, body)
+	}
+
+	if got := decodeResult[Operator](t, body).Numbering.MinNationalDigits; got != 0 || s.Get().Operator.Numbering.MinNationalDigits != 0 {
+		t.Fatalf("min_national_digits = %d, want 0 stored", got)
 	}
 }
 
@@ -141,6 +167,11 @@ func TestUpdateOperatorRejected(t *testing.T) {
 		{"long mnc", strings.Replace(validOperator, `"10"`, `"1000"`, 1), "mnc must be 2 or 3 digits"},
 		{"no numbering", `{"mcc": "208", "mnc": "10"}`, "numbering.country_code must be 1 to 3 digits, not starting with 0"},
 		{"long prefix", strings.Replace(validOperator, `"national_prefix": "0"`, `"national_prefix": "00000"`, 1), "numbering.national_prefix must be up to 4 digits"},
+		{
+			"min_national_digits too large",
+			strings.Replace(validOperator, `"international_prefix": "00"`, `"international_prefix": "00", "min_national_digits": 16`, 1),
+			"numbering.min_national_digits must be between 0 and 15",
+		},
 		{"same prefixes", strings.Replace(validOperator, `"national_prefix": "0"`, `"national_prefix": "00"`, 1), "numbering.national_prefix and numbering.international_prefix must differ"},
 	}
 

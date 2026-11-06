@@ -14,6 +14,10 @@ type noDNS struct{}
 
 var errNoDNS = errors.New("no DNS")
 
+func (noDNS) LookupNAPTR(context.Context, string) ([]sip.NAPTR, error) {
+	return nil, errNoDNS
+}
+
 func (noDNS) LookupSRV(context.Context, string, string, string) (string, []*net.SRV, error) {
 	return "", nil, errNoDNS
 }

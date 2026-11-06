@@ -71,6 +71,7 @@ func (h Headers) sticky() []string {
 	return h.Sticky
 }
 
+// TS 24.229 clause 5.10.6.3
 func (h Headers) bodies(from, to *Leg, m sip.Message, own []sip.BodyPart, sdp []byte) []sip.BodyPart {
 	var out []sip.BodyPart
 
@@ -89,7 +90,7 @@ func (h Headers) bodies(from, to *Leg, m sip.Message, own []sip.BodyPart, sdp []
 		out = append(out, part)
 	}
 
-	parts, _ := m.Env().Content().Parts()
+	parts, _ := m.Env().Content().Split()
 
 	for _, part := range parts {
 		switch {

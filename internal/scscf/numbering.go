@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -13,12 +14,8 @@ type Numbering struct {
 	CountryCode         string
 	NationalPrefix      string
 	InternationalPrefix string
+	MinNationalDigits   int
 }
-
-const (
-	minE164 = 7
-	maxE164 = 15
-)
 
 func telephoneNumber(u sip.URI) (number, context string, params sip.Params, ok bool) {
 	switch {
@@ -77,18 +74,21 @@ func globalNumber(u sip.URI) (string, bool) {
 	return number, len(number) > 1 && number[0] == '+' && isDigits(number[1:])
 }
 
+// RFC 3966 section 5.1.5
 // RFC 3966 section 5.4
-func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
+func (n Numbering) normalise(u sip.URI, homeDomain string) (out sip.URI, onNet, ok bool) {
 	if n.CountryCode == "" {
-		return u, false
+		return u, false, false
 	}
 
 	number, context, params, ok := telephoneNumber(u)
 	digits := withoutSeparators(number)
 
 	if !ok || !isDigits(digits) || !n.homeContext(context, homeDomain) {
-		return u, false
+		return u, false, false
 	}
+
+	onNet = strings.HasPrefix(context, "+")
 
 	switch {
 	case n.InternationalPrefix != "" && strings.HasPrefix(digits, n.InternationalPrefix):
@@ -96,14 +96,15 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (sip.URI, bool) {
 	case n.NationalPrefix != "" && strings.HasPrefix(digits, n.NationalPrefix):
 		digits = n.CountryCode + digits[len(n.NationalPrefix):]
 	default:
+		onNet = onNet || n.MinNationalDigits == 0 || len(digits) < n.MinNationalDigits
 		digits = n.CountryCode + digits
 	}
 
-	if len(digits) < minE164 || len(digits) > maxE164 || digits[0] == '0' {
-		return u, false
+	if !bgcf.E164(digits) {
+		return u, false, false
 	}
 
-	return sip.URI{Scheme: "tel", User: "+" + digits, Params: params}, true
+	return sip.URI{Scheme: "tel", User: "+" + digits, Params: params}, onNet, true
 }
 
 // TS 24.229 clause 5.4.3.2

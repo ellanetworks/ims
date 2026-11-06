@@ -3,7 +3,9 @@ package icscf
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/trust"
@@ -17,7 +19,8 @@ type session struct {
 	req      *sip.Request
 	identity string
 
-	orig bool
+	orig     bool
+	breakout bool
 
 	deadline time.Time
 }
@@ -61,11 +64,20 @@ func (i *ICSCF) initial(ctx context.Context, tx *transaction.ServerTransaction, 
 	case out.Method == "OPTIONS" && out.URI.User == "" && i.cfg.Proxy.IsLocal(out.URI):
 		i.respond(tx, sip.NewResponse(req, 200, ""))
 	default:
-		i.terminating(ctx, tx, out)
+		i.terminating(ctx, tx, out, out.Method == "INVITE" && i.fromSCSCF(req) &&
+			slices.ContainsFunc(removed, func(u sip.URI) bool { return u.Params.Has(BreakoutParam) }))
 	}
 }
 
-func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
+func (i *ICSCF) fromSCSCF(req *sip.Request) bool {
+	src := netip.AddrPortFrom(req.Flow.Remote.Addr().Unmap(), req.Flow.Remote.Port())
+
+	return slices.ContainsFunc(i.cfg.SCSCF.Listeners, func(l netip.AddrPort) bool {
+		return netip.AddrPortFrom(l.Addr().Unmap(), l.Port()) == src
+	})
+}
+
+func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request, breakout bool) {
 	if !out.URI.IsSIP() && !out.URI.IsTel() {
 		i.respond(tx, sip.NewResponse(tx.Request(), 416, ""))
 		return
@@ -87,7 +99,7 @@ func (i *ICSCF) terminating(ctx context.Context, tx *transaction.ServerTransacti
 		return
 	}
 
-	s := &session{tx: tx, req: out, identity: identity, deadline: i.deadline()}
+	s := &session{tx: tx, req: out, identity: identity, breakout: breakout && out.URI.IsTel(), deadline: i.deadline()}
 
 	if out.URI.IsSIP() && i.cfg.PSISubdomain != nil && i.cfg.PSISubdomain(out.URI.Host) {
 		i.spawn(ctx, tx, func(ctx context.Context) { i.toPSISubdomain(ctx, s) })
@@ -150,8 +162,14 @@ func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 // TS 29.229 clause 6.3.59
 func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 	lia, err := i.locationInfo(ctx, s.identity, s.orig)
-	if err != nil {
+
+	switch {
+	case err != nil && s.breakout && userUnknown(err):
+		i.toIBCF(ctx, s)
+		return
+	case err != nil:
 		i.log.DebugContext(ctx, "user location query failed", slog.String("impu", s.identity), slog.Any("error", err))
+
 		i.answer(ctx, s.tx, locationFailure(err))
 
 		return
@@ -239,6 +257,53 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool
 
 	i.log.DebugContext(ctx, "request routed to the server the HSS names", slog.String("impu", s.identity), slog.String("server-name", name))
 	i.forward(ctx, s.tx, out, to, opts)
+}
+
+// TS 24.229 clause 5.3.2.1
+// TS 23.228 clause 4.6.2.0
+func (i *ICSCF) toIBCF(ctx context.Context, s *session) {
+	to, ok := i.ibcf(s.req.Flow)
+	if !ok {
+		i.log.DebugContext(ctx, "number not in the home network and no IBCF", slog.String("request-uri", s.req.URI.String()))
+		i.answer(ctx, s.tx, 404)
+
+		return
+	}
+
+	route := sip.URI{Scheme: "sip", Host: sip.FormatHost(to.Flow.Remote.Addr()), Port: to.Flow.Remote.Port()}
+	if to.Flow.Transport != sip.UDP {
+		route.Params.Set("transport", strings.ToLower(string(to.Flow.Transport)))
+	}
+
+	route.Params.Set("lr", "")
+
+	out := s.req.Clone()
+	out.Header.Prepend("Route", "<"+route.String()+">")
+
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
+
+	i.log.DebugContext(ctx, "number not in the home network routed to the IBCF", slog.String("request-uri", s.req.URI.String()))
+	i.forward(ctx, s.tx, out, to, opts)
+}
+
+func (i *ICSCF) ibcf(in sip.Flow) (proxy.Target, bool) {
+	local := in.Local.Addr().Unmap()
+
+	remote, ok := pick(i.cfg.IBCF, func(a netip.Addr) bool { return a.Unmap() == local })
+	if !ok {
+		remote, ok = pick(i.cfg.IBCF, func(a netip.Addr) bool { return a.Unmap().Is4() == local.Is4() })
+	}
+
+	if !ok {
+		return proxy.Target{}, false
+	}
+
+	tr := sip.UDP
+	if in.Transport == sip.TCP {
+		tr = sip.TCP
+	}
+
+	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(in.Local.Addr(), i.cfg.Port), Remote: remote}}, true
 }
 
 func (i *ICSCF) sessionReply(ctx context.Context, s *session, r proxy.Reply) proxy.Verdict {

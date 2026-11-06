@@ -21,6 +21,8 @@ func TestNextHop(t *testing.T) {
 		{uri: "tel:+15551234", bad: true},
 		{uri: "sips:b@10.0.0.2", bad: true},
 		{uri: "sip:b@10.0.0.2;transport=sctp", bad: true},
+		{uri: "sip:b@10.0.0.2;transport=tls", tr: UDP, addr: "10.0.0.2:5060"},
+		{uri: "sip:b@10.0.0.2", route: "<sip:10.0.0.3:5071;lr;transport=TLS>", tr: UDP, addr: "10.0.0.3:5071"},
 		{uri: "sip:b@10.0.0.2", route: "<sip:p.example;lr>", bad: true},
 	}
 
@@ -100,6 +102,19 @@ func TestTopRouteAndDestination(t *testing.T) {
 	if tr, addr, err := Destination(r.URI); err != nil || tr != TCP || addr.String() != "10.0.0.1:5070" {
 		t.Errorf("Destination = %s %s %v", tr, addr, err)
 	}
+
+	maddr, err := ParseURI("sip:proxy.example.com:5080;maddr=[2001:db8::9];transport=tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if tr, addr, err := Destination(maddr); err != nil || tr != TCP || addr.String() != "[2001:db8::9]:5080" {
+		t.Errorf("Destination with maddr = %s %s %v", tr, addr, err)
+	}
+
+	if _, _, err := Destination(URI{Scheme: "sip", Host: "10.0.0.1", Params: Params{{Name: "maddr", Value: "proxy.example.com"}}}); err == nil {
+		t.Error("Destination with a domain maddr succeeded")
+	}
 }
 
 func TestApplyStrictRoute(t *testing.T) {
@@ -127,5 +142,13 @@ func TestApplyStrictRoute(t *testing.T) {
 				t.Errorf("URI %s, Route %s; want %s, %s", r.URI, got, tc.wantURI, tc.wantRoute)
 			}
 		})
+	}
+}
+
+func TestDefaultPortFor(t *testing.T) {
+	for tr, want := range map[Transport]uint16{UDP: 5060, TCP: 5060, TLS: 5061, "tls": 5061, "Tls": 5061, "sctp": 5060} {
+		if got := DefaultPortFor(tr); got != want {
+			t.Errorf("DefaultPortFor(%s) = %d, want %d", tr, got, want)
+		}
 	}
 }

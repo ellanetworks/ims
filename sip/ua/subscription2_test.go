@@ -129,8 +129,8 @@ func TestRefreshBodies(t *testing.T) {
 func TestChallengedRefresh(t *testing.T) {
 	sb, n := newSubscriberWith(t, nil, func(c *ua.Config) {
 		prepare := c.Prepare
-		c.Prepare = func(req *sip.Request) error {
-			if err := prepare(req); err != nil {
+		c.Prepare = func(ctx context.Context, req *sip.Request) error {
+			if err := prepare(ctx, req); err != nil {
 				return err
 			}
 

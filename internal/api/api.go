@@ -21,6 +21,7 @@ import (
 type Config struct {
 	Settings       Settings
 	Diameter       Diameter
+	SIPTrunks      settings.TrunkStates
 	SIP            SIP
 	Registrations  Registrations
 	Policy         Policy
@@ -45,6 +46,7 @@ type Config struct {
 
 type Settings interface {
 	Get() settings.Settings
+	Usable(trunkID string) bool
 	UpdateOperator(ctx context.Context, o settings.Operator) error
 	CreatePeer(ctx context.Context, p settings.Peer) (settings.Peer, error)
 	UpdatePeer(ctx context.Context, p settings.Peer) error
@@ -53,6 +55,12 @@ type Settings interface {
 	UpdatePolicy(ctx context.Context, p settings.Policy) error
 	UpdateCallRecords(ctx context.Context, c settings.CallRecords) error
 	UpdateIPSMGW(ctx context.Context, g settings.IPSMGW) error
+	CreateTrunk(ctx context.Context, t settings.Trunk) (settings.Trunk, error)
+	UpdateTrunk(ctx context.Context, t settings.Trunk) error
+	DeleteTrunk(ctx context.Context, id string) error
+	CreateSIPRoute(ctx context.Context, r settings.SIPRoute) (settings.SIPRoute, error)
+	UpdateSIPRoute(ctx context.Context, r settings.SIPRoute) error
+	DeleteSIPRoute(ctx context.Context, id string) error
 }
 
 func NewHandler(cfg Config) http.Handler {
@@ -154,6 +162,16 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/policy", PermReadPolicy, GetPolicy(cfg)},
 		{"PUT /api/v1/policy", PermUpdatePolicy, UpdatePolicy(cfg)},
 		{"GET /api/v1/sip", PermReadSIP, GetSIPStatus(cfg)},
+		{"GET /api/v1/sip-trunks", PermReadSIPTrunks, ListSIPTrunks(cfg)},
+		{"POST /api/v1/sip-trunks", PermUpdateSIPTrunks, CreateSIPTrunk(cfg)},
+		{"GET /api/v1/sip-trunks/{id}", PermReadSIPTrunks, GetSIPTrunk(cfg)},
+		{"PUT /api/v1/sip-trunks/{id}", PermUpdateSIPTrunks, UpdateSIPTrunk(cfg)},
+		{"DELETE /api/v1/sip-trunks/{id}", PermUpdateSIPTrunks, DeleteSIPTrunk(cfg)},
+		{"GET /api/v1/sip-routes", PermReadSIPTrunks, ListSIPRoutes(cfg)},
+		{"POST /api/v1/sip-routes", PermUpdateSIPTrunks, CreateSIPRoute(cfg)},
+		{"GET /api/v1/sip-routes/{id}", PermReadSIPTrunks, GetSIPRoute(cfg)},
+		{"PUT /api/v1/sip-routes/{id}", PermUpdateSIPTrunks, UpdateSIPRoute(cfg)},
+		{"DELETE /api/v1/sip-routes/{id}", PermUpdateSIPTrunks, DeleteSIPRoute(cfg)},
 		{"GET /api/v1/registrations", PermReadRegistrations, ListRegistrations(cfg)},
 		{"POST /api/v1/registrations/{impi}/reauthenticate", PermReauthenticate, PostReauthentication(cfg)},
 		{"GET /api/v1/mcptt", PermReadMCPTT, mcpttOnly(cfg, GetMCPTTStatus)},

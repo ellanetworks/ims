@@ -64,29 +64,35 @@ func NextHop(r *Request) (Transport, netip.AddrPort, error) {
 	}
 }
 
+// RFC 3263 section 4
+func target(u URI) string {
+	if maddr, ok := u.Params.Get("maddr"); ok && maddr != "" {
+		return maddr
+	}
+
+	return u.Host
+}
+
+// RFC 3263 section 4
+// SIPconnect 2.0 section 8.1
 func Destination(u URI) (Transport, netip.AddrPort, error) {
 	if !u.IsSIP() || u.IsSIPS() {
 		return "", netip.AddrPort{}, fmt.Errorf("sip: no destination in %s", u)
 	}
 
-	a, ok := u.Addr()
+	a, ok := HostAddr(target(u))
 	if !ok {
-		return "", netip.AddrPort{}, fmt.Errorf("sip: destination %s is not an IP address", u.Host)
+		return "", netip.AddrPort{}, fmt.Errorf("sip: destination %s is not an IP address", target(u))
+	}
+
+	tr, _, err := uriTransport(u, false)
+	if err != nil {
+		return "", netip.AddrPort{}, err
 	}
 
 	port := u.Port
 	if port == 0 {
-		port = DefaultPort
-	}
-
-	tr := UDP
-
-	if t, ok := u.Params.Get("transport"); ok {
-		switch tr = Transport(strings.ToUpper(t)); tr {
-		case UDP, TCP:
-		default:
-			return "", netip.AddrPort{}, fmt.Errorf("sip: destination transport %s", t)
-		}
+		port = DefaultPortFor(tr)
 	}
 
 	return tr, netip.AddrPortFrom(a.Unmap(), port), nil

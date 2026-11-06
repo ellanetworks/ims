@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/ellanetworks/ims/sip"
@@ -23,7 +24,7 @@ func TestPrepare(t *testing.T) {
 		{"sip:scscf.ims.example.com", v4},
 	} {
 		req := &sip.Request{Method: "OPTIONS", URI: uri(t, tc.uri)}
-		if err := p(req); err != nil {
+		if err := p(t.Context(), req); err != nil {
 			t.Fatal(err)
 		}
 
@@ -36,18 +37,18 @@ func TestPrepare(t *testing.T) {
 		}
 	}
 
-	if err := Prepare(context.Background(), []netip.AddrPort{v4}, &sip.Resolver{DNS: dns{}})(&sip.Request{Method: "OPTIONS", URI: uri(t, "sip:[2001:db8::2]")}); err == nil {
+	if err := Prepare(context.Background(), []netip.AddrPort{v4}, &sip.Resolver{DNS: dns{}})(t.Context(), &sip.Request{Method: "OPTIONS", URI: uri(t, "sip:[2001:db8::2]")}); err == nil {
 		t.Error("IPv6 next hop from IPv4 only")
 	}
 
 	req := &sip.Request{Method: "INVITE", URI: uri(t, "sip:bob@ims.example.com")}
 	req.Header.Set("Route", "<sip:scscf.ims.example.com;lr>")
 
-	if err := p(req); err != nil || req.Flow.Remote != netip.MustParseAddrPort("192.0.2.9:6060") || req.Flow.Transport != sip.UDP {
+	if err := p(t.Context(), req); err != nil || req.Flow.Remote != netip.MustParseAddrPort("192.0.2.9:6060") || req.Flow.Transport != sip.UDP {
 		t.Errorf("to the Route: %+v, %v", req.Flow, err)
 	}
 
-	if err := p(&sip.Request{Method: "OPTIONS", URI: uri(t, "sip:unknown.example.com")}); err == nil {
+	if err := p(t.Context(), &sip.Request{Method: "OPTIONS", URI: uri(t, "sip:unknown.example.com")}); err == nil {
 		t.Error("to a domain without records")
 	}
 }
@@ -58,12 +59,17 @@ func TestPrepareLifetime(t *testing.T) {
 
 	kill()
 
-	if err := p(&sip.Request{Method: "BYE", URI: uri(t, "sip:scscf.ims.example.com")}); !errors.Is(err, context.Canceled) {
+	if err := p(t.Context(), &sip.Request{Method: "BYE", URI: uri(t, "sip:scscf.ims.example.com")}); !errors.Is(err, context.Canceled) {
 		t.Errorf("after the lifetime: %v", err)
 	}
 }
 
 type unanswered struct{}
+
+func (unanswered) LookupNAPTR(ctx context.Context, _ string) ([]sip.NAPTR, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
 
 func (unanswered) LookupSRV(ctx context.Context, _, _, _ string) (string, []*net.SRV, error) {
 	<-ctx.Done()
@@ -77,6 +83,10 @@ func (unanswered) LookupNetIP(ctx context.Context, _, _ string) ([]netip.Addr, e
 
 type dns struct{}
 
+func (dns) LookupNAPTR(_ context.Context, name string) ([]sip.NAPTR, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
 func (dns) LookupSRV(_ context.Context, service, proto, name string) (string, []*net.SRV, error) {
 	if service == "sip" && proto == "udp" && name == "scscf.ims.example.com" {
 		return "", []*net.SRV{{Target: "scscf1.ims.example.com.", Port: 6060}}, nil
@@ -86,7 +96,7 @@ func (dns) LookupSRV(_ context.Context, service, proto, name string) (string, []
 }
 
 func (dns) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
-	if host == "scscf1.ims.example.com" {
+	if strings.TrimSuffix(host, ".") == "scscf1.ims.example.com" {
 		return []netip.Addr{netip.MustParseAddr("192.0.2.9")}, nil
 	}
 

@@ -29,6 +29,7 @@ import {
   Hub as HubIcon,
   Info as InfoIcon,
   Key as KeyIcon,
+  Lan as LanIcon,
   LightMode as LightModeIcon,
   Logout as LogoutIcon,
   Menu as MenuIcon,
@@ -99,6 +100,12 @@ const navItems: NavItem[] = [
     label: "Cores",
     icon: <HubIcon color="primary" />,
     permission: "diameter:read",
+  },
+  {
+    to: "/sip-trunks",
+    label: "SIP Trunks",
+    icon: <LanIcon color="primary" />,
+    permission: "sip_trunk:read",
   },
   {
     to: "/operator",

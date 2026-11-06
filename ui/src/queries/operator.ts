@@ -4,6 +4,7 @@ export interface Numbering {
   country_code: string;
   national_prefix: string;
   international_prefix: string;
+  min_national_digits: number;
 }
 
 export interface Operator {

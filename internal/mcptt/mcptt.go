@@ -119,7 +119,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		UA: ua.Config{
 			Transaction: transaction.Config{
 				Logger: logger, Network: cfg.Network, TracerProvider: cfg.TracerProvider,
-				SpanAttributes: func(sip.Flow) []attribute.KeyValue { return role },
+				SpanAttributes: func(*sip.Request, trace.SpanKind) []attribute.KeyValue { return role },
 			},
 			Prepare: as.Prepare(life, locals, &sip.Resolver{}),
 			Contact: sip.Address{URI: sip.URI{Scheme: "sip", Host: sip.FormatHost(locals[0].Addr()), Port: locals[0].Port()}},

@@ -51,9 +51,16 @@ func udpInUse(a netip.AddrPort) bool {
 func TestMCPTT(t *testing.T) {
 	cfg := testConfig(t)
 	port := unusedPort(t)
+	legs := unusedPort(t) &^ 1
+
+	control := unusedPort(t)
+	for control&^1 == legs {
+		control = unusedPort(t)
+	}
+
 	cfg.MCPTT = &config.MCPTT{
 		Mode: config.MCPTTModeIMS, Port: port,
-		Media: config.MCPTTMedia{Address: loopback, MinPort: 41000, MaxPort: 41099, ControlPort: unusedPort(t)},
+		Media: config.MCPTTMedia{Address: loopback, MinPort: legs, MaxPort: legs + 1, ControlPort: control},
 	}
 
 	srv := startIMS(t, cfg)

@@ -120,7 +120,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	tc.Logger, tc.Filter, tc.OnServerDone = logger, a.trustDomain, a.logTransaction
 	tc.TraceContext = func(f sip.Flow) bool { return a.isTrusted(f.Remote.Addr()) }
 	roleAttrs := []attribute.KeyValue{tracing.RoleKey.String(role)}
-	tc.SpanAttributes = func(sip.Flow) []attribute.KeyValue { return roleAttrs }
+	tc.SpanAttributes = func(*sip.Request, trace.SpanKind) []attribute.KeyValue { return roleAttrs }
 
 	agent, err := ua.New(ua.Config{
 		Transaction: tc,

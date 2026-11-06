@@ -179,9 +179,9 @@ func TestReferInTheSessionDialog(t *testing.T) {
 
 	bob := newPeerWith(t, "bob", func(c *ua.Config) {
 		prepare := c.Prepare
-		c.Prepare = func(req *sip.Request) error {
+		c.Prepare = func(ctx context.Context, req *sip.Request) error {
 			sent <- req.Method + " " + req.Header.Get("Subscription-State")
-			return prepare(req)
+			return prepare(ctx, req)
 		}
 
 		c.Allow = append(slices.Clone(ua.Methods), "REFER")

@@ -15,20 +15,21 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/as"
+	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/internal/ipsec"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
-	"github.com/ellanetworks/ims/internal/tracing"
+	"github.com/ellanetworks/ims/internal/trgw"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -54,10 +55,13 @@ var knownMethods = map[string]bool{
 }
 
 const (
-	rolePCSCF          = "pcscf"
-	rolePCSCFProtected = "pcscf-protected"
-	roleICSCF          = "icscf"
-	roleSCSCF          = "scscf"
+	rolePCSCF           = "pcscf"
+	rolePCSCFProtected  = "pcscf-protected"
+	roleICSCF           = "icscf"
+	roleSCSCF           = "scscf"
+	roleIBCF            = "ibcf"
+	roleIBCFExternal    = "ibcf-external"
+	roleIBCFExternalTLS = "ibcf-external-tls"
 )
 
 type sipServer struct {
@@ -68,6 +72,8 @@ type sipServer struct {
 	cx          *cxHandler
 	rx          *rxHandler
 	pcscf       atomic.Pointer[pcscf.PCSCF]
+	ibcf        *ibcf.IBCF
+	trgw        *trgw.Gateway
 	xfrm        *ipsec.XFRM
 	listeners   []api.SIPEndpoint
 }
@@ -80,9 +86,12 @@ type timers struct {
 	mediaLossTimeout time.Duration
 	groupNoAnswer    time.Duration
 	asTimeout        time.Duration
+	trunkMedia       time.Duration
 }
 
-func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numbering func() scscf.Numbering,
+func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live func() settings.Settings,
+	changed func() <-chan struct{}, states settings.TrunkStates,
+	numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rlm *realms, cxh *cxHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
 	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, tp trace.TracerProvider,
@@ -106,66 +115,26 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		s.xfrm, kernel = x, x
 	}
 
-	s.layer = transaction.New(transaction.Config{
+	s.layer = transaction.New(roles.config(transaction.Config{
 		Network: ases.network,
-		Handler: roles,
 		Logger:  logger,
-		Aliases: op.SIPAliases(),
-		Filter: func(m sip.Message) error {
-			if p := s.pcscf.Load(); p != nil {
-				return p.Filter(m)
-			}
-
-			return nil
-		},
-		ResponseFlow: func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error) {
-			if p := s.pcscf.Load(); p != nil {
-				return p.ResponseFlow(req, res)
-			}
-
-			return sip.Flow{}, false, nil
-		},
+		Aliases: sipAliases(cfg, op),
 		OnListenerFailed: func(local netip.AddrPort, err error) {
 			logger.Error("SIP listener failed: the core restarts", slog.String("address", local.String()), slog.Any("error", err))
 			failed(local, err)
 		},
 		TracerProvider: tp,
-		TraceContext: func(f sip.Flow) bool {
-			if r := roles.name(f.Local.Port()); r == rolePCSCF || r == rolePCSCFProtected {
-				return pcscfDomain.Trusted(f.Remote.Addr())
-			}
-
-			return domain.Trusted(f.Remote.Addr())
-		},
-		SpanLinks: roles.spanLinks,
-		SpanAttributes: func(f sip.Flow) []attribute.KeyValue {
-			switch r := roles.name(f.Local.Port()); r {
-			case rolePCSCF, rolePCSCFProtected:
-				return []attribute.KeyValue{tracing.RoleKey.String(rolePCSCF)}
-			case "":
-				return nil
-			default:
-				return []attribute.KeyValue{tracing.RoleKey.String(r)}
-			}
-		},
-		OnServerDone: func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
-			roles.logTransaction(ctx, req, res, elapsed)
-
-			if roles.is(req.Flow.Local.Port(), rolePCSCF) && !pcscfDomain.Trusted(req.Flow.Remote.Addr()) {
-				m.sipResponse(req, res, elapsed)
-			}
-		},
-	})
+	}))
 
 	layer := s.layer
 	ph.layer = layer
 
-	pcscfPort, err := s.listen(ctx, rolePCSCF, cfg.SIP.Addresses, cfg.PCSCF.Port)
+	pcscfPort, err := s.listen(ctx, rolePCSCF, rolePCSCF, cfg.SIP.Addresses, cfg.PCSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close(ctx))
 	}
 
-	ipsecServer, err := s.listen(ctx, rolePCSCFProtected, cfg.SIP.Addresses, cfg.PCSCF.IPsec.ServerPort)
+	ipsecServer, err := s.listen(ctx, rolePCSCFProtected, rolePCSCF, cfg.SIP.Addresses, cfg.PCSCF.IPsec.ServerPort)
 	if err != nil {
 		return nil, errors.Join(err, s.Close(ctx))
 	}
@@ -178,17 +147,17 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			port = cfg.PCSCF.IPsec.ClientPorts[i]
 		}
 
-		if ipsecClients[i], err = s.listen(ctx, rolePCSCFProtected, cfg.SIP.Addresses, port); err != nil {
+		if ipsecClients[i], err = s.listen(ctx, rolePCSCFProtected, rolePCSCF, cfg.SIP.Addresses, port); err != nil {
 			return nil, errors.Join(err, s.Close(ctx))
 		}
 	}
 
-	icscfPort, err := s.listen(ctx, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
+	icscfPort, err := s.listen(ctx, roleICSCF, roleICSCF, cfg.SIP.Addresses, cfg.ICSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close(ctx))
 	}
 
-	scscfPort, err := s.listen(ctx, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
+	scscfPort, err := s.listen(ctx, roleSCSCF, roleSCSCF, cfg.SIP.Addresses, cfg.SCSCF.Port)
 	if err != nil {
 		return nil, errors.Join(err, s.Close(ctx))
 	}
@@ -199,12 +168,19 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		}
 	}
 
+	homeDomain := op.HomeDomain()
+	breakout := bgcf.New(live, states)
+
+	if cfg.IBCF != nil {
+		if err := s.startIBCF(ctx, cfg, tm, homeDomain, domain, breakout, live, changed, records, m, logger); err != nil {
+			return nil, errors.Join(err, s.Close(ctx))
+		}
+	}
+
 	scscfName, err := sip.ParseURI(op.SCSCFName(int(scscfPort)))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close(ctx))
 	}
-
-	homeDomain := op.HomeDomain()
 
 	s.registrar = scscf.New(scscf.Config{
 		HomeDomain: homeDomain,
@@ -236,8 +212,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 	pc := pcscf.New(pcscf.Config{
 		Layer: layer,
 		Proxy: proxy.New(proxy.Config{
-			Layer: layer, Logger: logger, Port: pcscfPort, Supported: []string{"sec-agree"},
-			LocalPorts: []uint16{ipsecServer, ipsecClients[0], ipsecClients[1]},
+			Layer: layer, Logger: logger, Supported: []string{"sec-agree"},
+			Listeners: append(s.bound(rolePCSCF), s.bound(rolePCSCFProtected)...),
 		}),
 		Port:          pcscfPort,
 		ICSCFPort:     icscfPort,
@@ -270,14 +246,25 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 		rxh.bind(pf.rx)
 	}
 
-	for _, port := range []uint16{pcscfPort, ipsecServer, ipsecClients[0], ipsecClients[1]} {
-		roles.set(port, rolePCSCF, pc)
-	}
+	roles.set(&role{
+		name:         rolePCSCF,
+		handler:      pc,
+		filter:       pc.Filter,
+		responseFlow: pc.ResponseFlow,
+		traceContext: func(f sip.Flow) bool { return pcscfDomain.Trusted(f.Remote.Addr()) },
+		done: func(_ context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
+			if !pcscfDomain.Trusted(req.Flow.Remote.Addr()) {
+				m.sipResponse(req, res, elapsed)
+			}
+		},
+	})
 
-	roles.set(icscfPort, roleICSCF, icscf.New(icscf.Config{
+	trusted := func(f sip.Flow) bool { return domain.Trusted(f.Remote.Addr()) }
+
+	ic := icscf.New(icscf.Config{
 		HomeDomain: homeDomain,
 		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: icscfPort}),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
 		Port:       icscfPort,
 		Trust:      domain,
 		Resolver:   resolver,
@@ -285,17 +272,20 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
 		},
+		IBCF:                 s.bound(roleIBCF),
 		PSISubdomain:         resolver.Has,
 		HSSRealm:             rlm.of(settings.ApplicationCx),
 		Diameter:             observed,
 		Records:              records,
 		RegistrationAttempts: m.registrations,
 		Logger:               logger,
-	}))
+	})
 
-	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Port: scscfPort})
+	roles.set(&role{name: roleICSCF, traceContext: trusted, handler: ic})
 
-	roles.set(scscfPort, roleSCSCF, &scscfHandler{
+	scscfProxy := proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleSCSCF)})
+
+	roles.set(&role{name: roleSCSCF, traceContext: trusted, handler: &scscfHandler{
 		log:       logger,
 		layer:     layer,
 		proxy:     scscfProxy,
@@ -309,28 +299,151 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, numb
 			GroupNoAnswer: tm.groupNoAnswer,
 		}),
 		fallback: ph,
-	})
+	}})
 
 	s.registrar.Start()
 
 	return s, nil
 }
 
-func (s *sipServer) listen(ctx context.Context, role string, addrs []netip.Addr, port int) (uint16, error) {
-	p := uint16(port)
-
-	for _, a := range addrs {
-		bound, err := s.layer.Listen(ctx, netip.AddrPortFrom(a, p))
-		if err != nil {
-			return 0, err
-		}
-
-		p = bound.Port()
-		s.listeners = append(s.listeners, api.SIPEndpoint{Role: role, Address: bound})
-		s.placeholder.addListener(bound)
+// TS 23.228 clause 4.14
+// TS 24.229 clause 5.10.1
+func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, tm timers, homeDomain string, domain *trust.Domain, breakout *bgcf.BGCF,
+	live func() settings.Settings, changed func() <-chan struct{}, records *callrecords.Recorder, m *metrics, logger *slog.Logger,
+) error {
+	secure, cert, err := ibcfTLS(cfg.IBCF.External)
+	if err != nil {
+		return err
 	}
 
-	return p, nil
+	internal, err := s.attach(roleIBCF, roleIBCF, cfg.SIP.Addresses, uint16(cfg.IBCF.Port), func(a netip.AddrPort) (netip.AddrPort, error) {
+		return s.layer.Listen(ctx, a)
+	})
+	if err != nil {
+		return err
+	}
+
+	external, err := s.attach(roleIBCFExternal, roleIBCF, cfg.IBCF.External.Addrs(), config.IBCFExternalPort, func(a netip.AddrPort) (netip.AddrPort, error) {
+		return s.layer.Listen(ctx, a)
+	})
+	if err != nil {
+		return err
+	}
+
+	tlsRole, bindTLS := "", func(a netip.AddrPort) (netip.AddrPort, error) { return s.layer.ClientTLS(ctx, a) }
+
+	if cert != nil {
+		srv := ibcf.ServerTLS(cert, live)
+		tlsRole, bindTLS = roleIBCFExternalTLS, func(a netip.AddrPort) (netip.AddrPort, error) { return s.layer.ListenTLS(ctx, a, srv) }
+	}
+
+	tlsAddrs := make([]netip.Addr, len(secure))
+	for i, a := range secure {
+		tlsAddrs[i] = a.Addr()
+	}
+
+	tlsLocals, err := s.attach(tlsRole, roleIBCF, tlsAddrs, config.IBCFTLSPort, bindTLS)
+	if err != nil {
+		return err
+	}
+
+	media, err := s.startTrGW(cfg, tm.trunkMedia, m.trunkMedia)
+	if err != nil {
+		return err
+	}
+
+	b, err := ibcf.New(ctx, ibcf.Config{
+		HomeDomain:  homeDomain,
+		Layer:       s.layer,
+		Internal:    internal,
+		External:    external,
+		TLS:         tlsLocals,
+		Advertised:  cfg.IBCF.External.Advertised(),
+		Certificate: cert,
+		Changed:     changed,
+		Resolve:     ibcf.SystemResolve,
+		ICSCF:       s.bound(roleICSCF),
+		Trust:       domain,
+		BGCF:        breakout,
+		Settings:    live,
+		Metrics:     m.ibcf,
+		Records:     records,
+		Media:       media,
+		Logger:      logger,
+	})
+	if err != nil {
+		return fmt.Errorf("start the IBCF: %w", err)
+	}
+
+	s.ibcf = b
+
+	s.roles.set(&role{
+		name:           roleIBCF,
+		handler:        b.Handler(),
+		filter:         b.Filter,
+		accept:         b.Accept,
+		connections:    ibcf.MaxConnectionsPerSource,
+		tlsClient:      b.TLSClientOptions,
+		traceContext:   b.TraceContext,
+		spanAttributes: b.SpanAttributes,
+		untraced:       b.Untraced,
+	})
+
+	return nil
+}
+
+func sipAliases(cfg config.Config, op settings.Operator) map[netip.Addr][]string {
+	out := make(map[netip.Addr][]string)
+
+	for _, a := range cfg.SIP.Addresses {
+		out[a.Unmap()] = op.SIPAliases()
+	}
+
+	if cfg.IBCF != nil {
+		for local, a := range cfg.IBCF.External.Advertised() {
+			out[local] = append(out[local], a.String())
+		}
+	}
+
+	return out
+}
+
+func (s *sipServer) listen(ctx context.Context, label, name string, addrs []netip.Addr, port int) (uint16, error) {
+	bound, err := s.attach(label, name, addrs, uint16(port), func(a netip.AddrPort) (netip.AddrPort, error) { return s.layer.Listen(ctx, a) })
+	if err != nil {
+		return 0, err
+	}
+
+	for _, a := range bound {
+		s.placeholder.addListener(a)
+	}
+
+	if len(bound) == 0 {
+		return uint16(port), nil
+	}
+
+	return bound[0].Port(), nil
+}
+
+func (s *sipServer) attach(label, name string, addrs []netip.Addr, port uint16, bind func(netip.AddrPort) (netip.AddrPort, error)) ([]netip.AddrPort, error) {
+	out := make([]netip.AddrPort, 0, len(addrs))
+
+	for _, a := range addrs {
+		bound, err := bind(netip.AddrPortFrom(a.Unmap(), port))
+		if err != nil {
+			return nil, err
+		}
+
+		port = bound.Port()
+		out = append(out, bound)
+		s.roles.bind(bound, name)
+
+		if label != "" {
+			s.listeners = append(s.listeners, api.SIPEndpoint{Role: label, Address: bound, TLS: label == roleIBCFExternalTLS})
+		}
+	}
+
+	return out, nil
 }
 
 func (s *sipServer) bound(role string) []netip.AddrPort {
@@ -373,12 +486,20 @@ func (s *sipServer) Close(ctx context.Context) error {
 
 	var err error
 
+	if s.ibcf != nil {
+		err = s.ibcf.Shutdown(ctx)
+	}
+
+	if s.trgw != nil {
+		err = errors.Join(err, s.trgw.Close())
+	}
+
 	if p := s.pcscf.Load(); p != nil {
-		err = p.Close(ctx)
+		err = errors.Join(err, p.Close(ctx))
 	}
 
 	if s.layer != nil {
-		err = errors.Join(err, s.layer.Close())
+		err = errors.Join(err, s.layer.Shutdown(ctx))
 	}
 
 	s.placeholder.close()
@@ -404,125 +525,6 @@ func openXFRM(addrs []netip.Addr) (*ipsec.XFRM, error) {
 	}
 
 	return x, nil
-}
-
-type dispatcher struct {
-	log *slog.Logger
-
-	mu    sync.RWMutex
-	roles map[uint16]transaction.Handler
-	names map[uint16]string
-}
-
-func newDispatcher(logger *slog.Logger) *dispatcher {
-	return &dispatcher{log: logger, roles: make(map[uint16]transaction.Handler), names: make(map[uint16]string)}
-}
-
-func (d *dispatcher) set(port uint16, name string, h transaction.Handler) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.roles[port] = h
-	d.names[port] = name
-}
-
-func (d *dispatcher) logTransaction(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration) {
-	level := slog.LevelDebug
-
-	switch req.Method {
-	case "INVITE", "BYE", "CANCEL", "UPDATE", "MESSAGE":
-		level = slog.LevelInfo
-	}
-
-	d.mu.RLock()
-	role := d.names[req.Flow.Local.Port()]
-	d.mu.RUnlock()
-
-	attrs := []slog.Attr{
-		slog.String("role", role),
-		slog.String("method", req.Method),
-		slog.String("call_id", req.Header.CallID()),
-	}
-
-	if from, err := req.Header.From(); err == nil {
-		attrs = append(attrs, slog.String("from", from.URI.String()))
-	}
-
-	if to, err := req.Header.To(); err == nil {
-		attrs = append(attrs, slog.String("to", to.URI.String()))
-	}
-
-	attrs = append(attrs, slog.String("remote", req.Flow.Remote.String()), slog.Duration("duration", elapsed))
-
-	if res == nil {
-		d.log.LogAttrs(ctx, level, "SIP transaction ended without a final response", attrs...)
-		return
-	}
-
-	attrs = append(attrs, slog.Int("status", res.StatusCode), slog.String("reason", res.Reason))
-	d.log.LogAttrs(ctx, level, "SIP transaction", attrs...)
-}
-
-func (d *dispatcher) is(port uint16, role string) bool {
-	return d.name(port) == role
-}
-
-func (d *dispatcher) name(port uint16) string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.names[port]
-}
-
-func (d *dispatcher) role(f sip.Flow) transaction.Handler {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.roles[f.Local.Port()]
-}
-
-func (d *dispatcher) spanLinks(req *sip.Request) []trace.SpanContext {
-	if l, ok := d.role(req.Flow).(interface {
-		SpanLinks(req *sip.Request) []trace.SpanContext
-	}); ok {
-		return l.SpanLinks(req)
-	}
-
-	return nil
-}
-
-func (d *dispatcher) HandleRequest(ctx context.Context, tx *transaction.ServerTransaction, req *sip.Request) {
-	h := d.role(req.Flow)
-	if h == nil {
-		res := sip.NewResponse(req, 503, "")
-		res.Header.Set("Retry-After", "1")
-
-		if err := tx.Respond(res); err != nil {
-			d.log.DebugContext(ctx, "SIP response failed", slog.String("response", res.StartLine()), slog.Any("error", err))
-		}
-
-		return
-	}
-
-	h.HandleRequest(ctx, tx, req)
-}
-
-func (d *dispatcher) HandleCancel(ctx context.Context, tx *transaction.ServerTransaction, cancel *sip.Request) {
-	if h := d.role(tx.Request().Flow); h != nil {
-		h.HandleCancel(ctx, tx, cancel)
-	}
-}
-
-func (d *dispatcher) HandleAck(ctx context.Context, ack *sip.Request) {
-	if h := d.role(ack.Flow); h != nil {
-		h.HandleAck(ctx, ack)
-	}
-}
-
-func (d *dispatcher) HandleTransactionError(ctx context.Context, tx *transaction.ServerTransaction, err error) {
-	if h := d.role(tx.Request().Flow); h != nil {
-		h.HandleTransactionError(ctx, tx, err)
-	}
 }
 
 type registrar interface {

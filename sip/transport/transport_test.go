@@ -223,6 +223,109 @@ func TestMaxConnections(t *testing.T) {
 	}
 }
 
+func TestMaxConnectionsPerAddress(t *testing.T) {
+	tr, rec := siptest.NewTransport(t, transport.Config{MaxConnectionsPerAddress: func(netip.AddrPort) int { return 2 }})
+	local := siptest.Listen(t, tr, lo)
+
+	var open []net.Conn
+
+	for i := range 2 {
+		c := dialTCP(t, local)
+		if _, err := c.Write([]byte(options("SIP/2.0/TCP 127.0.0.1:1;branch=z9hG4bK" + strconv.Itoa(i)))); err != nil {
+			t.Fatal(err)
+		}
+
+		rec.NextRequest()
+
+		open = append(open, c)
+	}
+
+	refused := func() error {
+		d := net.Dialer{Timeout: siptest.Timeout}
+
+		extra, err := d.DialContext(context.Background(), "tcp", local.String())
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = extra.Close() }()
+
+		_ = extra.SetReadDeadline(time.Now().Add(siptest.Timeout))
+		_, err = extra.Read(make([]byte, 1))
+
+		return err
+	}
+
+	if err := refused(); !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("third connection from the address: %v, want a reset", err)
+	}
+
+	_ = open[0].Close()
+
+	deadline := time.Now().Add(siptest.Timeout)
+
+	for {
+		c := dialTCP(t, local)
+		if _, err := c.Write([]byte(options("SIP/2.0/TCP 127.0.0.1:1;branch=z9hG4bKagain"))); err != nil {
+			t.Fatal(err)
+		}
+
+		_ = c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err := c.Read(make([]byte, 1)); errors.Is(err, os.ErrDeadlineExceeded) {
+			rec.NextRequest()
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("no connection accepted after one from the address closed")
+		}
+	}
+}
+
+func TestAcceptFilter(t *testing.T) {
+	allowed := netip.MustParseAddr("127.0.0.2")
+
+	tr, rec := siptest.NewTransport(t, transport.Config{Accept: func(_, remote netip.AddrPort) bool { return remote.Addr() == allowed }})
+	local := siptest.Listen(t, tr, lo)
+
+	dialer := func(from netip.Addr) *net.Dialer {
+		return &net.Dialer{Timeout: siptest.Timeout, LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(from, 0))}
+	}
+
+	refused := func() error {
+		c, err := dialer(lo).DialContext(context.Background(), "tcp", local.String())
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = c.Close() }()
+
+		_ = c.SetReadDeadline(time.Now().Add(siptest.Timeout))
+		_, err = c.Read(make([]byte, 1))
+
+		return err
+	}
+
+	if err := refused(); !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("connection from %s: %v, want a reset", lo, err)
+	}
+
+	ok, err := dialer(allowed).DialContext(context.Background(), "tcp", local.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() { _ = ok.Close() }()
+
+	if _, err := ok.Write([]byte(options("SIP/2.0/TCP 127.0.0.2:1;branch=z9hG4bKok"))); err != nil {
+		t.Fatal(err)
+	}
+
+	if req := rec.NextRequest(); req.Flow.Remote.Addr() != allowed {
+		t.Errorf("request from %s", req.Flow.Remote)
+	}
+}
+
 func TestListenRefusesHeldPort(t *testing.T) {
 	forEachFamily(t, func(t *testing.T, addr netip.Addr) {
 		var lc net.ListenConfig
@@ -591,26 +694,36 @@ func TestDialHook(t *testing.T) {
 func TestControlHook(t *testing.T) {
 	type call struct{ network, address string }
 
-	calls := make(chan call, 8)
+	var (
+		mu    sync.Mutex
+		calls []call
+	)
+
+	recorded := func() []call {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return append([]call(nil), calls...)
+	}
 
 	tr, _ := siptest.NewTransport(t, transport.Config{
 		Control: func(network, address string, c syscall.RawConn) error {
-			calls <- call{network, address}
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls = append(calls, call{network, address})
+
 			return nil
 		},
 	})
 
 	local := siptest.Listen(t, tr, lo)
 
-	got := map[string]string{}
+	listened := recorded()
+	want := []call{{"tcp4", netip.AddrPortFrom(lo, 0).String()}, {"udp4", local.String()}}
 
-	for range 2 {
-		c := <-calls
-		got[c.network] = c.address
-	}
-
-	if got["tcp4"] != netip.AddrPortFrom(lo, 0).String() || got["udp4"] != local.String() {
-		t.Fatalf("listening sockets %v, want tcp4 on %s and udp4 on %s", got, netip.AddrPortFrom(lo, 0), local)
+	if n := len(listened); n < 2 || n%2 != 0 || listened[n-2] != want[0] || listened[n-1] != want[1] {
+		t.Fatalf("listening sockets %v, want the last to be %v", listened, want)
 	}
 
 	peer := siptest.NewSocket(t, netip.AddrPortFrom(lo, 0))
@@ -622,8 +735,8 @@ func TestControlHook(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if c := <-calls; c.network != "tcp4" || c.address != local.String() {
-		t.Fatalf("dialled socket %v, want tcp4 from %s", c, local)
+	if dialled := recorded()[len(listened):]; len(dialled) != 1 || dialled[0] != (call{"tcp4", local.String()}) {
+		t.Fatalf("dialled sockets %v, want one tcp4 from %s", dialled, local)
 	}
 
 	if got, _ := peer.RecvRequest(); got.Method != "OPTIONS" {
@@ -853,7 +966,9 @@ func TestBrokenListenerIsDropped(t *testing.T) {
 	cfg := transport.Config{Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	failed := failures(&cfg)
 	tr, _ := siptest.NewTransport(t, cfg)
-	local := siptest.Listen(t, tr, lo)
+	pid := os.Getpid()
+	own := netip.AddrFrom4([4]byte{127, byte(1 + (pid>>16)%254), byte(pid >> 8), byte(pid)})
+	local := siptest.Listen(t, tr, own)
 
 	rcs, err := tr.Sockets(local)
 	if err != nil {

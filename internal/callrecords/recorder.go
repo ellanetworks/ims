@@ -1,6 +1,7 @@
 package callrecords
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"maps"
@@ -50,7 +51,16 @@ type Attempt struct {
 	RequestURI string
 	IMPI       string
 	Asserted   []string
+	InTrunk    string
+	InName     string
 }
+
+type TrunkSide int
+
+const (
+	Inbound TrunkSide = iota + 1
+	Outbound
+)
 
 type Routing struct {
 	Asserted   []string
@@ -182,7 +192,7 @@ func (r *Recorder) Attempt(a Attempt) {
 
 	c := &call{rec: db.CallRecord{
 		ICID: a.ICID, SessionID: a.CallID, CallingParty: slices.Clone(a.Asserted), CallerIMPI: a.IMPI,
-		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(),
+		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(), InTrunk: a.InTrunk, InTrunkName: trunkName(a.InTrunk, a.InName),
 	}}
 	r.calls[a.ICID] = c
 	r.metrics.active.Inc()
@@ -237,6 +247,31 @@ func (r *Recorder) Routed(icid string, rt Routing) {
 		c.rec.CallingParty = asserted
 		c.rec.CalledParty = rt.RequestURI
 	})
+}
+
+func (r *Recorder) Trunk(icid string, side TrunkSide, id, name string) {
+	if id == "" {
+		return
+	}
+
+	name = trunkName(id, name)
+
+	r.update(icid, func(c *call, _ time.Time) {
+		switch side {
+		case Inbound:
+			c.rec.InTrunk, c.rec.InTrunkName = id, name
+		case Outbound:
+			c.rec.OutTrunk, c.rec.OutTrunkName = id, name
+		}
+	})
+}
+
+func trunkName(id, name string) string {
+	if id == "" {
+		return ""
+	}
+
+	return cmp.Or(name, id)
 }
 
 func (r *Recorder) Reached(icid string, impi string) {

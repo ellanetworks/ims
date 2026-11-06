@@ -60,7 +60,7 @@ func newAS(t *testing.T, port uint16) *as {
 
 	agent, err := ua.New(ua.Config{
 		Transaction: transaction.Config{Logger: testLogger(t).With("as", port)},
-		Prepare: func(req *sip.Request) error {
+		Prepare: func(_ context.Context, req *sip.Request) error {
 			tr, dest, err := sip.NextHop(req)
 			if err != nil {
 				return err

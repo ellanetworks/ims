@@ -17,9 +17,12 @@ import (
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/trgw"
+	"github.com/ellanetworks/ims/internal/trunkmon"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/version"
 	"github.com/prometheus/client_golang/prometheus"
@@ -61,15 +64,22 @@ type metrics struct {
 	peerDuration *prometheus.HistogramVec
 	ipsmgw       *ipsmgw.Metrics
 	requests     *api.RequestMetrics
+	ibcf         *ibcf.Metrics
+	trunks       *trunkmon.Metrics
+	trunkMedia   *trgw.Metrics
 }
 
 func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]settings.Peer, []diameter.PeerStatus),
+	trunks func() []settings.Trunk,
 ) *metrics {
 	m := &metrics{
 		registry:      prometheus.NewRegistry(),
 		registrations: regmetrics.New(),
 		ipsmgw:        ipsmgw.NewMetrics(),
 		requests:      api.NewRequestMetrics(),
+		ibcf:          ibcf.NewMetrics(),
+		trunks:        trunkmon.NewMetrics(),
+		trunkMedia:    trgw.NewMetrics(),
 		sipResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_sip_responses_total",
 			Help: "Final responses the P-CSCF sent to UEs, by method and status class.",
@@ -128,6 +138,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		versioncollector.NewCollector("ellaims", versioncollector.WithExtraConstLabels(build)),
 		registeredCollector{database},
 		diameterPeersCollector{peers},
+		trunkInfoCollector{trunks},
 		m.sipResponses,
 		m.sipDuration,
 		m.peerRequests,
@@ -138,8 +149,31 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m.registry.MustRegister(m.registrations.Collectors()...)
 	m.registry.MustRegister(m.ipsmgw.Collectors()...)
 	m.registry.MustRegister(m.requests.Collectors()...)
+	m.registry.MustRegister(m.ibcf.Collectors()...)
+	m.registry.MustRegister(m.trunks.Collectors()...)
+	m.registry.MustRegister(m.trunkMedia.Collectors()...)
 
 	return m
+}
+
+var trunkInfoDesc = prometheus.NewDesc(
+	"ellaims_trunk_info",
+	"SIP trunks configured, with value 1: the name of each trunk by ID.",
+	[]string{"trunk", "name"}, nil,
+)
+
+type trunkInfoCollector struct {
+	trunks func() []settings.Trunk
+}
+
+func (c trunkInfoCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- trunkInfoDesc
+}
+
+func (c trunkInfoCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, t := range c.trunks() {
+		ch <- prometheus.MustNewConstMetric(trunkInfoDesc, prometheus.GaugeValue, 1, t.ID, t.Name)
+	}
 }
 
 var registeredDesc = prometheus.NewDesc(

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Alert,
@@ -58,7 +58,7 @@ export default function Login() {
   const { showSnackbar } = useSnackbar();
   const ssoButton = useRef<HTMLAnchorElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!checking && oidc.enabled) ssoButton.current?.focus();
   }, [checking, oidc.enabled]);
 

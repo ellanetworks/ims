@@ -55,7 +55,7 @@ func direct(t *testing.T) (*env, *server.Server, *user) {
 	s, err := server.New(server.Config{
 		UA: ua.Config{
 			Transaction: e.n.Config(transaction.Config{}),
-			Prepare:     func(*sip.Request) error { return fmt.Errorf("the server sends no request") },
+			Prepare:     func(context.Context, *sip.Request) error { return fmt.Errorf("the server sends no request") },
 		},
 		Source: fixed{snap},
 		Mode:   registrar.Direct,

@@ -16,6 +16,7 @@ type Numbering struct {
 	CountryCode         string `json:"country_code"`
 	NationalPrefix      string `json:"national_prefix"`
 	InternationalPrefix string `json:"international_prefix"`
+	MinNationalDigits   int    `json:"min_national_digits"`
 }
 
 func GetOperator(cfg Config) http.Handler {
@@ -26,7 +27,7 @@ func GetOperator(cfg Config) http.Handler {
 
 func UpdateOperator(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var p Operator
+		p := Operator{Numbering: Numbering{MinNationalDigits: settings.DefaultMinNationalDigits}}
 		if !decodeStrictly(w, r, &p, cfg.Logger) {
 			return
 		}
@@ -38,6 +39,7 @@ func UpdateOperator(cfg Config) http.Handler {
 				CountryCode:         p.Numbering.CountryCode,
 				NationalPrefix:      p.Numbering.NationalPrefix,
 				InternationalPrefix: p.Numbering.InternationalPrefix,
+				MinNationalDigits:   p.Numbering.MinNationalDigits,
 			},
 		}
 
@@ -58,6 +60,7 @@ func operatorResponse(o settings.Operator) Operator {
 			CountryCode:         o.Numbering.CountryCode,
 			NationalPrefix:      o.Numbering.NationalPrefix,
 			InternationalPrefix: o.Numbering.InternationalPrefix,
+			MinNationalDigits:   o.Numbering.MinNationalDigits,
 		},
 	}
 }

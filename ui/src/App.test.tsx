@@ -73,6 +73,7 @@ describe("App", () => {
     ).toEqual([
       ["Dashboard", "/dashboard"],
       ["Cores", "/cores"],
+      ["SIP Trunks", "/sip-trunks"],
       ["Operator", "/operator"],
       ["Registrations", "/registrations"],
       ["Calls", "/calls"],
@@ -126,7 +127,7 @@ describe("App", () => {
     renderAt("/");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+      await screen.findByRole("heading", { level: 1, name: "Dashboard" }),
     ).toBeInTheDocument();
   });
 
@@ -139,7 +140,7 @@ describe("App", () => {
     renderAt("/");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+      await screen.findByRole("heading", { level: 1, name: "Dashboard" }),
     ).toBeInTheDocument();
   });
 
@@ -185,6 +186,7 @@ describe("App", () => {
     ).toEqual([
       "Dashboard",
       "Cores",
+      "SIP Trunks",
       "Operator",
       "Registrations",
       "Calls",

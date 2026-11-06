@@ -45,6 +45,10 @@ export interface CallRecord {
   in_progress: boolean;
   incomplete: boolean;
   duration_ms?: number;
+  in_trunk_id?: string;
+  in_trunk_name?: string;
+  out_trunk_id?: string;
+  out_trunk_name?: string;
 }
 
 export interface ListCallRecordsParams extends PageParams {

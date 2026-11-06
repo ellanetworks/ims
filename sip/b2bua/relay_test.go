@@ -214,6 +214,60 @@ func TestBridgeBodiesAndMedia(t *testing.T) {
 	}
 }
 
+// TS 24.229 clause 5.10.6.3
+func TestBridgeForwardsUndecodableOptionalBodies(t *testing.T) {
+	alice, bob, b := newCall(t, b2bua.RelayConfig{Media: anchor{}})
+
+	packed := sip.NewBodyPart("application/dtmf-relay", []byte{0x1f, 0x8b, 0x08, 0x00, 0xff})
+	packed.Header.Add("Content-Encoding", "gzip")
+	packed.Header.Add("Content-Disposition", "render;handling=optional")
+
+	uri, _ := sip.ParseURI(b.uri())
+	req := sip.NewRequest("INVITE", uri)
+	req.Header.Add("From", "<"+alice.uri()+">")
+	req.Header.Add("To", "<"+b.uri()+">")
+	req.SetBodies(ua.SDP([]byte("offer-1")), packed)
+
+	if _, err := alice.a.Invite(context.Background(), req, alice.handler()); err != nil {
+		t.Fatal(err)
+	}
+
+	in := bob.next("invite").req
+
+	parts, _ := in.Message().Content().Split()
+	if len(parts) != 2 || string(parts[0].Body) != "anchored offer-1" || !bytes.Equal(parts[1].Body, packed.Body) ||
+		parts[1].Header.Get("Content-Encoding") != "gzip" || parts[1].Header.Get("Content-Disposition") != "render;handling=optional" {
+		t.Fatalf("bob's INVITE parts %+v", parts)
+	}
+
+	_ = in.Accept(sdpOf("answer-1")...)
+
+	as := alice.next("established").s
+	alice.next("answer")
+	bob.next("established")
+
+	done := make(chan *sip.Response, 1)
+	_ = as.Reinvite(context.Background(), ua.Change{Bodies: []sip.BodyPart{ua.SDP([]byte("offer-2")), packed}}, func(res *sip.Response, _ error) {
+		done <- res
+	})
+
+	r := bob.next("request").req
+
+	if parts, _ := r.Message().Content().Split(); len(parts) != 2 || !bytes.Equal(parts[1].Body, packed.Body) {
+		t.Fatalf("bob's re-INVITE parts %+v", parts)
+	}
+
+	_ = r.Respond(ua.Reply{Code: 200, Bodies: sdpOf("answer-2")})
+
+	alice.next("answer")
+
+	b.net.Quiesce()
+
+	if res := <-done; res == nil || res.StatusCode != 200 {
+		t.Fatalf("re-INVITE %v", res)
+	}
+}
+
 type anchor struct{}
 
 func (anchor) Offer(x *b2bua.Exchange) ([]byte, error) {
@@ -225,6 +279,8 @@ func (anchor) Answer(_ *b2bua.Exchange, _ *ua.Session, sdp []byte) ([]byte, erro
 }
 
 func (anchor) End(*b2bua.Exchange, *ua.Session) {}
+
+func (anchor) Dialog(*ua.Session, ua.State) {}
 
 // RFC 3261 section 15
 func TestBridge2xxCrossingCancel(t *testing.T) {
@@ -282,4 +338,29 @@ func TestBridge2xxCrossingCancel(t *testing.T) {
 	alice.next("failed")
 	b.callEnded(t)
 	settled(t, n, alice, b.party)
+	b.noErrors(t)
+}
+
+func TestRelayByeOnce(t *testing.T) {
+	for _, from := range []string{"caller", "callee"} {
+		t.Run(from, func(t *testing.T) {
+			alice, bob, b := newCall(t, b2bua.RelayConfig{})
+			alice.invite(b.uri(), "offer-1", alice.handler())
+			as, bs := bridged(t, alice, bob)
+
+			s := as
+			if from == "callee" {
+				s = bs
+			}
+
+			if err := s.Bye(context.Background(), ua.Change{}, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			alice.next("ended")
+			bob.next("ended")
+			b.callEnded(t)
+			b.noErrors(t)
+		})
+	}
 }

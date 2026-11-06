@@ -129,6 +129,14 @@ func (r *Request) Accept(bodies ...sip.BodyPart) error {
 	return r.Respond(Reply{Code: 200, Bodies: bodies})
 }
 
+func (r *Request) Status() int {
+	if r.tx == nil {
+		return 0
+	}
+
+	return r.tx.Status()
+}
+
 func (r *Request) Reject(code int, header ...sip.Field) error {
 	return r.Respond(Reply{Code: code, Header: header})
 }

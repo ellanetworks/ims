@@ -1,12 +1,9 @@
 package pcscf
 
 import (
-	"slices"
-
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
-	"github.com/ellanetworks/ims/sip/sdp"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
 
@@ -70,7 +67,7 @@ func (c *callRecord) event(e proxy.DialogEvent) {
 	case proxy.EventAnswered:
 		c.r.Answered(c.attempt.ICID, e.Code)
 	case proxy.EventNegotiated:
-		c.r.Media(c.attempt.ICID, acceptedMedia(e.Exchange.Answer.Data))
+		c.r.Media(c.attempt.ICID, callrecords.AcceptedMedia(e.Exchange.Answer.Data))
 	case proxy.EventEnded:
 		c.r.Ended(c.attempt.ICID, callrecords.End{Code: e.Code, Tag: e.Tag, By: e.By, Cause: e.End})
 	}
@@ -85,22 +82,4 @@ func (p *PCSCF) terminatingRecord(c *call, e proxy.DialogEvent) {
 	case e.Kind == proxy.EventEnded && e.End == proxy.EndReleased:
 		p.cfg.Records.Released(icid)
 	}
-}
-
-// RFC 3264 section 6
-func acceptedMedia(answer []byte) []string {
-	s, err := sdp.Parse(answer)
-	if err != nil {
-		return nil
-	}
-
-	var types []string
-
-	for _, m := range s.Media {
-		if m.Port() != 0 && !slices.Contains(types, m.Type()) {
-			types = append(types, m.Type())
-		}
-	}
-
-	return types
 }

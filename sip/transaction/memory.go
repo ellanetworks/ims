@@ -146,7 +146,7 @@ func (l *Layer) sendsFrom(local netip.AddrPort) bool {
 }
 
 func (l *Layer) reliable(f sip.Flow) bool {
-	return f.Transport == sip.TCP || l.inMemory(f.Remote)
+	return f.Transport == sip.TCP || f.Transport == sip.TLS || l.inMemory(f.Remote)
 }
 
 func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
@@ -162,7 +162,7 @@ func (l *Layer) send(ctx context.Context, m sip.Message, exact bool) error {
 	}
 
 	if l.network.closed {
-		if f.Transport == sip.TCP {
+		if f.Transport != sip.UDP {
 			return fmt.Errorf("sip/transaction: send %s to %s: %w", m.StartLine(), f.Remote, ErrRefused)
 		}
 
@@ -180,7 +180,7 @@ func (l *Layer) deliver(m sip.Message) error {
 	f := m.Env().Flow
 	f.Local, f.Remote = unmap(f.Local), unmap(f.Remote)
 
-	if f.Transport != sip.UDP && f.Transport != sip.TCP {
+	if f.Transport != sip.UDP && f.Transport != sip.TCP && f.Transport != sip.TLS {
 		return fmt.Errorf("%w %q", transport.ErrUnsupportedTransport, f.Transport)
 	}
 

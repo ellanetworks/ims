@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import Dashboard, { formatBytes } from "@/pages/Dashboard";
 import type { CallRecordCounts } from "@/queries/callRecords";
@@ -16,7 +16,24 @@ ellaims_database_storage_bytes{file="main"} 1048576
 ellaims_database_storage_bytes{file="wal"} 524288
 process_resident_memory_bytes 6.7108864e+07
 process_start_time_seconds 1.7e+09
+ellaims_trunk_active_calls{trunk="telnyx"} 2
+ellaims_trunk_active_calls{trunk="twilio"} 1
 `;
+
+const ALERT_COLOR = "rgb(211, 47, 47)";
+
+const TRUNKS = [
+  {
+    id: "0199a4d2-7c1e-7b3a-9f00-000000000001",
+    name: "Telnyx",
+    status: { state: "up" },
+  },
+  {
+    id: "0199a4d2-7c1e-7b3a-9f00-000000000002",
+    name: "Twilio",
+    status: { state: "down" },
+  },
+];
 
 const counts: CallRecordCounts = {
   answered: 60,
@@ -43,6 +60,7 @@ interface Setup {
   mcptt?: boolean;
   counts?: CallRecordCounts;
   metrics?: () => Response;
+  trunks?: unknown[];
 }
 
 const serve = ({
@@ -51,6 +69,7 @@ const serve = ({
   mcptt = true,
   counts: byOutcome = counts,
   metrics = () => new Response(METRICS, { status: 200 }),
+  trunks = TRUNKS,
 }: Setup = {}) => {
   const urls: URL[] = [];
   const track =
@@ -85,6 +104,7 @@ const serve = ({
           json(200, { result: page([{}], { per_page: 1, total_count: 2 }) }),
         ),
         "/api/v1/metrics": metrics,
+        "/api/v1/sip-trunks": () => json(200, { result: { items: trunks } }),
         "/api/v1/call-records/counts": track(() =>
           json(200, { result: byOutcome }),
         ),
@@ -121,6 +141,9 @@ const findPanel = async (name: string) => {
   return panel(name);
 };
 
+const isAlert = (element: HTMLElement) =>
+  getComputedStyle(element).color === ALERT_COLOR;
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -145,20 +168,83 @@ describe("Dashboard", () => {
       "/cores",
     );
 
-    const table = await screen.findByRole("table", { name: "Diameter Peers" });
-    const rows = within(table).getAllByRole("row").slice(1);
-    expect(rows.map((r) => r.textContent)).toEqual([
-      "core.epc.mnc001.mcc001.3gppnetwork.orgHSS, PCRFopen",
-      "smsc.node.epc.mnc001.mcc001.3gppnetwork.orgSGddown",
-    ]);
+    const peerCard = await findPanel("Diameter Peers");
+    const peerCount = await within(peerCard).findByText("2");
+    expect(isAlert(peerCount)).toBe(true);
+    expect(peerCard.closest("a")).toHaveAttribute("href", "/cores");
   });
 
-  it("says when there are no Diameter peers", async () => {
+  it("shows the number of SIP trunks", async () => {
+    serve();
+    renderDashboard();
+
+    const trunkCard = await findPanel("SIP Trunks");
+    const trunkCount = await within(trunkCard).findByText("2");
+    expect(isAlert(trunkCount)).toBe(true);
+    expect(trunkCard.closest("a")).toHaveAttribute("href", "/sip-trunks");
+
+    fireEvent.click(trunkCount);
+    expect(await screen.findByTestId("location")).toHaveTextContent(
+      "/sip-trunks",
+    );
+  });
+
+  it("shows the counts without alert when all are up", async () => {
+    serve({
+      peers: [peer()],
+      trunks: [TRUNKS[0], { ...TRUNKS[1], status: { state: "unknown" } }],
+    });
+    renderDashboard();
+
+    const trunkCount = await within(await findPanel("SIP Trunks")).findByText(
+      "2",
+    );
+    expect(isAlert(trunkCount)).toBe(false);
+    const peerCount = await within(panel("Diameter Peers")).findByText("1");
+    expect(isAlert(peerCount)).toBe(false);
+  });
+
+  it("counts the active trunk calls", async () => {
+    serve();
+    renderDashboard();
+
+    const trunkCalls = await findPanel("Active Trunk Calls");
+    expect(await within(trunkCalls).findByText("3")).toBeInTheDocument();
+    expect(trunkCalls.closest("a")).toHaveAttribute("href", "/calls");
+
+    fireEvent.click(within(trunkCalls).getByText("3"));
+    expect(await screen.findByTestId("location")).toHaveTextContent("/calls");
+  });
+
+  it("hides the SIP trunks without trunks", async () => {
+    serve({ trunks: [] });
+    renderDashboard();
+
+    await within(await findPanel("Active Calls")).findByText("7");
+    await within(panel("Diameter Peers")).findByText("2");
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(([url]) => String(url).endsWith("/sip-trunks")),
+      ).toBe(true),
+    );
+    expect(
+      screen.queryByRole("heading", { name: "SIP Trunks" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Active Trunk Calls" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("counts no Diameter peers", async () => {
     serve({ peers: [] });
     renderDashboard();
 
-    const table = await screen.findByRole("table", { name: "Diameter Peers" });
-    expect(within(table).getByText("No peers.")).toBeInTheDocument();
+    const peerCount = await within(
+      await findPanel("Diameter Peers"),
+    ).findByText("0");
+    expect(isAlert(peerCount)).toBe(false);
   });
 
   it("shows traffic and system figures from the metrics", async () => {
@@ -209,11 +295,11 @@ describe("Dashboard", () => {
     });
     const rows = await within(table).findAllByRole("row");
     expect(rows.slice(1).map((r) => r.textContent)).toEqual([
-      "answered6060%",
-      "cancelled1010%",
-      "busy2020%",
-      "no answer55%",
-      "failed55%",
+      "answered60",
+      "cancelled10",
+      "busy20",
+      "no answer5",
+      "failed5",
       "Total100",
     ]);
 
@@ -250,11 +336,11 @@ describe("Dashboard", () => {
         .slice(1)
         .map((r) => r.textContent),
     ).toEqual([
-      "answered00%",
-      "cancelled1056%",
-      "busy317%",
-      "no answer528%",
-      "failed00%",
+      "answered0",
+      "cancelled10",
+      "busy3",
+      "no answer5",
+      "failed0",
       "Total18",
     ]);
   });

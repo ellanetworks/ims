@@ -139,6 +139,13 @@ func (p BodyPart) Multipart() (*Multipart, error) {
 	return parseMultipart(p.Header.ContentType(), p.Body)
 }
 
+var ErrUnsupportedEncoding = errors.New("sip: unsupported content encoding")
+
+// RFC 3261 section 8.2.3
+func (p BodyPart) Encoding() error {
+	return p.checkEncoding()
+}
+
 // RFC 3261 section 7.4
 func (p BodyPart) checkEncoding() error {
 	if p.Header.Has("Content-Type") && p.MediaType() == "" {
@@ -148,7 +155,7 @@ func (p BodyPart) checkEncoding() error {
 	for _, v := range p.Header.Values("Content-Encoding") {
 		for _, c := range strings.Split(v, ",") {
 			if c = trimWSP(c); c != "" && !strings.EqualFold(c, "identity") {
-				return fmt.Errorf("unsupported Content-Encoding %q", c)
+				return fmt.Errorf("%w: Content-Encoding %q", ErrUnsupportedEncoding, c)
 			}
 		}
 	}
@@ -371,28 +378,45 @@ func (m *Multipart) Encode() (contentType string, body []byte) {
 	return "multipart/" + sub + ";boundary=" + boundary, body
 }
 
+// RFC 3261 section 8.2.3
+// RFC 5621 section 9.3
 func (p BodyPart) Parts() ([]BodyPart, error) {
-	if len(p.Body) == 0 {
-		return nil, nil
+	parts, err := p.Split()
+	if err != nil {
+		return nil, err
 	}
 
-	if err := p.checkEncoding(); err != nil {
-		return nil, err
+	var usable []BodyPart
+
+	for _, part := range parts {
+		switch err := part.checkEncoding(); {
+		case err == nil:
+			usable = append(usable, part)
+		case !part.Optional():
+			return nil, err
+		}
+	}
+
+	return usable, nil
+}
+
+// RFC 2046 section 5.1
+func (p BodyPart) Split() ([]BodyPart, error) {
+	if len(p.Body) == 0 {
+		return nil, nil
 	}
 
 	if !isMultipart(p.MediaType()) {
 		return []BodyPart{p}, nil
 	}
 
-	m, err := p.Multipart()
-	if err != nil {
+	if err := p.checkEncoding(); err != nil {
 		return nil, err
 	}
 
-	for _, part := range m.Parts {
-		if err := part.checkEncoding(); err != nil {
-			return nil, err
-		}
+	m, err := p.Multipart()
+	if err != nil {
+		return nil, err
 	}
 
 	return m.Parts, nil
@@ -443,6 +467,7 @@ func (m *Multipart) find(match func(BodyPart) bool, byReference bool, depth int)
 	return BodyPart{}, false, nil
 }
 
+// RFC 5621 section 9.3
 func (p BodyPart) find(match func(BodyPart) bool, byReference bool, depth int) (BodyPart, bool, error) {
 	if !byReference {
 		if d, _, err := p.Disposition(); err == nil && d == DispositionByReference {
@@ -451,6 +476,10 @@ func (p BodyPart) find(match func(BodyPart) bool, byReference bool, depth int) (
 	}
 
 	if err := p.checkEncoding(); err != nil {
+		if p.Optional() {
+			return BodyPart{}, false, nil
+		}
+
 		return BodyPart{}, false, err
 	}
 

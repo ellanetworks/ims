@@ -25,6 +25,7 @@ tags:
   - name: Diameter
   - name: Policy
   - name: SIP
+  - name: SIP trunks
   - name: Registrations
   - name: Call records
   - name: IP-SM-GW
@@ -372,6 +373,260 @@ paths:
                 properties:
                   result:
                     $ref: "#/components/schemas/SIPStatus"
+
+  /api/v1/sip-trunks:
+    get:
+      tags: [SIP trunks]
+      operationId: listSIPTrunks
+      summary: List the SIP trunks
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The trunks, ordered by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SIPTrunk"
+    post:
+      tags: [SIP trunks]
+      operationId: createSIPTrunk
+      summary: Create a SIP trunk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPTrunkParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "201":
+          description: The SIP trunk created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPTrunkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sip-trunks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [SIP trunks]
+      operationId: getSIPTrunk
+      summary: Get a SIP trunk
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP trunk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPTrunkResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [SIP trunks]
+      operationId: updateSIPTrunk
+      summary: Update a SIP trunk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPTrunkParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP trunk as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPTrunkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [SIP trunks]
+      operationId: deleteSIPTrunk
+      summary: Delete a SIP trunk
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sip-routes:
+    get:
+      tags: [SIP trunks]
+      operationId: listSIPRoutes
+      summary: List the SIP routes
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The routes, ordered by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SIPRoute"
+    post:
+      tags: [SIP trunks]
+      operationId: createSIPRoute
+      summary: Create a SIP route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPRouteParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "201":
+          description: The SIP route created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPRouteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sip-routes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [SIP trunks]
+      operationId: getSIPRoute
+      summary: Get a SIP route
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPRouteResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [SIP trunks]
+      operationId: updateSIPRoute
+      summary: Update a SIP route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SIPRouteParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SIP route as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SIPRouteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [SIP trunks]
+      operationId: deleteSIPRoute
+      summary: Delete a SIP route
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/registrations:
     get:
@@ -2506,6 +2761,12 @@ components:
         international_prefix:
           type: string
           pattern: "^[0-9]{0,4}$"
+        min_national_digits:
+          type: integer
+          minimum: 0
+          maximum: 15
+          default: 7
+          description: Fewest digits of a number without prefix that can be routed to a SIP trunk, 0 to 15; 0 never. Default 7.
 
     OperatorResult:
       type: object
@@ -2736,6 +2997,245 @@ components:
                 items:
                   type: string
 
+    SIPTrunkFields:
+      type: object
+      required: [name, addresses]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Unique among trunks, ignoring case. Printable, without leading or trailing spaces.
+          examples: [Carrier]
+        addresses:
+          type: array
+          minItems: 1
+          description: Addresses of the carrier, in the order requests try them; DNS (RFC 3263) fills in what is absent. An address of one trunk only.
+          items:
+            type: object
+            additionalProperties: false
+            required: [host]
+            properties:
+              host:
+                type: string
+                description: A domain name, or a specific IPv4 or IPv6 address.
+                examples: [sip.carrier.example]
+              port:
+                type: integer
+                minimum: 1
+                maximum: 65535
+                description: Absent when DNS decides it, or when it is the default of the transport for an IP address.
+              transport:
+                type: string
+                enum: [udp, tcp, tls]
+                description: Absent when DNS decides it; tls only with tls.ca_certificates or tls.pins; not udp on a trusted trunk.
+        inbound_cidrs:
+          type: array
+          description: Source networks of the carrier, as CIDRs or IP addresses, not overlapping those of another trunk, sip.addresses or sip.trusted_networks. Empty, the IP addresses among the hosts.
+          items:
+            type: string
+            examples: [198.51.100.10/32, 198.51.100.11]
+        domain:
+          type: string
+          description: Host of the Request-URI towards the carrier. Empty, the first domain name among the hosts.
+          examples: [sip.carrier.example]
+        trusted:
+          type: boolean
+          default: false
+          description: Whether the carrier is in the trust domain; a trusted trunk never uses UDP.
+        keepalive_interval:
+          type: integer
+          minimum: 0
+          maximum: 3600
+          default: 30
+          description: Seconds between keepalives to the carrier, 5 to 3600; 0 sends no OPTIONS requests.
+        enabled:
+          type: boolean
+          default: true
+          description: Whether the trunk carries calls, in both directions. Absent, true, on update too.
+
+    SIPTrunkParams:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkFields"
+      properties:
+        tls:
+          $ref: "#/components/schemas/SIPTrunkTLSParams"
+      unevaluatedProperties: false
+
+    SIPTrunkTLSFields:
+      type: object
+      description: TLS authentication of the carrier, by CA or pin. Absent for a trunk without TLS.
+      properties:
+        required:
+          type: boolean
+          default: false
+          description: Whether the carrier must use TLS, with mutual authentication. Requires ibcf.external.tls in the configuration file.
+        ca_certificates:
+          type: string
+          description: PEM-encoded CA certificates the carrier's certificate must chain to, at most 32.
+        pins:
+          type: array
+          maxItems: 32
+          description: Carrier certificates, as PEM or SHA-256 fingerprints, at most 32; returned as fingerprints.
+          items:
+            type: string
+            examples: ["2C:54:DF:66:29:19:96:C5:C8:A5:E8:4B:7A:32:FE:71:02:38:11:62:D4:D9:2E:2C:A1:C4:E7:8C:0D:D5:B1:C5"]
+        identities:
+          type: array
+          maxItems: 16
+          description: Domain names the carrier's certificate must hold one of, at most 16. Empty, the domain and the domain names among the hosts.
+          items:
+            type: string
+            examples: [sip.carrier.example]
+
+    SIPTrunkTLSParams:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkTLSFields"
+      unevaluatedProperties: false
+
+    SIPTrunkTLS:
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkTLSFields"
+        - type: object
+          required: [required, ca_certificates, pins, identities, ca_certificate_details]
+          properties:
+            ca_certificate_details:
+              type: array
+              description: The CA certificates, in the order of ca_certificates.
+              items:
+                $ref: "#/components/schemas/CertificateSummary"
+
+    CertificateSummary:
+      type: object
+      required: [subject, issuer, dns_names, uris, ip_addresses, identities, ca, not_before, not_after,
+        sha256_fingerprint]
+      properties:
+        subject:
+          type: string
+          examples: ["CN=sip.carrier.example,O=Carrier"]
+        issuer:
+          type: string
+        dns_names:
+          type: array
+          items:
+            type: string
+        uris:
+          type: array
+          items:
+            type: string
+        ip_addresses:
+          type: array
+          items:
+            type: string
+        identities:
+          type: array
+          description: The identities that Ella IMS matches against tls.identities.
+          items:
+            type: string
+        ca:
+          type: boolean
+        not_before:
+          type: string
+          format: date-time
+        not_after:
+          type: string
+          format: date-time
+        sha256_fingerprint:
+          type: string
+          description: The SHA-256 fingerprint of the certificate, as upper-case hex bytes separated by colons.
+
+    SIPTrunk:
+      description: The trunk as set. id, effective, status and tls.ca_certificate_details are read-only, and an update refuses them.
+      allOf:
+        - $ref: "#/components/schemas/SIPTrunkFields"
+        - type: object
+          required: [id, inbound_cidrs, domain, trusted, keepalive_interval, enabled, tls, effective, status]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: A UUIDv7.
+            tls:
+              $ref: "#/components/schemas/SIPTrunkTLS"
+            effective:
+              $ref: "#/components/schemas/SIPTrunkEffective"
+            status:
+              $ref: "#/components/schemas/SIPTrunkStatus"
+
+    SIPTrunkEffective:
+      type: object
+      description: The values in use, defaults included.
+      required: [domain, inbound_cidrs, tls_identities]
+      properties:
+        domain:
+          type: string
+          examples: [sip.carrier.example]
+        inbound_cidrs:
+          type: array
+          items:
+            type: string
+            examples: [198.51.100.10/32]
+        tls_identities:
+          type: array
+          items:
+            type: string
+            examples: [sip.carrier.example]
+
+    SIPTrunkStatus:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [unknown, up, down, unusable]
+          description: "up: answers OPTIONS. down: does not; routes skip it. unknown: not probed yet or keepalives off. unusable: conflicts with the configuration file or another trunk; carries no calls."
+        since:
+          type: string
+          format: date-time
+          description: The time of the last state change.
+
+    SIPTrunkResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/SIPTrunk"
+
+    SIPRouteParams:
+      type: object
+      required: [trunks]
+      properties:
+        prefix:
+          type: string
+          pattern: "^(\\+[1-9][0-9]{0,14})?$"
+          default: ""
+          description: E.164 prefix of the route, unique; empty for the default route. Longest prefix wins.
+          examples: ["+1"]
+        trunks:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: The identifiers of the SIP trunks of the route, in the order calls try them.
+          items:
+            type: string
+            format: uuid
+
+    SIPRoute:
+      allOf:
+        - $ref: "#/components/schemas/SIPRouteParams"
+        - type: object
+          required: [id, prefix]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: A UUIDv7.
+
+    SIPRouteResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/SIPRoute"
+
     Registration:
       type: object
       required: [impi, implicit_registration_sets]
@@ -2910,6 +3410,18 @@ components:
         duration_ms:
           type: integer
           description: Duration of an answered call that ended, in milliseconds.
+        in_trunk_id:
+          type: string
+          description: ID of the SIP trunk the call came from. Absent for a call from a phone.
+        in_trunk_name:
+          type: string
+          description: Name of that SIP trunk at the time of the call.
+        out_trunk_id:
+          type: string
+          description: ID of the SIP trunk that gave the final answer. Absent for a call to a phone.
+        out_trunk_name:
+          type: string
+          description: Name of that SIP trunk at the time of the call.
 
     CallRecordRetention:
       type: object
@@ -2927,9 +3439,8 @@ components:
         result:
           $ref: "#/components/schemas/CallRecordRetention"
 
-    IPSMGWParams:
+    IPSMGWFields:
       type: object
-      additionalProperties: false
       required: [number]
       properties:
         number:
@@ -2940,9 +3451,14 @@ components:
             receive short messages over IP. Empty registers none.
           examples: ["15550000100"]
 
+    IPSMGWParams:
+      allOf:
+        - $ref: "#/components/schemas/IPSMGWFields"
+      unevaluatedProperties: false
+
     IPSMGW:
       allOf:
-        - $ref: "#/components/schemas/IPSMGWParams"
+        - $ref: "#/components/schemas/IPSMGWFields"
         - type: object
           required: [name]
           properties:

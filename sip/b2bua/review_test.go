@@ -361,3 +361,5 @@ func (failing) Answer(*b2bua.Exchange, *ua.Session, []byte) ([]byte, error) {
 }
 
 func (failing) End(*b2bua.Exchange, *ua.Session) {}
+
+func (failing) Dialog(*ua.Session, ua.State) {}

@@ -400,6 +400,8 @@ func (l *Leg) End(ctx context.Context, rp ua.Reply) error {
 	c := ua.Change{Header: rp.Header}
 
 	switch s := l.Session(); {
+	case s != nil && s.ByePending():
+		return nil
 	case s != nil && s.State() == ua.Confirmed:
 		return s.Bye(ctx, c, nil)
 	case !l.outgoing && l.in.Chosen() != nil:
@@ -411,7 +413,9 @@ func (l *Leg) End(ctx context.Context, rp ua.Reply) error {
 
 		return l.Respond(rp)
 	case l.out != nil:
-		return l.out.Cancel(ctx, c)
+		if err := l.out.Cancel(ctx, c); !errors.Is(err, ua.ErrState) {
+			return err
+		}
 	}
 
 	return nil

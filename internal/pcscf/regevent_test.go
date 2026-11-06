@@ -76,7 +76,7 @@ func newRegScene(t *testing.T, opts ...func(*Config)) *regScene {
 
 	cfg := Config{
 		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Port: s.pcscf.Port()}),
+		Proxy:      proxy.New(proxy.Config{Layer: layer, Listeners: []netip.AddrPort{s.pcscf}}),
 		Port:       s.pcscf.Port(),
 		ICSCFPort:  s.icscf.Addr().Port(),
 		HomeDomain: homeDomain,
@@ -114,7 +114,7 @@ func (s *regScene) restart() {
 	_ = s.p.Close(context.Background())
 
 	cfg := s.p.cfg
-	cfg.Proxy = proxy.New(proxy.Config{Layer: cfg.Layer, Port: s.pcscf.Port()})
+	cfg.Proxy = proxy.New(proxy.Config{Layer: cfg.Layer, Listeners: []netip.AddrPort{s.pcscf}})
 
 	p := New(cfg)
 

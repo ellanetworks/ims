@@ -2,6 +2,7 @@ package transaction
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -71,7 +72,7 @@ type Config struct {
 
 	Transport transport.Config
 
-	Aliases []string
+	Aliases map[netip.Addr][]string
 
 	Filter func(m sip.Message) error
 
@@ -97,9 +98,11 @@ type Config struct {
 
 	TraceContext func(f sip.Flow) bool
 
-	SpanAttributes func(f sip.Flow) []attribute.KeyValue
+	SpanAttributes func(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue
 
 	SpanLinks func(req *sip.Request) []trace.SpanContext
+
+	Untraced func(req *sip.Request) bool
 }
 
 type Layer struct {
@@ -109,7 +112,7 @@ type Layer struct {
 	clock    Clock
 	sched    Scheduler
 	network  *Network
-	aliases  map[string]struct{}
+	aliases  map[netip.Addr]map[string]struct{}
 	filter   func(m sip.Message) error
 	respFlow func(req *sip.Request, res *sip.Response) (sip.Flow, bool, error)
 	onDone   func(ctx context.Context, req *sip.Request, res *sip.Response, elapsed time.Duration)
@@ -121,8 +124,9 @@ type Layer struct {
 	tp           trace.TracerProvider
 	tracer       trace.Tracer
 	traceContext func(f sip.Flow) bool
-	attributes   func(f sip.Flow) []attribute.KeyValue
+	attributes   func(req *sip.Request, kind trace.SpanKind) []attribute.KeyValue
 	spanLinks    func(req *sip.Request) []trace.SpanContext
+	skipSpan     func(req *sip.Request) bool
 
 	t1, t2, t4, t100 time.Duration
 
@@ -180,7 +184,7 @@ func New(cfg Config) *Layer {
 		clock:    cfg.Clock,
 		sched:    cfg.Scheduler,
 		network:  cfg.Network,
-		aliases:  make(map[string]struct{}),
+		aliases:  make(map[netip.Addr]map[string]struct{}),
 		filter:   cfg.Filter,
 		respFlow: cfg.ResponseFlow,
 		onDone:   cfg.OnServerDone,
@@ -192,6 +196,7 @@ func New(cfg Config) *Layer {
 		traceContext:  cfg.TraceContext,
 		attributes:    cfg.SpanAttributes,
 		spanLinks:     cfg.SpanLinks,
+		skipSpan:      cfg.Untraced,
 		t1:            cfg.T1,
 		t2:            cfg.T2,
 		t4:            cfg.T4,
@@ -204,8 +209,15 @@ func New(cfg Config) *Layer {
 
 	l.locals.Store(&addrSet{})
 
-	for _, a := range cfg.Aliases {
-		l.aliases[normalizeHost(a)] = struct{}{}
+	for local, names := range cfg.Aliases {
+		local = local.Unmap()
+		if l.aliases[local] == nil {
+			l.aliases[local] = make(map[string]struct{}, len(names))
+		}
+
+		for _, n := range names {
+			l.aliases[local][normalizeHost(n)] = struct{}{}
+		}
 	}
 
 	if l.log == nil {
@@ -282,6 +294,40 @@ func (l *Layer) Listen(ctx context.Context, local netip.AddrPort) (netip.AddrPor
 	l.mu.Unlock()
 
 	return bound, nil
+}
+
+func (l *Layer) ListenTLS(ctx context.Context, local netip.AddrPort, cfg *tls.Config) (netip.AddrPort, error) {
+	bound, err := l.tr.ListenTLS(ctx, local, cfg)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	l.mu.Lock()
+	l.addLocal(bound)
+	l.mu.Unlock()
+
+	return bound, nil
+}
+
+func (l *Layer) ClientTLS(ctx context.Context, local netip.AddrPort) (netip.AddrPort, error) {
+	bound, err := l.tr.ClientTLS(ctx, local)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+
+	l.mu.Lock()
+	l.addLocal(bound)
+	l.mu.Unlock()
+
+	return bound, nil
+}
+
+func (l *Layer) Persist(targets transport.Targets, ka transport.KeepAlive) (func(), error) {
+	if l.tr == nil {
+		return nil, errors.New("sip/transaction: no transport")
+	}
+
+	return l.tr.Persist(targets, ka)
 }
 
 func (l *Layer) Ping(ctx context.Context, f sip.Flow) error {
@@ -413,6 +459,14 @@ func (l *Layer) CloseFlow(f sip.Flow) {
 	}
 
 	l.tr.CloseFlow(f)
+}
+
+func (l *Layer) Authenticated(f sip.Flow) bool {
+	if l.tr == nil || l.inMemory(f.Remote) {
+		return false
+	}
+
+	return l.tr.Authenticated(f)
 }
 
 func (l *Layer) Close() error {
@@ -578,26 +632,25 @@ func (l *Layer) admit(m sip.Message) bool {
 
 	var serr *sip.StatusError
 	if req, ok := m.(*sip.Request); ok && errors.As(err, &serr) {
-		l.reject(req, serr.StatusCode)
+		l.reject(req, serr.StatusCode, serr.Header...)
 	}
 
 	return false
 }
 
 func (l *Layer) handleRequest(req *sip.Request) {
-	var serr *sip.StatusError
+	if !l.admit(req) {
+		return
+	}
 
 	if err := req.Validate(); err != nil {
 		l.log.Debug("invalid SIP request", slog.String("flow", req.Flow.String()), slog.Any("error", err))
 
+		var serr *sip.StatusError
 		if errors.As(err, &serr) {
 			l.reject(req, serr.StatusCode)
 		}
 
-		return
-	}
-
-	if !l.admit(req) {
 		return
 	}
 
@@ -670,12 +723,17 @@ func (l *Layer) answerCancel(tx, target *ServerTransaction) {
 	}
 }
 
-func (l *Layer) reject(req *sip.Request, code int) {
+func (l *Layer) reject(req *sip.Request, code int, fields ...sip.Field) {
 	if req.Method == "ACK" {
 		return
 	}
 
 	res := sip.NewResponse(req, code, "")
+
+	for _, f := range fields {
+		res.Header.Add(f.Name, f.Value)
+	}
+
 	_ = res.Header.SetToTag(sip.NewStatelessTag())
 
 	l.sendStateless(req, res)
@@ -723,7 +781,7 @@ func (l *Layer) isStatelessAck(ack *sip.Request) bool {
 }
 
 func (l *Layer) checkFlow(f sip.Flow) error {
-	if f.Transport != sip.UDP && f.Transport != sip.TCP {
+	if f.Transport != sip.UDP && f.Transport != sip.TCP && f.Transport != sip.TLS {
 		return fmt.Errorf("sip/transaction: %w %q", transport.ErrUnsupportedTransport, f.Transport)
 	}
 
@@ -776,7 +834,7 @@ func (l *Layer) handleResponse(res *sip.Response) {
 }
 
 func (l *Layer) isLocal(via sip.Via) bool {
-	return l.IsLocal(via.Host, via.Port)
+	return l.IsLocal(via.Host, sentByPort(via))
 }
 
 func (l *Layer) IsLocal(host string, port uint16) bool {
@@ -788,17 +846,26 @@ func (l *Layer) IsLocal(host string, port uint16) bool {
 		return true
 	}
 
-	if _, ok := l.aliases[normalizeHost(host)]; !ok {
-		return false
-	}
-
 	for local := range *l.locals.Load() {
-		if local.Port() == port {
+		if local.Port() == port && l.Names(local.Addr(), host) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func (l *Layer) Names(local netip.Addr, host string) bool {
+	local = local.Unmap()
+	h := normalizeHost(host)
+
+	if h == local.String() {
+		return true
+	}
+
+	_, ok := l.aliases[local][h]
+
+	return ok
 }
 
 func sentByKey(via sip.Via) string {
@@ -807,7 +874,7 @@ func sentByKey(via sip.Via) string {
 
 func sentByPort(via sip.Via) uint16 {
 	if via.Port == 0 {
-		return sip.DefaultPort
+		return sip.DefaultPortFor(via.Transport)
 	}
 
 	return via.Port

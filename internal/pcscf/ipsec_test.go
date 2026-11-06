@@ -162,8 +162,8 @@ func newIPsecSceneAt(t *testing.T, addr netip.Addr, policy ipsec.Policy, kernel 
 
 func (s *ipsecScene) newProxy() *proxy.Proxy {
 	return proxy.New(proxy.Config{
-		Layer: s.layer, Port: s.pcscf.Port(), Supported: []string{secAgree},
-		LocalPorts: []uint16{s.ps.Port(), s.pcs[0].Port(), s.pcs[1].Port()},
+		Layer: s.layer, Supported: []string{secAgree},
+		Listeners: []netip.AddrPort{s.pcscf, s.ps, s.pcs[0], s.pcs[1]},
 	})
 }
 

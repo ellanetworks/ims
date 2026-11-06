@@ -39,6 +39,10 @@ type CallRecordResponse struct {
 	InProgress      bool     `json:"in_progress"`
 	Incomplete      bool     `json:"incomplete"`
 	DurationMS      *int64   `json:"duration_ms,omitempty"`
+	InTrunkID       string   `json:"in_trunk_id,omitempty"`
+	InTrunkName     string   `json:"in_trunk_name,omitempty"`
+	OutTrunkID      string   `json:"out_trunk_id,omitempty"`
+	OutTrunkName    string   `json:"out_trunk_name,omitempty"`
 }
 
 type ListCallRecordsResponse struct {
@@ -215,7 +219,8 @@ func callRecordResponse(r db.CallRecord) CallRecordResponse {
 		RequestedParty: r.RequestedParty, CalledParty: r.CalledParty, CalleeIMPI: r.CalleeIMPI,
 		RequestedAt: formatTime(r.RequestedAt), SIPStatus: r.SIPStatus, Outcome: string(r.Outcome),
 		EndedBy: string(r.EndedBy), Alerted: r.Alerted, Media: nonNil(r.Media),
-		InProgress: r.EndedBy == "" && !r.Incomplete, Incomplete: r.Incomplete,
+		InProgress: r.EndedBy == "" && !r.Incomplete, Incomplete: r.Incomplete, InTrunkID: r.InTrunk,
+		InTrunkName: r.InTrunkName, OutTrunkID: r.OutTrunk, OutTrunkName: r.OutTrunkName,
 	}
 
 	if !r.DeliveryStartAt.IsZero() {

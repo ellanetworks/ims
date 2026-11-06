@@ -54,7 +54,7 @@ func TestExpiryTrace(t *testing.T) {
 	a, err := ua.New(ua.Config{
 		Transaction: n.Config(transaction.Config{}),
 		Contact:     sip.Address{URI: sip.URI{Scheme: "sip", Host: addr.Addr().String(), Port: addr.Port()}},
-		Prepare:     func(*sip.Request) error { return nil },
+		Prepare:     func(context.Context, *sip.Request) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
