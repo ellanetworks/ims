@@ -107,6 +107,38 @@ func TestListCallRecordsRejected(t *testing.T) {
 	}
 }
 
+func TestCountCallRecords(t *testing.T) {
+	d, _ := callRecordsDB(t)
+	cfg := Config{CallRecords: d}
+
+	tests := []struct {
+		query string
+		want  CallRecordCounts
+	}{
+		{"", CallRecordCounts{Answered: 1, Busy: 1}},
+		{"?start=" + callT0.Add(time.Hour).Format(time.RFC3339), CallRecordCounts{Busy: 1}},
+		{"?search=alice", CallRecordCounts{Answered: 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			code, body := serve(t, cfg, http.MethodGet, "/api/v1/call-records/counts"+tt.query, "")
+			if code != http.StatusOK {
+				t.Fatalf("status %d: %s", code, body)
+			}
+
+			if got := decodeResult[CallRecordCounts](t, body); got != tt.want {
+				t.Fatalf("counts = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	code, body := serve(t, cfg, http.MethodGet, "/api/v1/call-records/counts?start=yesterday", "")
+	if code != http.StatusBadRequest || decodeError(t, body) != "start must be an RFC 3339 time" {
+		t.Fatalf("bad start = %d %s, want 400", code, body)
+	}
+}
+
 func TestGetCallRecord(t *testing.T) {
 	d, recs := callRecordsDB(t)
 	cfg := Config{CallRecords: d}

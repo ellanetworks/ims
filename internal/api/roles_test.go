@@ -58,6 +58,7 @@ func TestRoles(t *testing.T) {
 		"GET /api/v1/mcptt/calls":                                   all,
 		"GET /api/v1/mcptt/calls/{call_id}":                         all,
 		"GET /api/v1/call-records":                                  all,
+		"GET /api/v1/call-records/counts":                           all,
 		"GET /api/v1/call-records/retention":                        all,
 		"PUT /api/v1/call-records/retention":                        operator,
 		"GET /api/v1/call-records/{id}":                             all,

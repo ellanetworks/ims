@@ -14,7 +14,19 @@ const (
 	Password = "correct horse"
 )
 
-var tokens sync.Map
+var tokens, transports sync.Map
+
+func transport(addr string) *http.Transport {
+	t, _ := transports.LoadOrStore(addr, http.DefaultTransport.(*http.Transport).Clone())
+
+	return t.(*http.Transport)
+}
+
+func CloseIdleConnections(addr string) {
+	if t, ok := transports.Load(addr); ok {
+		t.(*http.Transport).CloseIdleConnections()
+	}
+}
 
 func Client(addr string) *http.Client {
 	return &http.Client{Transport: bearer{addr: addr}}
@@ -65,18 +77,18 @@ func (b bearer) send(r *http.Request, token string) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+token)
 
-	return http.DefaultTransport.RoundTrip(r)
+	return transport(b.addr).RoundTrip(r)
 }
 
 func logIn(ctx context.Context, addr string) (string, error) {
 	credentials, _ := json.Marshal(map[string]string{"email": Email, "password": Password})
 
-	token, status, err := post(ctx, "http://"+addr+"/api/v1/init", credentials)
+	token, status, err := post(ctx, addr, "/api/v1/init", credentials)
 	if err != nil || status == http.StatusCreated {
 		return token, err
 	}
 
-	token, status, err = post(ctx, "http://"+addr+"/api/v1/auth/login", credentials)
+	token, status, err = post(ctx, addr, "/api/v1/auth/login", credentials)
 	if err == nil && status != http.StatusOK {
 		err = fmt.Errorf("login: status %d", status)
 	}
@@ -84,13 +96,13 @@ func logIn(ctx context.Context, addr string) (string, error) {
 	return token, err
 }
 
-func post(ctx context.Context, url string, body []byte) (string, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+func post(ctx context.Context, addr, path string, body []byte) (string, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+path, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, err
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := transport(addr).RoundTrip(req)
 	if err != nil {
 		return "", 0, err
 	}

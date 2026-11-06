@@ -14,6 +14,7 @@ import (
 
 type CallRecords interface {
 	ListCallRecords(ctx context.Context, f db.CallRecordFilter, page, perPage int) ([]db.CallRecord, int, error)
+	CountCallRecords(ctx context.Context, f db.CallRecordFilter) (map[db.CallOutcome]int, error)
 	GetCallRecord(ctx context.Context, id int64) (db.CallRecord, error)
 }
 
@@ -45,6 +46,16 @@ type ListCallRecordsResponse struct {
 	Page       int                  `json:"page"`
 	PerPage    int                  `json:"per_page"`
 	TotalCount int                  `json:"total_count"`
+}
+
+type CallRecordCounts struct {
+	Answered    int `json:"answered"`
+	Cancelled   int `json:"cancelled"`
+	Busy        int `json:"busy"`
+	Rejected    int `json:"rejected"`
+	NoAnswer    int `json:"no_answer"`
+	Unavailable int `json:"unavailable"`
+	Failed      int `json:"failed"`
 }
 
 type CallRecordRetention struct {
@@ -84,6 +95,27 @@ func ListCallRecords(cfg Config) http.Handler {
 		}
 
 		writeResponse(r.Context(), w, resp, http.StatusOK, cfg.Logger)
+	})
+}
+
+func CountCallRecords(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := callRecordFilter(w, r, cfg)
+		if !ok {
+			return
+		}
+
+		counts, err := cfg.CallRecords.CountCallRecords(r.Context(), f)
+		if err != nil {
+			writeError(r.Context(), w, http.StatusInternalServerError, "failed to count call records", err, cfg.Logger)
+			return
+		}
+
+		writeResponse(r.Context(), w, CallRecordCounts{
+			Answered: counts[db.OutcomeAnswered], Cancelled: counts[db.OutcomeCancelled], Busy: counts[db.OutcomeBusy],
+			Rejected: counts[db.OutcomeRejected], NoAnswer: counts[db.OutcomeNoAnswer],
+			Unavailable: counts[db.OutcomeUnavailable], Failed: counts[db.OutcomeFailed],
+		}, http.StatusOK, cfg.Logger)
 	})
 }
 

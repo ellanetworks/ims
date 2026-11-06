@@ -71,6 +71,7 @@ describe("App", () => {
         .getAllByRole("link")
         .map((link) => [link.textContent, link.getAttribute("href")]),
     ).toEqual([
+      ["Dashboard", "/dashboard"],
       ["Cores", "/cores"],
       ["Operator", "/operator"],
       ["Registrations", "/registrations"],
@@ -94,18 +95,18 @@ describe("App", () => {
     expect(bug).toHaveAttribute("target", "_blank");
   });
 
-  it("opens the Cores page by default", async () => {
+  it("opens the Dashboard by default", async () => {
     serve();
     renderAt("/");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+      await screen.findByRole("heading", { level: 1, name: "Dashboard" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Cores" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(document.title).toBe("Cores · Ella IMS");
+    expect(document.title).toBe("Dashboard · Ella IMS");
   });
 
   it("returns to the page asked for before single sign-on", async () => {
@@ -175,13 +176,25 @@ describe("App", () => {
     renderAt("/users");
 
     expect(
-      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+      await screen.findByRole("heading", { level: 1, name: "Dashboard" }),
     ).toBeInTheDocument();
     expect(
       within(screen.getByRole("navigation", { name: "Main" }))
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["Cores", "Operator", "Registrations", "Calls", "Push-to-Talk"]);
+    ).toEqual([
+      "Dashboard",
+      "Cores",
+      "Operator",
+      "Registrations",
+      "Calls",
+      "Push-to-Talk",
+    ]);
+
+    fireEvent.click(screen.getByRole("link", { name: "Cores" }));
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Cores" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("System")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Add Peer" }),

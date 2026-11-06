@@ -89,6 +89,51 @@ A value the IMS did not observe is absent. Times are RFC 3339.
 }
 ```
 
+## Count Call Records
+
+This path returns the number of call records of each outcome. Calls without an outcome yet, still ringing, are left out.
+
+| Method | Path                          |
+| ------ | ----------------------------- |
+| GET    | `/api/v1/call-records/counts` |
+
+### Query Parameters
+
+| Name      | In    | Type | Default | Allowed | Description |
+| --------- | ----- | ---- | ------- | ------- | ----------- |
+| `search`  | query | str  |         |         | Substring of the ICID or of an identity of the caller or the callee. |
+| `start`   | query | str  |         |         | Inclusive lower bound of the request time, RFC 3339. Unbounded when omitted. |
+| `end`     | query | str  |         |         | Exclusive upper bound of the request time, RFC 3339. Unbounded when omitted. |
+| `outcome` | query | str  |         | `answered`, `cancelled`, `busy`, `rejected`, `no_answer`, `unavailable`, `failed` | Outcome to include. Repeatable. |
+
+### Response Fields
+
+| Field         | Type | Description |
+| ------------- | ---- | ----------- |
+| `answered`    | int  | Calls answered, ended or not. |
+| `cancelled`   | int  | Calls the caller cancelled. |
+| `busy`        | int  | Calls to a busy callee. |
+| `rejected`    | int  | Calls the callee declined. |
+| `no_answer`   | int  | Calls that rang without an answer. |
+| `unavailable` | int  | Calls to an unavailable callee. |
+| `failed`      | int  | Calls that failed. |
+
+### Sample Response
+
+```json
+{
+    "result": {
+        "answered": 128,
+        "cancelled": 9,
+        "busy": 4,
+        "rejected": 1,
+        "no_answer": 6,
+        "unavailable": 3,
+        "failed": 2
+    }
+}
+```
+
 ## Get a Call Record
 
 This path returns a specific call record.

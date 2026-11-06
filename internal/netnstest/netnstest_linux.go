@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -62,7 +64,12 @@ func Unavailable(t testing.TB, reason string) {
 type Netns struct {
 	tid  int
 	work chan func()
+
+	mu      sync.Mutex
+	bridges map[string]string
 }
+
+var groups atomic.Uint32
 
 func New(t testing.TB) *Netns {
 	t.Helper()
@@ -200,8 +207,18 @@ func Link(t testing.TB, a, b *Netns, aAddrs, bAddrs []netip.Prefix) {
 func Bridge(t testing.TB, n *Netns, name string, addrs []netip.Prefix) {
 	t.Helper()
 
-	n.IP(t, "link", "add", name, "address", localMAC(t), "type", "bridge")
-	t.Cleanup(func() { n.del(t, name) })
+	group := fmt.Sprint(groups.Add(1))
+
+	n.IP(t, "link", "add", name, "address", localMAC(t), "group", group, "type", "bridge")
+	t.Cleanup(func() { n.delGroup(t, group) })
+
+	n.mu.Lock()
+	if n.bridges == nil {
+		n.bridges = map[string]string{}
+	}
+
+	n.bridges[name] = group
+	n.mu.Unlock()
 
 	n.up(t, name, addrs)
 }
@@ -209,17 +226,24 @@ func Bridge(t testing.TB, n *Netns, name string, addrs []netip.Prefix) {
 func Attach(t testing.TB, n *Netns, bridge, port string, peer *Netns, addrs []netip.Prefix) {
 	t.Helper()
 
-	n.IP(t, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", fmt.Sprint(peer.tid))
-	t.Cleanup(func() { n.del(t, port) })
+	n.mu.Lock()
+	group, ok := n.bridges[bridge]
+	n.mu.Unlock()
+
+	if !ok {
+		t.Fatalf("netnstest: no bridge %s", bridge)
+	}
+
+	n.IP(t, "link", "add", port, "group", group, "type", "veth", "peer", "name", "eth0", "netns", fmt.Sprint(peer.tid))
 
 	n.IP(t, "link", "set", port, "master", bridge)
 	n.up(t, port, nil)
 	peer.up(t, "eth0", addrs)
 }
 
-func (n *Netns) del(t testing.TB, dev string) {
-	if _, err := n.Command("ip", "link", "del", dev); err != nil {
-		t.Logf("delete %s: %v", dev, err)
+func (n *Netns) delGroup(t testing.TB, group string) {
+	if _, err := n.Command("ip", "link", "del", "group", group); err != nil {
+		t.Logf("delete group %s: %v", group, err)
 	}
 }
 

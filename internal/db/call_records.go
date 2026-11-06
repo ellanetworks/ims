@@ -224,6 +224,41 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 	return records, total, nil
 }
 
+func (d *DB) CountCallRecords(ctx context.Context, f CallRecordFilter) (_ map[CallOutcome]int, err error) {
+	defer d.observe(poolRead, &err)()
+
+	where, args := f.where()
+
+	rows, err := d.read.QueryContext(ctx, `SELECT outcome, COUNT(*) FROM call_records WHERE `+where+
+		` AND outcome IS NOT NULL GROUP BY outcome`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("count call records: %w", err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	counts := map[CallOutcome]int{}
+
+	for rows.Next() {
+		var (
+			outcome CallOutcome
+			n       int
+		)
+
+		if err := rows.Scan(&outcome, &n); err != nil {
+			return nil, fmt.Errorf("count call records: %w", err)
+		}
+
+		counts[outcome] = n
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count call records: %w", err)
+	}
+
+	return counts, nil
+}
+
 func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 

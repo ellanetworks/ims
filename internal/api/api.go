@@ -176,6 +176,7 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/mcptt/calls", PermReadMCPTT, mcpttOnly(cfg, ListMCPTTCalls)},
 		{"GET /api/v1/mcptt/calls/{call_id}", PermReadMCPTT, mcpttOnly(cfg, GetMCPTTCall)},
 		{"GET /api/v1/call-records", PermReadCallRecords, ListCallRecords(cfg)},
+		{"GET /api/v1/call-records/counts", PermReadCallRecords, CountCallRecords(cfg)},
 		{"GET /api/v1/call-records/retention", PermReadCallRecordRetention, GetCallRecordRetention(cfg)},
 		{"PUT /api/v1/call-records/retention", PermUpdateCallRecordRetention, UpdateCallRecordRetention(cfg)},
 		{"GET /api/v1/call-records/{id}", PermReadCallRecords, GetCallRecord(cfg)},

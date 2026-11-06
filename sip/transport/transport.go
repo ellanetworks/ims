@@ -111,6 +111,7 @@ type listener struct {
 	local netip.AddrPort
 	udp   *net.UDPConn
 	tcp   *net.TCPListener
+	buf   []byte
 }
 
 func New(cfg Config) *Transport {
@@ -574,7 +575,8 @@ func (t *Transport) Close() error {
 func (t *Transport) readUDP(l *listener) {
 	defer t.wg.Done()
 
-	buf := make([]byte, maxDatagram)
+	l.buf = make([]byte, maxDatagram)
+	buf := l.buf
 
 	var backoff time.Duration
 

@@ -110,6 +110,7 @@ func (n *Net) Await(f func(), limit time.Duration) {
 	}()
 
 	start := n.clock.Elapsed()
+	progress := time.Now()
 
 	for {
 		n.Quiesce()
@@ -118,22 +119,22 @@ func (n *Net) Await(f func(), limit time.Duration) {
 		case <-done:
 			return
 		case <-n.sched.started():
+			progress = time.Now()
 			continue
 		case <-time.After(idle):
 		}
 
-		d, ok := n.clock.Next()
-		if !ok || n.clock.Elapsed()+d-start > limit {
-			break
+		if d, ok := n.clock.Next(); ok && n.clock.Elapsed()+d-start <= limit {
+			n.clock.Advance(d)
+
+			progress = time.Now()
+
+			continue
 		}
 
-		n.clock.Advance(d)
-	}
-
-	select {
-	case <-done:
-	case <-time.After(Timeout):
-		n.t.Fatalf("siptest: a call still waiting after %s of timers and %s:\n%s", limit, Timeout, stacks(false))
+		if time.Since(progress) > Timeout {
+			n.t.Fatalf("siptest: a call still waiting after %s of timers and %s:\n%s", limit, Timeout, stacks(false))
+		}
 	}
 }
 
