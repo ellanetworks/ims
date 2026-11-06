@@ -551,6 +551,7 @@ func TestTrunkProbedAfterCoreRestart(t *testing.T) {
 	c := newCarrier(t, carrierSIP)
 
 	id := s.addTrunk("Carrier", c, false, 3600)
+
 	eventually(t, "the trunk up", func() bool { return s.trunkState(id) == "up" })
 
 	_, since := s.trunkStatus(id)
@@ -660,6 +661,7 @@ func TestTrunkProbedAtStartup(t *testing.T) {
 	c := newCarrier(t, carrierSIP)
 
 	id := s.addTrunk("Carrier", c, false, 3600)
+
 	eventually(t, "the trunk up", func() bool { return s.trunkState(id) == "up" })
 
 	s.restartIMS(false)

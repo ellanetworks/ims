@@ -26,7 +26,7 @@ Besides Ella IMS itself, the I-CSCF and the S-CSCF trust the networks in `sip.tr
 
 Ella IMS accepts requests from a carrier only from its trunk's inbound CIDRs. Carriers are outside the trust domain, unless their trunk is trusted.
 
-With TLS, Ella IMS checks the carrier's certificate. With **TLS** > **Required**, the carrier must also present a certificate.
+With TLS, Ella IMS checks the carrier's certificate on connections it opens to the carrier. With **TLS** > **Required**, it also checks the carrier's certificate on connections the carrier opens.
 
 ## Users of the UI and API
 

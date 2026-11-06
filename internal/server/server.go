@@ -284,7 +284,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.core.Store(c)
 	s.resubscribeMCPTT(ctx)
 	s.resubscribeIPSMGW(ctx)
-	// s.reprobeTrunks()
+	s.reprobeTrunks()
 
 	view := coreView{s}
 
@@ -593,7 +593,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	s.core.Store(c)
 	s.resubscribeMCPTT(ctx)
 	s.resubscribeIPSMGW(ctx)
-	// s.reprobeTrunks()
+	s.reprobeTrunks()
 	s.Logger.InfoContext(ctx, "restarted "+why, c.attrs()...)
 
 	return nil

@@ -92,11 +92,11 @@ type sent struct {
 type fakeSender struct {
 	noTLS   bool
 	unready atomic.Bool
-	mu     sync.Mutex
-	reply  func(ctx context.Context, to sip.Server) (int, error)
-	sent   []sent
-	active int
-	most   int
+	mu      sync.Mutex
+	reply   func(ctx context.Context, to sip.Server) (int, error)
+	sent    []sent
+	active  int
+	most    int
 }
 
 func newFakeSender(code int) *fakeSender {
