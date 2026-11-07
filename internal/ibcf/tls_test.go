@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -105,12 +104,15 @@ func (p *realParty) prepare(_ context.Context, req *sip.Request) error {
 		target = r.URI
 	}
 
+	secure := target.IsSIPS()
+	target.Scheme = "sip"
+
 	tr, dest, err := sip.Destination(target)
 	if err != nil {
 		return err
 	}
 
-	if dest == p.secure {
+	if secure || dest == p.secure {
 		tr = sip.TLS
 	}
 
@@ -304,8 +306,8 @@ func TestTLSOutgoingCA(t *testing.T) {
 				t.Fatalf("carrier got the INVITE over %s from %s", m.Flow.Transport, m.Flow.Remote)
 			}
 
-			if c := values(m, "Contact"); strings.Contains(strings.ToLower(c), "tls") || strings.HasPrefix(c, "<sips:") {
-				t.Errorf("Contact %s", c)
+			if want := "<sips:" + s.ibcf.TLS()[0].String() + ">"; values(m, "Contact") != want {
+				t.Errorf("Contact %s, want %s", values(m, "Contact"), want)
 			}
 
 			_ = in.Accept(sdpOf("answer-1")...)
