@@ -450,7 +450,11 @@ func (b *IBCF) contact(local netip.AddrPort, tr sip.Transport) sip.Address {
 
 func contact(local netip.AddrPort, tr sip.Transport) sip.Address {
 	u := sip.URI{Scheme: "sip", Host: sip.FormatHost(local.Addr()), Port: local.Port()}
-	if tr == sip.TCP || tr == sip.TLS {
+
+	switch tr {
+	case sip.TLS:
+		u.Scheme = "sips"
+	case sip.TCP:
 		u.Params.Set("transport", "tcp")
 	}
 

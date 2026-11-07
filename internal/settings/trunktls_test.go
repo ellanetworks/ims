@@ -275,11 +275,11 @@ func TestParsePin(t *testing.T) {
 	}
 
 	for in, want := range map[string]string{
-		"":                                      "tls.pins must hold PEM certificates or SHA-256 fingerprints",
-		"AB:CD":                                 "tls.pins must hold PEM certificates or SHA-256 fingerprints",
-		formatted + ":00":                       "tls.pins must hold PEM certificates or SHA-256 fingerprints",
-		strings.Replace(formatted, "A", "G", 1): "tls.pins must hold PEM certificates or SHA-256 fingerprints",
-		"-----BEGIN CERTIFICATE-----\nMIIB":     "tls.pins must be PEM-encoded certificates",
+		"":                                  "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		"AB:CD":                             "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		formatted + ":00":                   "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		"G" + formatted[1:]:                 "tls.pins must hold PEM certificates or SHA-256 fingerprints",
+		"-----BEGIN CERTIFICATE-----\nMIIB": "tls.pins must be PEM-encoded certificates",
 		EncodeCertificatesPEM([][]byte{[]byte("not DER")}):   "tls.pins holds a certificate that does not parse",
 		EncodeCertificatesPEM([][]byte{expired.der}):         "tls.pins holds CN=old.telnyx.com, which expired on ",
 		EncodeCertificatesPEM([][]byte{leaf.der, leaf.der}):  "tls.pins must hold one certificate per pin, not 2",
