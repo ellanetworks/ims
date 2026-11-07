@@ -2796,7 +2796,7 @@ components:
             Absent or empty takes the Origin-Host the peer gives.
         address:
           type: string
-          description: An IPv4 or IPv6 address.
+          description: An IPv4 or IPv6 address, or a host name resolved on each connection attempt.
         port:
           type: integer
           minimum: 1

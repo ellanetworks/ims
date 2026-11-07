@@ -4,6 +4,7 @@ This section provides detailed reference material for Ella IMS, from configurati
 
 - [API](api/index.md)
 - [Configuration File](config_file.md)
+- [Environment Variables](environment_variables.md)
 - [Observability](observability.md)
 - [Connectivity](connectivity.md)
 - [Performance](performance.md)

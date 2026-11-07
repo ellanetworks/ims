@@ -21,6 +21,7 @@ import (
 type Config struct {
 	Settings       Settings
 	Diameter       Diameter
+	DiameterLabel  string
 	SIPTrunks      settings.TrunkStates
 	SIP            SIP
 	Registrations  Registrations

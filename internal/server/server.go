@@ -291,6 +291,7 @@ func (s *Server) Start(ctx context.Context) error {
 	apiCfg := api.Config{
 		Settings:       live,
 		Diameter:       view,
+		DiameterLabel:  s.Config.Diameter.HostLabel,
 		SIP:            view,
 		Registrations:  view,
 		Policy:         view,

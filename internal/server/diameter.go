@@ -77,9 +77,9 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 
 	node, err := diameter.New(diameter.Config{
 		Identity: diameter.Identity{
-			OriginHost:      op.DiameterHost(),
+			OriginHost:      op.DiameterHost(cfg.HostLabel),
 			OriginRealm:     op.DiameterRealm(),
-			HostIPAddresses: []netip.Addr{cfg.Address},
+			HostIPAddresses: cfg.Addrs(),
 			ProductName:     productName,
 		},
 		Handler:           newDiameterMux(cxh, rxh, ish),
@@ -103,30 +103,51 @@ func newDiameterNode(cfg config.Diameter, s settings.Settings, handshake time.Du
 // RFC 6733 section 2.1
 // RFC 6733 section 5.6.4
 func listenDiameter(ctx context.Context, cfg config.Diameter, st settings.Settings) ([]diameter.Listener, error) {
-	addr := netip.AddrPortFrom(cfg.Address, uint16(cfg.Port))
+	addrs := cfg.Addrs()
+	port := uint16(cfg.Port)
 
 	var lns []diameter.Listener
 
 	for _, t := range st.Transports() {
-		ln, err := listenDiameterOn(ctx, t, addr)
-		if err != nil {
-			closeListeners(lns)
-			return nil, fmt.Errorf("listen for Diameter over %s on %s: %w", t, addr, err)
+		groups := [][]netip.Addr{addrs}
+
+		if t == settings.TransportTCP {
+			groups = make([][]netip.Addr, len(addrs))
+			for i, a := range addrs {
+				groups[i] = []netip.Addr{a}
+			}
 		}
 
-		lns = append(lns, ln)
+		for _, g := range groups {
+			ln, err := listenDiameterOn(ctx, t, g, port)
+			if err != nil {
+				closeListeners(lns)
+				return nil, fmt.Errorf("listen for Diameter over %s on %s: %w", t, endpoints(g, port), err)
+			}
+
+			lns = append(lns, ln)
+		}
 	}
 
 	return lns, nil
 }
 
+func endpoints(addrs []netip.Addr, port uint16) string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = netip.AddrPortFrom(a, port).String()
+	}
+
+	return strings.Join(out, ", ")
+}
+
 const probeTimeout = 5 * time.Second
 
-func probeSCTP(ctx context.Context, a netip.Addr) error {
+func probeSCTP(ctx context.Context, addrs []netip.Addr) error {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	ln, err := listenDiameterOn(ctx, settings.TransportSCTP, netip.AddrPortFrom(a, 0))
+	ln, err := listenDiameterOn(ctx, settings.TransportSCTP, addrs, 0)
 	if err != nil {
 		return err
 	}
@@ -134,11 +155,16 @@ func probeSCTP(ctx context.Context, a netip.Addr) error {
 	return ln.Close()
 }
 
-func listenDiameterOn(ctx context.Context, t settings.Transport, addr netip.AddrPort) (diameter.Listener, error) {
+func listenDiameterOn(ctx context.Context, t settings.Transport, addrs []netip.Addr, port uint16) (diameter.Listener, error) {
 	if t == settings.TransportSCTP {
+		laddr := &sctp.SCTPAddr{Port: int(port)}
+		for _, a := range addrs {
+			laddr.IPAddrs = append(laddr.IPAddrs, net.IPAddr{IP: a.AsSlice()})
+		}
+
 		var lc sctp.ListenConfig
 
-		ln, err := lc.Listen(ctx, &sctp.SCTPAddr{IPAddrs: []net.IPAddr{{IP: addr.Addr().AsSlice()}}, Port: int(addr.Port())})
+		ln, err := lc.Listen(ctx, laddr)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +174,7 @@ func listenDiameterOn(ctx context.Context, t settings.Transport, addr netip.Addr
 
 	var lc net.ListenConfig
 
-	ln, err := lc.Listen(ctx, "tcp", addr.String())
+	ln, err := lc.Listen(ctx, "tcp", netip.AddrPortFrom(addrs[0], port).String())
 	if err != nil {
 		return nil, err
 	}
@@ -185,15 +211,22 @@ func diameterPeers(st settings.Settings, previous ...settings.Settings) []diamet
 			}
 		}
 
-		out = append(out, diameter.Peer{
+		peer := diameter.Peer{
 			ID:           p.ID,
 			Host:         p.Host,
-			Addresses:    []netip.Addr{p.Address},
 			Transports:   []diameter.Transport{transports[p.Transport]},
 			Applications: apps,
 			Routes:       routes,
 			Dial:         &diameter.Dial{Port: uint16(p.Port)},
-		})
+		}
+
+		if a, err := netip.ParseAddr(p.Address); err == nil {
+			peer.Addresses = []netip.Addr{a}
+		} else {
+			peer.Name = p.Address
+		}
+
+		out = append(out, peer)
 	}
 
 	return out

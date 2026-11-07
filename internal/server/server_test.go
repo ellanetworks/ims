@@ -44,7 +44,7 @@ func testConfig(t *testing.T) testIMS {
 		},
 		Peers: []settings.Peer{{
 			ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org",
-			Address: loopback, Port: unusedPort(t), Transport: settings.TransportTCP,
+			Address: loopback.String(), Port: unusedPort(t), Transport: settings.TransportTCP,
 			Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx},
 		}},
 	}

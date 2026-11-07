@@ -93,6 +93,7 @@ nav:
       - Metrics: reference/api/metrics.md
       - Pprof: reference/api/pprof.md
     - Configuration File: reference/config_file.md
+    - Environment Variables: reference/environment_variables.md
     - Observability: reference/observability.md
     - Connectivity: reference/connectivity.md
     - Performance: reference/performance.md

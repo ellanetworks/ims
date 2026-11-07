@@ -12,6 +12,6 @@ data:
       address: 0.0.0.0
       port: 5020
     sip:
-      addresses: [10.6.0.5]
+      name: sip
     diameter:
-      address: 10.3.0.5
+      name: diameter

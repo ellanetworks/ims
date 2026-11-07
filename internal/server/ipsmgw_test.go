@@ -10,6 +10,7 @@ import (
 	"github.com/ellanetworks/core/diameter/sgd"
 	"github.com/ellanetworks/core/diameter/sh"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip"
@@ -40,7 +41,7 @@ func TestSMSCForward(t *testing.T) {
 	p.ServiceCentres = []string{"15550000000"}
 
 	down := settings.Peer{
-		ID: "down", Host: "down.epc.mnc001.mcc001.3gppnetwork.org", Address: loopback, Port: unusedPort(t),
+		ID: "down", Host: "down.epc.mnc001.mcc001.3gppnetwork.org", Address: loopback.String(), Port: unusedPort(t),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationSGd}, Priority: 1,
 		ServiceCentres: []string{"15550000000"},
 	}
@@ -75,8 +76,12 @@ func TestSMSCForward(t *testing.T) {
 }
 
 // TS 29.328 clause 6.1.2.1
+// TS 29.328 clause 6.5
 func TestShUpdate(t *testing.T) {
-	var got []sh.ProfileUpdateRequest
+	var (
+		got  []sh.ProfileUpdateRequest
+		envs []tgpp.Envelope
+	)
 
 	hss := newFakePeerWithHandler(t, "hss.epc.mnc001.mcc001.3gppnetwork.org", imsRealm,
 		diameter.HandlerFunc(func(_ context.Context, c *diameter.Conn, req *diameter.Message) *diameter.Message {
@@ -86,6 +91,7 @@ func TestShUpdate(t *testing.T) {
 			}
 
 			got = append(got, pur)
+			envs = append(envs, tgpp.ParseEnvelope(req))
 
 			ans, err := sh.NewProfileUpdateAnswer(req, c.LocalIdentity(), sh.ProfileUpdate{Result: tgpp.Result{Code: diameter.ResultSuccess}})
 			if err != nil {
@@ -104,16 +110,32 @@ func TestShUpdate(t *testing.T) {
 	c := shClient{srv}
 	impu, _ := sip.ParseURI("sip:alice@" + imsRealm)
 
-	if err := c.UpdateSMSRegistration(t.Context(), ipsmgw.User{MSISDN: "15551230001", IMPU: impu}, "15550000100"); err != nil {
+	answered, err := c.UpdateSMSRegistration(t.Context(), ipsmgw.User{MSISDN: "15551230001", IMPU: impu}, "15550000100", db.HSS{})
+	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	if err := c.UpdateSMSRegistration(t.Context(), ipsmgw.User{IMPU: impu}, ""); err != nil {
+	if want := (db.HSS{Host: hss.host, Realm: imsRealm}); answered != want {
+		t.Fatalf("register answered by %+v, want %+v", answered, want)
+	}
+
+	if _, err := c.UpdateSMSRegistration(t.Context(), ipsmgw.User{IMPU: impu}, "", answered); err != nil {
 		t.Fatalf("deregister: %v", err)
 	}
 
-	if len(got) != 2 {
+	gone := db.HSS{Host: "gone.ims.mnc001.mcc001.3gppnetwork.org", Realm: imsRealm}
+	if _, err := c.UpdateSMSRegistration(t.Context(), ipsmgw.User{IMPU: impu}, "", gone); err != nil {
+		t.Fatalf("deregister at an unreachable HSS: %v", err)
+	}
+
+	if len(got) != 3 {
 		t.Fatalf("Sh-Updates = %+v", got)
+	}
+
+	for i, want := range []string{"", hss.host, ""} {
+		if envs[i].DestinationHost != want || envs[i].DestinationRealm != imsRealm {
+			t.Fatalf("Sh-Update %d to %q in %q, want %q", i, envs[i].DestinationHost, envs[i].DestinationRealm, want)
+		}
 	}
 
 	for i, want := range []struct {

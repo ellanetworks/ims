@@ -3,7 +3,6 @@ package settings
 import (
 	"context"
 	"errors"
-	"net/netip"
 	"reflect"
 	"slices"
 	"testing"
@@ -110,7 +109,8 @@ func TestDerivedNames(t *testing.T) {
 
 	for _, tt := range []struct{ name, got, want string }{
 		{"home domain", o.HomeDomain(), "ims.mnc410.mcc310.3gppnetwork.org"},
-		{"Diameter host", o.DiameterHost(), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
+		{"Diameter host", o.DiameterHost(""), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
+		{"labelled Diameter host", o.DiameterHost("ims-1"), "ims-1.ims.mnc410.mcc310.3gppnetwork.org"},
 		{"Diameter realm", o.DiameterRealm(), "ims.mnc410.mcc310.3gppnetwork.org"},
 		{"S-CSCF name", o.SCSCFName(5082), "sip:scscf.ims.mnc410.mcc310.3gppnetwork.org:5082"},
 	} {
@@ -226,14 +226,14 @@ func TestLiveKeepsSettingsWhenTheStoreFails(t *testing.T) {
 
 func hss() Peer {
 	return Peer{
-		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: netip.MustParseAddr("10.0.0.10"), Port: 3868,
+		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: "10.0.0.10", Port: 3868,
 		Transport: TransportTCP, Applications: []Application{ApplicationCx}, Priority: DefaultPriority,
 	}
 }
 
 func pcrf() Peer {
 	return Peer{
-		Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Address: netip.MustParseAddr("10.0.0.11"), Port: 3868,
+		Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Address: "10.0.0.11", Port: 3868,
 		Transport: TransportSCTP, Applications: []Application{ApplicationRx}, Priority: DefaultPriority,
 	}
 }
@@ -246,8 +246,12 @@ func TestPeerValidate(t *testing.T) {
 		"host not a domain":   {func(p *Peer) { p.Host = "hss ims" }, "host must be a domain name"},
 		"negative priority":   {func(p *Peer) { p.Priority = -1 }, "priority must be between 0 and 65535"},
 		"high priority":       {func(p *Peer) { p.Priority = 65536 }, "priority must be between 0 and 65535"},
-		"no address":          {func(p *Peer) { p.Address = netip.Addr{} }, "address is required"},
-		"unspecified address": {func(p *Peer) { p.Address = netip.IPv6Unspecified() }, "address must be a specific IPv4 or IPv6 address"},
+		"no address":          {func(p *Peer) { p.Address = "" }, "address is required"},
+		"unspecified address": {func(p *Peer) { p.Address = "::" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"mapped address":      {func(p *Peer) { p.Address = "::ffff:10.0.0.10" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"zoned address":       {func(p *Peer) { p.Address = "fe80::1%eth0" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"invalid host name":   {func(p *Peer) { p.Address = "hss..example.org" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"uppercase host name": {func(p *Peer) { p.Address = "HSS.example.org" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
 		"port out of range":   {func(p *Peer) { p.Port = 70000 }, "port must be between 1 and 65535"},
 		"unknown transport":   {func(p *Peer) { p.Transport = "udp" }, "transport must be tcp or sctp"},
 		"no applications":     {func(p *Peer) { p.Applications = nil }, "applications must list at least one of cx, rx, sh, s6c and sgd"},
@@ -280,6 +284,15 @@ func TestPeerValidate(t *testing.T) {
 		"twice an application": {
 			func(p *Peer) { p.Applications = []Application{ApplicationCx, ApplicationCx} }, "applications lists cx twice",
 		},
+	}
+
+	for _, address := range []string{"10.0.0.10", "2001:db8::10", "hss-0.hss.ims.svc.cluster.local"} {
+		p := hss()
+		p.Address = address
+
+		if err := p.Validate(); err != nil {
+			t.Fatalf("Validate(%s) = %v", address, err)
+		}
 	}
 
 	for name, tt := range tests {
@@ -359,7 +372,7 @@ func TestLivePeers(t *testing.T) {
 	}
 
 	moved := created
-	moved.Address = netip.MustParseAddr("10.0.0.20")
+	moved.Address = "10.0.0.20"
 
 	if err := live.UpdatePeer(t.Context(), moved); err != nil {
 		t.Fatalf("UpdatePeer: %v", err)
@@ -546,7 +559,7 @@ func TestHSSApplicationsDefaultToTheRealmOfCx(t *testing.T) {
 
 func TestSMSCsOfServiceCentre(t *testing.T) {
 	smsc := Peer{
-		ID: "smsc", Host: "smsc.example.org", Address: netip.MustParseAddr("10.0.0.12"), Port: 3868,
+		ID: "smsc", Host: "smsc.example.org", Address: "10.0.0.12", Port: 3868,
 		Transport: TransportSCTP, Applications: []Application{ApplicationSGd}, Priority: 20,
 		ServiceCentres: []string{"15550000000", "15550000001"},
 	}
@@ -671,7 +684,7 @@ func TestSameNode(t *testing.T) {
 	s.Peers = []Peer{hss()}
 
 	for name, edit := range map[string]func(*Settings){
-		"another address":   func(t *Settings) { t.Peers[0].Address = netip.MustParseAddr("10.0.0.20") },
+		"another address":   func(t *Settings) { t.Peers[0].Address = "10.0.0.20" },
 		"another host":      func(t *Settings) { t.Peers[0].Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org" },
 		"another priority":  func(t *Settings) { t.Peers[0].Priority = 1 },
 		"more applications": func(t *Settings) { t.Peers[0].Applications = []Application{ApplicationCx, ApplicationRx} },

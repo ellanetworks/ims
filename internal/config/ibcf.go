@@ -141,7 +141,7 @@ func (c Config) validateIBCF(b IBCF) error {
 
 	taken := []portOn{
 		{"api.port", []netip.Addr{c.API.Address.Unmap()}, c.API.Port},
-		{"diameter.port", []netip.Addr{c.Diameter.Address.Unmap()}, c.Diameter.Port},
+		{"diameter.port", c.Diameter.Addrs(), c.Diameter.Port},
 	}
 
 	if m := c.MCPTT; m != nil {
@@ -205,7 +205,7 @@ func (c Config) ibcfMediaPortsFree(b IBCF) error {
 
 	ports := []portOn{
 		{"api.port", []netip.Addr{c.API.Address.Unmap()}, c.API.Port},
-		{"diameter.port", []netip.Addr{c.Diameter.Address.Unmap()}, c.Diameter.Port},
+		{"diameter.port", c.Diameter.Addrs(), c.Diameter.Port},
 	}
 
 	for _, p := range externalPorts() {

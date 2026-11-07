@@ -147,7 +147,7 @@ export default function DiameterPeerDialog({
         label="Address"
         value={address}
         onChange={(e) => setAddress(e.target.value)}
-        placeholder="192.0.2.1"
+        placeholder="192.0.2.1 or smsc.example.com"
         required
       />
       <FormControl error={errors.applications !== undefined}>

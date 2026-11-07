@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"strings"
 
 	"github.com/ellanetworks/ims/internal/settings"
@@ -72,19 +71,15 @@ func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 
 	for rows.Next() {
 		var (
-			p                  settings.Peer
-			address, transport string
-			applications       string
-			serviceCentres     string
+			p              settings.Peer
+			transport      string
+			applications   string
+			serviceCentres string
 		)
 
-		if err := rows.Scan(&p.ID, &p.Host, &address, &p.Port, &transport, &applications, &p.Priority,
+		if err := rows.Scan(&p.ID, &p.Host, &p.Address, &p.Port, &transport, &applications, &p.Priority,
 			&serviceCentres); err != nil {
 			return nil, fmt.Errorf("get Diameter peers: %w", err)
-		}
-
-		if p.Address, err = netip.ParseAddr(address); err != nil {
-			return nil, fmt.Errorf("get Diameter peer %s: %w", p.ID, err)
 		}
 
 		p.Transport = settings.Transport(transport)
@@ -246,7 +241,7 @@ func peerRow(p settings.Peer) []any {
 	}
 
 	return []any{
-		p.ID, p.Host, p.Address.String(), p.Port, string(p.Transport), strings.Join(apps, ","), p.Priority,
+		p.ID, p.Host, p.Address, p.Port, string(p.Transport), strings.Join(apps, ","), p.Priority,
 		strings.Join(p.ServiceCentres, ","),
 	}
 }

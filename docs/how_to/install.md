@@ -137,8 +137,6 @@ Choose one of the installation methods below.
 
     Edit `ims/k8s/ims-diameter-nad.yaml`: set `master` and the Diameter address.
 
-    Edit `ims/k8s/ims-configmap.yaml`: set `sip.addresses` and `diameter.address` to the same addresses.
-
     Create the namespace:
 
     ```shell

@@ -392,7 +392,9 @@ var migrations = []string{
 		user_key TEXT PRIMARY KEY,
 		msisdn TEXT NOT NULL,
 		impu TEXT NOT NULL,
-		number TEXT NOT NULL CHECK (number != '')
+		number TEXT NOT NULL CHECK (number != ''),
+		hss_host TEXT NOT NULL,
+		hss_realm TEXT NOT NULL
 	);
 	-- The users of the API and the UI (users.go), their sessions in the UI (sessions.go), their API tokens
 	-- (api_tokens.go), and the key that signs the access tokens (jwt_secret.go). Only hashes of the secrets are stored.

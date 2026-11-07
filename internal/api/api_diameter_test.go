@@ -38,6 +38,11 @@ func TestGetDiameterStatus(t *testing.T) {
 	if got := decodeResult[DiameterStatus](t, body); got != want {
 		t.Fatalf("status = %+v, want %+v", got, want)
 	}
+
+	_, body = serve(t, Config{Settings: newFakeSettings(), DiameterLabel: "ims-2"}, http.MethodGet, "/api/v1/diameter", "")
+	if got := decodeResult[DiameterStatus](t, body); got.Host != "ims-2.ims.mnc001.mcc001.3gppnetwork.org" {
+		t.Fatalf("status = %+v, want the host of label ims-2", got)
+	}
 }
 
 func createPeer(t *testing.T, cfg Config, body string) DiameterPeer {
@@ -93,6 +98,17 @@ func TestDiameterPeers(t *testing.T) {
 
 	if got := decodeResult[DiameterPeer](t, body); got.ID != pcrf.ID || got.Address != "10.0.0.12" {
 		t.Fatalf("updated = %+v, want the unmapped address", got)
+	}
+
+	named := strings.Replace(pcrfPeer, "10.0.0.11", " PCRF-0.pcrf.ims.svc.cluster.local ", 1)
+
+	code, body = serve(t, cfg, http.MethodPut, "/api/v1/diameter/peers/"+pcrf.ID, named)
+	if code != http.StatusOK {
+		t.Fatalf("PUT peer = %d: %s", code, body)
+	}
+
+	if got := decodeResult[DiameterPeer](t, body); got.Address != "pcrf-0.pcrf.ims.svc.cluster.local" {
+		t.Fatalf("updated = %+v, want the lowercase host name", got)
 	}
 
 	code, body = serve(t, cfg, http.MethodDelete, "/api/v1/diameter/peers/"+pcrf.ID, "")
@@ -187,7 +203,8 @@ func TestDiameterPeersRejected(t *testing.T) {
 		{"realm", http.MethodPost, "", strings.Replace(hssPeer, `"host"`, `"realm": "example.org", "host"`, 1), 400, "Invalid request data"},
 		{"bad priority", http.MethodPost, "", strings.Replace(pcrfPeer, `"priority": 0`, `"priority": 65536`, 1), 400, "priority must be between 0 and 65535"},
 		{"same host in another case", http.MethodPost, "", strings.NewReplacer(`["cx"]`, `["rx"]`, "hss.ims", "HSS.ims").Replace(hssPeer), 409, "A Diameter peer already has host HSS.ims.mnc001.mcc001.3gppnetwork.org"},
-		{"bad address", http.MethodPost, "", strings.Replace(hssPeer, "10.0.0.10", "hss.example.org", 1), 400, "address must be an IPv4 or IPv6 address"},
+		{"bad address", http.MethodPost, "", strings.Replace(hssPeer, "10.0.0.10", "hss..example.org", 1), 400, "address must be an IPv4 or IPv6 address or a host name"},
+		{"zoned address", http.MethodPost, "", strings.Replace(hssPeer, "10.0.0.10", "fe80::1%eth0", 1), 400, "address must be an IPv4 or IPv6 address or a host name"},
 		{"no address", http.MethodPost, "", strings.Replace(hssPeer, `"10.0.0.10"`, `""`, 1), 400, "address is required"},
 		{"bad transport", http.MethodPost, "", strings.Replace(pcrfPeer, `"sctp"`, `"udp"`, 1), 400, "transport must be tcp or sctp"},
 		{"bad application", http.MethodPost, "", strings.Replace(hssPeer, `["cx"]`, `["gx"]`, 1), 400, `applications must list cx, rx, sh, s6c or sgd, not "gx"`},

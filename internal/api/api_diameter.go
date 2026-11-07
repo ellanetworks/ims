@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
@@ -22,7 +23,7 @@ type DiameterStatus struct {
 func GetDiameterStatus(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		op := cfg.Settings.Get().Operator
-		writeResponse(r.Context(), w, DiameterStatus{Host: op.DiameterHost(), Realm: op.DiameterRealm()}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, DiameterStatus{Host: op.DiameterHost(cfg.DiameterLabel), Realm: op.DiameterRealm()}, http.StatusOK, cfg.Logger)
 	})
 }
 
@@ -146,13 +147,18 @@ func peerSettings(params DiameterPeerParams) (settings.Peer, error) {
 		p.Priority = *params.Priority
 	}
 
-	if params.Address != "" {
-		a, err := netip.ParseAddr(params.Address)
-		if err != nil {
-			return settings.Peer{}, settings.Invalidf("address must be an IPv4 or IPv6 address")
+	if address := strings.TrimSpace(params.Address); address != "" {
+		if a, err := netip.ParseAddr(address); err == nil {
+			address = a.Unmap().String()
+		} else {
+			address = strings.ToLower(address)
 		}
 
-		p.Address = a.Unmap()
+		if !settings.CanonicalPeerAddress(address) {
+			return settings.Peer{}, settings.Invalidf("address must be an IPv4 or IPv6 address or a host name")
+		}
+
+		p.Address = address
 	}
 
 	if p.Port == 0 {
@@ -201,7 +207,7 @@ func peerResponse(p settings.Peer, statuses map[string]diameter.PeerStatus) Diam
 		ID: p.ID,
 		DiameterPeerParams: DiameterPeerParams{
 			Host:           p.Host,
-			Address:        p.Address.String(),
+			Address:        p.Address,
 			Port:           p.Port,
 			Transport:      string(p.Transport),
 			Applications:   []string{},

@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+
+	"github.com/ellanetworks/core/diameter"
 )
 
 type Application string
@@ -46,7 +48,7 @@ const (
 type Peer struct {
 	ID             string
 	Host           string
-	Address        netip.Addr
+	Address        string
 	Port           int
 	Transport      Transport
 	Applications   []Application
@@ -68,10 +70,10 @@ func (p Peer) Validate() error {
 	switch {
 	case p.Host != "" && !isFQDN(p.Host):
 		return invalidf("host must be a domain name")
-	case !p.Address.IsValid():
+	case p.Address == "":
 		return invalidf("address is required")
-	case p.Address.IsUnspecified() || p.Address.Zone() != "":
-		return invalidf("address must be a specific IPv4 or IPv6 address")
+	case !CanonicalPeerAddress(p.Address):
+		return invalidf("address must be a specific IPv4 or IPv6 address or a lowercase host name")
 	case p.Port < 1 || p.Port > 65535:
 		return invalidf("port must be between 1 and 65535")
 	case p.Transport != TransportTCP && p.Transport != TransportSCTP:
@@ -105,6 +107,14 @@ func (p Peer) Validate() error {
 	}
 
 	return nil
+}
+
+func CanonicalPeerAddress(address string) bool {
+	if a, err := netip.ParseAddr(address); err == nil {
+		return a.Zone() == "" && !a.IsUnspecified() && a.Unmap().String() == address
+	}
+
+	return diameter.IsValidHostname(address) && strings.ToLower(address) == address
 }
 
 func (r Route) Validate() error {

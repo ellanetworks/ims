@@ -53,8 +53,36 @@ func (o Operator) HomeDomain() string {
 	return "ims.mnc" + mnc + ".mcc" + o.MCC + ".3gppnetwork.org"
 }
 
-func (o Operator) DiameterHost() string {
-	return "ims." + o.HomeDomain()
+const DefaultDiameterLabel = "ims"
+
+func (o Operator) DiameterHost(label string) string {
+	if label == "" {
+		label = DefaultDiameterLabel
+	}
+
+	return label + "." + o.HomeDomain()
+}
+
+const maxLabelLength = 63
+
+// RFC 1035 section 2.3.1
+// RFC 1123 section 2.1
+func ValidLabel(label string) error {
+	if label == "" || len(label) > maxLabelLength {
+		return fmt.Errorf("must be 1 to %d characters", maxLabelLength)
+	}
+
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return errors.New("must not start or end with a hyphen")
+	}
+
+	for _, c := range label {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return errors.New("must contain only lowercase letters, digits and hyphens")
+		}
+	}
+
+	return nil
 }
 
 func (o Operator) DiameterRealm() string {

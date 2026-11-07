@@ -168,7 +168,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 	}
 
 	peers := []settings.Peer{{
-		ID: "hss", Host: s.hss.Host(), Address: s.hss.Addr().Addr(), Port: int(s.hss.Addr().Port()),
+		ID: "hss", Host: s.hss.Host(), Address: s.hss.Addr().Addr().String(), Port: int(s.hss.Addr().Port()),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	}}
 
@@ -186,7 +186,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		s.pol = &rxPolicy{s: s}
 
 		peers = append(peers, settings.Peer{
-			ID: "pcrf", Host: s.pcrf.Host(), Address: s.pcrf.Addr().Addr(), Port: int(s.pcrf.Addr().Port()),
+			ID: "pcrf", Host: s.pcrf.Host(), Address: s.pcrf.Addr().Addr().String(), Port: int(s.pcrf.Addr().Port()),
 			Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationRx},
 		})
 		routes = []settings.Route{{Application: settings.ApplicationRx, Realm: s.pcrf.Realm()}}

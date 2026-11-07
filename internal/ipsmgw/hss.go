@@ -19,8 +19,9 @@ import (
 // TS 23.204 clause 6.1
 // TS 23.204 clause 6.2
 // TS 29.328 clause 6.1.2.1
+// TS 29.328 clause 6.5
 type HSS interface {
-	UpdateSMSRegistration(ctx context.Context, user User, number string) error
+	UpdateSMSRegistration(ctx context.Context, user User, number string, to db.HSS) (db.HSS, error)
 }
 
 // TS 29.328 clause 7.6 table 7.6.1
@@ -303,8 +304,10 @@ func (h *hssSync) sync(life context.Context, k string, cause trace.SpanContext) 
 	var err error
 	defer func() { tracing.End(span, err) }()
 
+	var hss db.HSS
+
 	rctx, cancel := context.WithTimeout(ctx, hssReqTimeout)
-	err = h.hss.UpdateSMSRegistration(rctx, u, want)
+	hss, err = h.hss.UpdateSMSRegistration(rctx, u, want, told.HSS)
 
 	cancel()
 
@@ -350,7 +353,7 @@ func (h *hssSync) sync(life context.Context, k string, cause trace.SpanContext) 
 		return
 	}
 
-	r := db.IPSMGWHSSRegistration{UserKey: k, MSISDN: u.MSISDN, Number: want}
+	r := db.IPSMGWHSSRegistration{UserKey: k, MSISDN: u.MSISDN, Number: want, HSS: hss}
 	if u.MSISDN == "" {
 		r.IMPU = u.IMPU.String()
 	}
@@ -432,7 +435,7 @@ func (h *hssSync) deregisterAll(ctx context.Context) {
 				u.IMPU, _ = sip.ParseURI(r.IMPU)
 			}
 
-			if err = h.hss.UpdateSMSRegistration(ctx, u, ""); err != nil {
+			if _, err = h.hss.UpdateSMSRegistration(ctx, u, "", r.HSS); err != nil {
 				h.log.WarnContext(ctx, "IP-SM-GW not deregistered at the HSS at shutdown", slog.String("user", r.UserKey),
 					slog.Any("error", err))
 

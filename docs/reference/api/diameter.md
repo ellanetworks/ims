@@ -8,7 +8,7 @@ Diameter peers are the HSSs, SLFs, PCRFs, DRAs, SMSCs, MMEs and SMSFs Ella IMS c
 
 ## Get the Diameter Identity
 
-This path returns the Diameter identity of the IMS, derived from the operator settings.
+This path returns the [Diameter identity](../connectivity.md#diameter-identity) of the node.
 
 | Method | Path               |
 | ------ | ------------------ |
@@ -18,7 +18,7 @@ This path returns the Diameter identity of the IMS, derived from the operator se
 
 | Field   | Type   | Description |
 | ------- | ------ | ----------- |
-| `host`  | string | Origin-Host of the IMS. |
+| `host`  | string | Origin-Host of the node. |
 | `realm` | string | Origin-Realm of the IMS. |
 
 ### Sample Response
@@ -46,7 +46,7 @@ This path returns the list of Diameter peers, in the order they were created in.
 | ----------------------- | ------ | ----------- |
 | `id`                    | string | Peer identifier, a UUIDv7. |
 | `host`                  | string | DiameterIdentity of the peer, which must match the Origin-Host of its capabilities exchange. Empty takes the Origin-Host the peer gives. |
-| `address`               | string | IPv4 or IPv6 address of the peer. |
+| `address`               | string | IPv4 or IPv6 address or host name of the peer. A host name is resolved on each connection attempt. |
 | `port`                  | int    | Port of the peer. |
 | `transport`             | string | `tcp` or `sctp`. |
 | `applications`          | array  | Applications the peer serves: `cx` for an HSS or an SLF, and `sh` and `s6c` for its IP-SM-GW functions; `rx` for a PCRF or a DRA; `sgd` for an SMSC, an MME or an SMSF. |
@@ -155,7 +155,7 @@ This path creates a Diameter peer, which the IMS then connects to.
 | Field             | Type   | Required | Description |
 | ----------------- | ------ | -------- | ----------- |
 | `host`            | string | No       | Domain name. Unique among peers. |
-| `address`         | string | Yes      | Specific IPv4 or IPv6 address. |
+| `address`         | string | Yes      | Specific IPv4 or IPv6 address, or host name. |
 | `port`            | int    | No       | 1–65535. Default `3868`. |
 | `transport`       | string | No       | `tcp` or `sctp`. Default `tcp`. |
 | `applications`    | array  | Yes      | At least one of `cx`, `rx`, `sh`, `s6c` and `sgd`, each once. |

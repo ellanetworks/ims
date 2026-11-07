@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/settings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,6 +25,8 @@ const (
 	IPSMGWPort         = 5100
 	defaultIPsecServer = 5063
 )
+
+const EnvDiameterHostLabel = "IMS_DIAMETER_HOST_LABEL"
 
 var defaultIPsecClients = []int{5064, 5065}
 
@@ -70,6 +73,7 @@ type APITLS struct {
 }
 
 type SIP struct {
+	Name      string       `yaml:"name"`
 	Addresses []netip.Addr `yaml:"addresses"`
 
 	TrustedNetworks []netip.Prefix `yaml:"trusted_networks"`
@@ -134,8 +138,20 @@ type SCSCF struct {
 }
 
 type Diameter struct {
-	Address netip.Addr `yaml:"address"`
-	Port    int        `yaml:"port"`
+	Name      string     `yaml:"name"`
+	Address   netip.Addr `yaml:"address"`
+	Port      int        `yaml:"port"`
+	HostLabel string     `yaml:"host_label"`
+
+	addrs []netip.Addr
+}
+
+func (d Diameter) Addrs() []netip.Addr {
+	if d.Name != "" {
+		return d.addrs
+	}
+
+	return []netip.Addr{d.Address.Unmap()}
 }
 
 func Load(path string) (Config, error) {
@@ -150,6 +166,10 @@ func Load(path string) (Config, error) {
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+
+	if v := os.Getenv(EnvDiameterHostLabel); v != "" {
+		cfg.Diameter.HostLabel = v
 	}
 
 	if cfg.API.Port == 0 {
@@ -174,6 +194,10 @@ func Load(path string) (Config, error) {
 
 	if cfg.SCSCF.Port == 0 {
 		cfg.SCSCF.Port = defaultSCSCFPort
+	}
+
+	if err := cfg.resolveInterfaces(); err != nil {
+		return Config{}, err
 	}
 
 	for i, a := range cfg.SIP.Addresses {
@@ -291,7 +315,7 @@ func (c Config) validateN5(n N5) error {
 		port int
 	}{
 		{"api.port", []netip.Addr{c.API.Address.Unmap()}, c.API.Port},
-		{"diameter.port", []netip.Addr{c.Diameter.Address.Unmap()}, c.Diameter.Port},
+		{"diameter.port", c.Diameter.Addrs(), c.Diameter.Port},
 		{"pcscf.port", c.SIP.Addresses, c.PCSCF.Port},
 		{"pcscf.ipsec.server_port", c.SIP.Addresses, c.PCSCF.IPsec.ServerPort},
 		{"icscf.port", c.SIP.Addresses, c.ICSCF.Port},
@@ -433,7 +457,7 @@ func (c Config) apiSharesSIPAddress() bool {
 
 func (s SIP) validate() error {
 	if len(s.Addresses) == 0 {
-		return errors.New("sip.addresses needs at least one address")
+		return errors.New("sip.name or sip.addresses is required")
 	}
 
 	seen := make(map[netip.Addr]bool, len(s.Addresses))
@@ -467,13 +491,27 @@ func (s SIP) validate() error {
 
 func (d Diameter) validate() error {
 	switch {
-	case !d.Address.IsValid():
-		return errors.New("diameter.address is required")
+	case d.Name == "" && !d.Address.IsValid():
+		return errors.New("diameter.name or diameter.address is required")
 	case d.Address.IsUnspecified():
 		return errors.New("diameter.address must be a specific address, not 0.0.0.0 or ::, since it is advertised to peers")
 	case d.Port < 1 || d.Port > 65535:
 		return fmt.Errorf("diameter.port %d is out of range", d.Port)
 	}
 
+	if d.HostLabel != "" {
+		if err := settings.ValidLabel(d.HostLabel); err != nil {
+			return fmt.Errorf("%s %q %w", hostLabelSource(), d.HostLabel, err)
+		}
+	}
+
 	return nil
+}
+
+func hostLabelSource() string {
+	if os.Getenv(EnvDiameterHostLabel) != "" {
+		return EnvDiameterHostLabel
+	}
+
+	return "diameter.host_label"
 }

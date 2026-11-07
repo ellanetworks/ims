@@ -95,7 +95,7 @@ func checkSettings(ctx context.Context, cfg config.Config, s settings.Settings) 
 	}
 
 	if slices.Contains(s.Transports(), settings.TransportSCTP) {
-		if err := probeSCTP(ctx, cfg.Diameter.Address); err != nil {
+		if err := probeSCTP(ctx, cfg.Diameter.Addrs()); err != nil {
 			return settings.Invalidf("sctp is not available on this host: %v", err)
 		}
 	}

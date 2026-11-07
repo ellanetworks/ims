@@ -20,13 +20,13 @@ In the Ella IMS UI, go to the **Cores** page. Under **SMS over IP**, click the e
 
 Under **Peers**, click **Add Peer**, and enter:
 
-- **Address**: `10.3.0.7`.
+- **Address**: `10.3.0.7`, or the SMSC's host name, e.g. `smsc-0.smsc.ella.svc.cluster.local`.
 - **Roles**: **SGd** only.
 - **Service Centres**: `15550000000`.
 - **Transport**: **SCTP**, for Ella SMSC.
 - **Host**: the SMSC's Diameter identity, e.g. `smsc.node.epc.mnc001.mcc001.3gppnetwork.org` for Ella SMSC.
 
-Click **Add**.
+Click **Add**. For an Ella SMSC cluster, add a peer for each node, with the node's address and host.
 
 ## 3. Let the HSS reach the IP-SM-GW
 
