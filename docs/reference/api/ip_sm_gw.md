@@ -67,7 +67,7 @@ This path sets the IP-SM-GW number. The IP-SM-GW registers the new number at the
 
 ## List SMS Routes
 
-This path returns the SMS routes, ordered by identifier. An SMS route sends the short messages from phones of a service centre address to the Diameter peers of an SMSC.
+This path returns the SMS routes, ordered by identifier. An SMS route sends the short messages from phones of a service centre address to the Diameter peers of its SMS-IWMSC.
 
 | Method | Path                      |
 | ------ | ------------------------- |

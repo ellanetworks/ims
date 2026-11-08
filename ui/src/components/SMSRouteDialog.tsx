@@ -117,7 +117,7 @@ export default function SMSRouteDialog({
         </FormGroup>
         <FormHelperText>
           {peersError ??
-            "Peers with the SGd role and a host. Tried by priority, lowest first."}
+            "The SMS-IWMSC of the service centre: peers with the SGd role and a host. Tried by priority, lowest first."}
         </FormHelperText>
       </FormControl>
     </EditDialog>

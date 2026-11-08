@@ -24,6 +24,8 @@ Ella IMS includes an IP Short Message Gateway (IP-SM-GW), which lets phones send
 
 ## SMS routes
 
-An SMS route maps a service centre address to the Diameter peers of an SMSC. TS 29.338 leaves this mapping to local configuration, and lets requests without a matching mapping go to a node the operator chooses, which is the default route.
+An SMS route maps a service centre address to the SMS-IWMSC that serves it, usually part of the SMSC. TS 29.338 leaves this mapping to local configuration. A route names the SMS-IWMSC by its Diameter host, so its peers need one.
+
+The default route works the same way, for every service centre address no other route has. It cannot hand short messages to a Diameter routing agent to route by realm, another fallback TS 29.338 allows: an SMS-IWMSC behind such an agent needs its own peer.
 
 Routes are separate from peers. A peer is a Diameter connection, shared by every application it serves. A route is a choice of the IP-SM-GW alone. An SMSC's connection appears with the other peers on the **Cores** page; its routes appear on the **SMS over IP** page.

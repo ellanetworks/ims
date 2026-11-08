@@ -196,7 +196,7 @@ export default function SMS() {
       <SectionHeader
         id="ipsmgw-title"
         title="IP-SM-GW"
-        description="The built-in IP-SM-GW. Enter these values in your HSS and SMSC."
+        description="The built-in IP-SM-GW. Enter its name in your HSS, and its Diameter host and realm in your SMSC."
         first
       />
       <QueryAlert query={ipsmgw} subject="IP-SM-GW" />
@@ -219,7 +219,7 @@ export default function SMS() {
           },
           {
             label: "Number",
-            help: "Registered at the HSS for phones that can take SMS over IP.",
+            help: "The IP-SM-GW registers it at the HSS for phones that can take SMS over IP. Enter it in the HSS only if your HSS needs it preconfigured.",
             value: ipsmgw.data && (ipsmgw.data.number || "—"),
             onEdit:
               ipsmgw.data && editable
@@ -246,7 +246,7 @@ export default function SMS() {
       <SectionHeader
         id="sms-hss-title"
         title="HSS"
-        description="Where the IP-SM-GW finds where to deliver short messages."
+        description="Where the IP-SM-GW gets routing information, reports delivery status, and receives the routing requests the HSS forwards."
       >
         <RouteStatus route={s6c} />
       </SectionHeader>
@@ -267,7 +267,7 @@ export default function SMS() {
       <SectionHeader
         id="sms-routes-title"
         title={routes.data ? `Routes (${routes.data.length})` : "Routes"}
-        description="The SMSC each short message from a phone goes to, by the service centre address the phone gives."
+        description="The SMS-IWMSC of your SMSC that each short message from a phone goes to, by the service centre address the phone gives."
       >
         {editable && (
           <Button
