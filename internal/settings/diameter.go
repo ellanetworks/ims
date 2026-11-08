@@ -44,22 +44,28 @@ const (
 
 // RFC 6733 section 2.7
 // RFC 6733 section 5.1
-// TS 29.338 clause 6.3.1
 type Peer struct {
-	ID             string
-	Host           string
-	Address        string
-	Port           int
-	Transport      Transport
-	Applications   []Application
-	Priority       int
-	ServiceCentres []string
+	ID           string
+	Host         string
+	Address      string
+	Port         int
+	Transport    Transport
+	Applications []Application
+	Priority     int
 }
 
 // RFC 6733 section 6.1.6
 type Route struct {
 	Application Application
 	Realm       string
+}
+
+func (p Peer) name() string {
+	if p.Host != "" {
+		return p.Host
+	}
+
+	return p.Address
 }
 
 func (p Peer) Serves(app Application) bool {
@@ -82,19 +88,6 @@ func (p Peer) Validate() error {
 		return invalidf("priority must be between 0 and %d", maxPriority)
 	case len(p.Applications) == 0:
 		return invalidf("applications must list at least one of cx, rx, sh, s6c and sgd")
-	case len(p.ServiceCentres) > 0 && !p.Serves(ApplicationSGd):
-		return invalidf("service_centres need sgd in applications")
-	case len(p.ServiceCentres) > 0 && p.Host == "":
-		return invalidf("service_centres need a host, the Destination-Host of the short messages")
-	}
-
-	for i, sc := range p.ServiceCentres {
-		switch {
-		case !isDigits(sc) || len(sc) > maxE164Digits:
-			return invalidf("service_centres must be E.164 numbers of up to %d digits, not %q", maxE164Digits, sc)
-		case slices.Contains(p.ServiceCentres[:i], sc):
-			return invalidf("service_centres lists %s twice", sc)
-		}
 	}
 
 	for i, a := range p.Applications {
@@ -130,8 +123,7 @@ func (r Route) Validate() error {
 
 func (p Peer) equal(q Peer) bool {
 	return p.ID == q.ID && strings.EqualFold(p.Host, q.Host) && p.Address == q.Address && p.Port == q.Port &&
-		p.Transport == q.Transport && slices.Equal(p.Applications, q.Applications) && p.Priority == q.Priority &&
-		slices.Equal(p.ServiceCentres, q.ServiceCentres)
+		p.Transport == q.Transport && slices.Equal(p.Applications, q.Applications) && p.Priority == q.Priority
 }
 
 // RFC 6733 section 4.3.1
@@ -179,18 +171,6 @@ func (s Settings) Serving(app Application) []Peer {
 	}
 
 	slices.SortStableFunc(out, func(a, b Peer) int { return cmp.Compare(a.Priority, b.Priority) })
-
-	return out
-}
-
-func (s Settings) SMSCs(serviceCentre string) []Peer {
-	var out []Peer
-
-	for _, p := range s.Serving(ApplicationSGd) {
-		if slices.Contains(p.ServiceCentres, serviceCentre) {
-			out = append(out, p)
-		}
-	}
 
 	return out
 }

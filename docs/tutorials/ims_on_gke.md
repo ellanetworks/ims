@@ -4,7 +4,7 @@ description: A hands-on tutorial to run Ella IMS on Google Kubernetes Engine, wi
 
 # Run Ella IMS on GKE
 
-In this tutorial, you run Ella IMS on Google Kubernetes Engine (GKE), with the P-CSCF on a second interface from GKE multi-network, at the fixed address `10.140.0.100` of an internal passthrough load balancer.
+In this tutorial, you run Ella IMS on Google Kubernetes Engine (GKE), with the P-CSCF on a second interface from GKE multi-network, at the fixed address `10.60.0.100` of an internal passthrough load balancer.
 
 You can expect to spend about 30 minutes completing this tutorial.
 
@@ -38,11 +38,11 @@ gcloud compute networks create ims-sip --subnet-mode custom
 gcloud compute networks subnets create ims-sip \
   --network ims-sip \
   --region us-central1 \
-  --range 10.140.0.0/24
+  --range 10.60.0.0/24
 gcloud compute firewall-rules create ims-sip-allow-internal \
   --network ims-sip \
   --allow esp,udp,tcp,icmp \
-  --source-ranges 10.140.0.0/24
+  --source-ranges 10.60.0.0/24
 ```
 
 ## 3. Create the SIP node pool
@@ -55,22 +55,19 @@ gcloud container node-pools create ims-sip \
   --zone us-central1-a \
   --machine-type e2-standard-2 \
   --num-nodes 1 \
+  --image-type UBUNTU_CONTAINERD \
   --additional-node-network network=ims-sip,subnetwork=ims-sip
 ```
 
-!!! note
-
-    Diameter over SCTP needs Ubuntu nodes: add `--image-type UBUNTU_CONTAINERD`. Over TCP, the default image works.
-
 ## 4. Give the P-CSCF a fixed address
 
-Reserve `10.140.0.100` on the SIP subnet, and send all its traffic to the node pool through an internal passthrough Network Load Balancer:
+Reserve `10.60.0.100` on the SIP subnet, and send all its traffic to the node pool through an internal passthrough Network Load Balancer:
 
 ```shell
 gcloud compute addresses create ims-sip-vip \
   --region us-central1 \
   --subnet ims-sip \
-  --addresses 10.140.0.100
+  --addresses 10.60.0.100
 gcloud compute health-checks create tcp ims-sip-hc \
   --region us-central1 \
   --port 5060
@@ -116,7 +113,7 @@ kubectl rollout status statefulset/ella-ims -n ella
 kubectl logs -n ella ella-ims-0 | grep '"ims started"'
 ```
 
-The `sip` entries show `pcscf 10.140.0.100:5060`.
+The `sip` entries show `pcscf 10.60.0.100:5060`.
 
 ```shell
 gcloud compute backend-services get-health ims-sip-bs --region us-central1
@@ -134,9 +131,9 @@ Open `http://localhost:5020`. The **Initialize Ella IMS** page opens. Enter an e
 
 !!! success
 
-    Ella IMS runs on GKE, with the P-CSCF at `10.140.0.100`.
+    Ella IMS runs on GKE, with the P-CSCF at `10.60.0.100`.
 
-To connect phones, route the phones' IP pool in the SIP VPC to your core's N6 (5G) or SGi (4G) address, without NAT. Set the core's P-CSCF address to `10.140.0.100`, and follow [Integrate with Ella Core](../how_to/integrate_with_ella_core.md).
+To connect phones, route the phones' IP pool in the SIP VPC to your core's N6 (5G) or SGi (4G) address, without NAT. Set the core's P-CSCF address to `10.60.0.100`, and follow [Integrate with Ella Core](../how_to/integrate_with_ella_core.md).
 
 ## 8. Clean up
 

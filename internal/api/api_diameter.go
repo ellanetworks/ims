@@ -28,13 +28,12 @@ func GetDiameterStatus(cfg Config) http.Handler {
 }
 
 type DiameterPeerParams struct {
-	Host           string   `json:"host"`
-	Address        string   `json:"address"`
-	Port           int      `json:"port,omitempty"`
-	Transport      string   `json:"transport,omitempty"`
-	Applications   []string `json:"applications"`
-	Priority       *int     `json:"priority,omitempty"`
-	ServiceCentres []string `json:"service_centres,omitempty"`
+	Host         string   `json:"host"`
+	Address      string   `json:"address"`
+	Port         int      `json:"port,omitempty"`
+	Transport    string   `json:"transport,omitempty"`
+	Applications []string `json:"applications"`
+	Priority     *int     `json:"priority,omitempty"`
 }
 
 type DiameterPeer struct {
@@ -173,8 +172,6 @@ func peerSettings(params DiameterPeerParams) (settings.Peer, error) {
 		p.Applications = append(p.Applications, settings.Application(a))
 	}
 
-	p.ServiceCentres = params.ServiceCentres
-
 	return p, nil
 }
 
@@ -206,13 +203,12 @@ func peerResponse(p settings.Peer, statuses map[string]diameter.PeerStatus) Diam
 	resp := DiameterPeer{
 		ID: p.ID,
 		DiameterPeerParams: DiameterPeerParams{
-			Host:           p.Host,
-			Address:        p.Address,
-			Port:           p.Port,
-			Transport:      string(p.Transport),
-			Applications:   []string{},
-			Priority:       &p.Priority,
-			ServiceCentres: p.ServiceCentres,
+			Host:         p.Host,
+			Address:      p.Address,
+			Port:         p.Port,
+			Transport:    string(p.Transport),
+			Applications: []string{},
+			Priority:     &p.Priority,
 		},
 		Status: peerStatus(p, statuses),
 	}

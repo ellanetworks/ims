@@ -203,8 +203,7 @@ var migrations = []string{
 		port INTEGER NOT NULL,
 		transport TEXT NOT NULL,
 		applications TEXT NOT NULL,
-		priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 65535),
-		service_centres TEXT NOT NULL
+		priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 65535)
 	);
 	CREATE UNIQUE INDEX diameter_peers_host ON diameter_peers (host) WHERE host != '';
 	CREATE TABLE diameter_routes (
@@ -370,13 +369,24 @@ var migrations = []string{
 		FOREIGN KEY (user_key, client_id) REFERENCES mcptt_affiliation_clients (user_key, client_id)
 			ON DELETE CASCADE ON UPDATE CASCADE
 	);
-	-- The IP-SM-GW (ipsmgw.go). Its number, empty until set; the registrations of the third-party REGISTERs, each of
+	-- The IP-SM-GW (ipsmgw.go). Its number, empty until set; its SMS routes, each of a service centre, empty for the
+	-- default route, to the Diameter peers of its SMS-IWMSC; the registrations of the third-party REGISTERs, each of
 	-- an IMPU; and the users the HSS has the IP-SM-GW registered for, of the number it was given.
 	CREATE TABLE ip_sm_gw (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		number TEXT NOT NULL
 	);
 	INSERT INTO ip_sm_gw VALUES (1, '');
+	CREATE TABLE sms_routes (
+		id TEXT PRIMARY KEY,
+		service_centre TEXT NOT NULL UNIQUE
+	);
+	CREATE TABLE sms_route_peers (
+		route_id TEXT NOT NULL REFERENCES sms_routes (id) ON DELETE CASCADE,
+		peer_id TEXT NOT NULL REFERENCES diameter_peers (id),
+		PRIMARY KEY (route_id, peer_id)
+	) WITHOUT ROWID;
+	CREATE INDEX sms_route_peers_peer ON sms_route_peers (peer_id);
 	CREATE TABLE ip_sm_gw_registrations (
 		impu_key TEXT PRIMARY KEY,
 		impu TEXT NOT NULL,

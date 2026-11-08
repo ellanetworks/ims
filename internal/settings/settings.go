@@ -21,6 +21,7 @@ type Settings struct {
 	Policy      Policy
 	CallRecords CallRecords
 	IPSMGW      IPSMGW
+	SMSRoutes   []SMSRoute
 	Trunks      []Trunk
 	SIPRoutes   []SIPRoute
 }
@@ -138,6 +139,10 @@ func (s Settings) Validate() error {
 		return err
 	}
 
+	if err := s.validateSMSRoutes(); err != nil {
+		return err
+	}
+
 	return s.validateSIPTrunks()
 }
 
@@ -186,6 +191,9 @@ type Store interface {
 	UpdatePolicy(ctx context.Context, p Policy) error
 	UpdateCallRecords(ctx context.Context, c CallRecords) error
 	UpdateIPSMGW(ctx context.Context, g IPSMGW) error
+	CreateSMSRoute(ctx context.Context, r SMSRoute) error
+	UpdateSMSRoute(ctx context.Context, r SMSRoute) error
+	DeleteSMSRoute(ctx context.Context, id string) error
 	CreateTrunk(ctx context.Context, t Trunk) error
 	UpdateTrunk(ctx context.Context, t Trunk) error
 	DeleteTrunk(ctx context.Context, id string) error
@@ -281,6 +289,10 @@ func (l *Live) DeletePeer(ctx context.Context, id string) error {
 			return kindError{ErrNotFound, "Diameter peer not found"}
 		}
 
+		if err := next.peerInUse(id); err != nil {
+			return err
+		}
+
 		had := len(next.Serving(ApplicationRx)) > 0
 		next.Peers = slices.Delete(slices.Clone(next.Peers), i, i+1)
 
@@ -314,6 +326,49 @@ func (l *Live) UpdateIPSMGW(ctx context.Context, g IPSMGW) error {
 		next.IPSMGW = g
 		return nil
 	}, func() error { return l.store.UpdateIPSMGW(ctx, g) })
+}
+
+func (l *Live) CreateSMSRoute(ctx context.Context, r SMSRoute) (SMSRoute, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return SMSRoute{}, fmt.Errorf("SMS route ID: %w", err)
+	}
+
+	r.ID = id.String()
+
+	err = l.change(ctx, func(next *Settings) error {
+		next.SMSRoutes = append(slices.Clone(next.SMSRoutes), r)
+		return nil
+	}, func() error { return l.store.CreateSMSRoute(ctx, r) })
+
+	return r, err
+}
+
+func (l *Live) UpdateSMSRoute(ctx context.Context, r SMSRoute) error {
+	return l.change(ctx, func(next *Settings) error {
+		i, ok := next.smsRoute(r.ID)
+		if !ok {
+			return kindError{ErrNotFound, "SMS route not found"}
+		}
+
+		next.SMSRoutes = slices.Clone(next.SMSRoutes)
+		next.SMSRoutes[i] = r
+
+		return nil
+	}, func() error { return l.store.UpdateSMSRoute(ctx, r) })
+}
+
+func (l *Live) DeleteSMSRoute(ctx context.Context, id string) error {
+	return l.change(ctx, func(next *Settings) error {
+		i, ok := next.smsRoute(id)
+		if !ok {
+			return kindError{ErrNotFound, "SMS route not found"}
+		}
+
+		next.SMSRoutes = slices.Delete(slices.Clone(next.SMSRoutes), i, i+1)
+
+		return nil
+	}, func() error { return l.store.DeleteSMSRoute(ctx, id) })
 }
 
 func (l *Live) UpdateCallRecords(ctx context.Context, c CallRecords) error {

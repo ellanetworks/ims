@@ -12,7 +12,7 @@ var keptTables = []string{
 	"sip_trunks", "sip_trunk_addresses", "sip_trunk_inbound_cidrs", "sip_trunk_tls_ca_certificates", "sip_trunk_tls_pins",
 	"sip_trunk_tls_identities", "sip_routes", "sip_route_trunks",
 	"mcptt_service_configuration", "mcptt_users", "mcptt_user_impus", "mcptt_groups", "mcptt_group_members",
-	"mcptt_user_implicit_affiliations", "ip_sm_gw",
+	"mcptt_user_implicit_affiliations", "ip_sm_gw", "sms_routes", "sms_route_peers",
 	"users", "user_identities", "api_tokens", "oidc", "oidc_group_roles",
 }
 

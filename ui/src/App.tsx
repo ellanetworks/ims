@@ -11,6 +11,7 @@ import Operator from "@/pages/Operator";
 import Profile from "@/pages/Profile";
 import Registrations from "@/pages/Registrations";
 import SingleSignOn from "@/pages/SingleSignOn";
+import SMS from "@/pages/SMS";
 import SIPTrunks from "@/pages/SIPTrunks";
 import UserDetail from "@/pages/UserDetail";
 import Users from "@/pages/Users";
@@ -45,6 +46,7 @@ const pages: { path: string; element: ReactElement; permission: Permission }[] =
       element: <SIPTrunks />,
       permission: "sip_trunk:read",
     },
+    { path: "/sms", element: <SMS />, permission: "ip_sm_gw:read" },
     { path: "/operator", element: <Operator />, permission: "operator:read" },
     {
       path: "/registrations",

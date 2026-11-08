@@ -39,6 +39,7 @@ import {
   Call as CallIcon,
   PhoneAndroid as PhoneAndroidIcon,
   RecordVoiceOver as RecordVoiceOverIcon,
+  Sms as SmsIcon,
 } from "@mui/icons-material";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import DeploymentIdentity from "@/components/DeploymentIdentity";
@@ -106,6 +107,12 @@ const navItems: NavItem[] = [
     label: "SIP Trunks",
     icon: <LanIcon color="primary" />,
     permission: "sip_trunk:read",
+  },
+  {
+    to: "/sms",
+    label: "SMS over IP",
+    icon: <SmsIcon color="primary" />,
+    permission: "ip_sm_gw:read",
   },
   {
     to: "/operator",

@@ -76,7 +76,6 @@ func TestPeers(t *testing.T) {
 		ID: "0192a000-0000-7000-8000-000000000003", Host: "smsc.example.org",
 		Address: "10.0.0.12", Port: 3868, Transport: settings.TransportSCTP,
 		Applications: []settings.Application{settings.ApplicationSGd}, Priority: 10,
-		ServiceCentres: []string{"15550000000", "15550000001"},
 	}
 
 	for _, p := range []settings.Peer{pcrf, hss, smsc} {

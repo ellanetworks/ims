@@ -34,7 +34,7 @@ patches:
               command:
               - sh
               - -c
-              - ip addr add 10.140.0.100/32 dev eth1 || true; ip addr show eth1
+              - ip addr add 10.60.0.100/32 dev eth1 || true; ip addr show eth1
               securityContext:
                 runAsUser: 0
                 runAsGroup: 0

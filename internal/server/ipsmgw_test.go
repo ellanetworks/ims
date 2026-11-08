@@ -38,14 +38,13 @@ func TestSMSCForward(t *testing.T) {
 
 	cfg := testConfig(t)
 	p := smsc.config("smsc")
-	p.ServiceCentres = []string{"15550000000"}
 
 	down := settings.Peer{
 		ID: "down", Host: "down.epc.mnc001.mcc001.3gppnetwork.org", Address: loopback.String(), Port: unusedPort(t),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationSGd}, Priority: 1,
-		ServiceCentres: []string{"15550000000"},
 	}
 	cfg.Peers = append(cfg.Peers, down, p)
+	cfg.SMSRoutes = []settings.SMSRoute{{ID: "sc", ServiceCentre: "15550000000", Peers: []string{"down", "smsc"}}}
 
 	srv := startIMS(t, cfg)
 	waitOpen(t, srv, "smsc")

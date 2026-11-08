@@ -28,6 +28,7 @@ type testIMS struct {
 
 	Peers          []settings.Peer
 	Routes         []settings.Route
+	SMSRoutes      []settings.SMSRoute
 	Policy         settings.Policy
 	TracerProvider trace.TracerProvider
 }
@@ -76,6 +77,12 @@ func (c testIMS) seed(t *testing.T) {
 
 	for _, r := range c.Routes {
 		if err := d.UpdateRoute(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, r := range c.SMSRoutes {
+		if err := d.CreateSMSRoute(t.Context(), r); err != nil {
 			t.Fatal(err)
 		}
 	}

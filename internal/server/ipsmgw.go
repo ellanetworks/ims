@@ -134,13 +134,7 @@ const smscAttemptTimeout = 10 * time.Second
 type smscClient struct{ s *Server }
 
 func (c smscClient) Any() bool {
-	for _, p := range c.s.settings.Get().Peers {
-		if len(p.ServiceCentres) > 0 {
-			return true
-		}
-	}
-
-	return false
+	return len(c.s.settings.Get().SMSRoutes) > 0
 }
 
 // TS 29.338 clause 6.3.1.1

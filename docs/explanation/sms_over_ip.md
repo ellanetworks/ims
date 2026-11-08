@@ -14,10 +14,16 @@ Ella IMS includes an IP Short Message Gateway (IP-SM-GW), which lets phones send
 ## Sending
 
 1. The phone sends the SMS as a SIP MESSAGE, which reaches the IP-SM-GW through the P-CSCF and the S-CSCF.
-2. The IP-SM-GW forwards it to the SMSC of the phone's service centre address.
+2. The IP-SM-GW forwards it to the SMSC of the SMS route of the phone's service centre address, or of the default route if no route has that address.
 
 ## Receiving
 
 1. While the phone registers with SMS over IP, the IP-SM-GW registers at the HSS for the subscriber.
 2. The HSS then sends the SMSC's routing requests for the subscriber to the IP-SM-GW.
 3. The IP-SM-GW delivers over IMS first, then over NAS through the MME or SMSF.
+
+## SMS routes
+
+An SMS route maps a service centre address to the Diameter peers of an SMSC. TS 29.338 leaves this mapping to local configuration, and lets requests without a matching mapping go to a node the operator chooses, which is the default route.
+
+Routes are separate from peers. A peer is a Diameter connection, shared by every application it serves. A route is a choice of the IP-SM-GW alone. An SMSC's connection appears with the other peers on the **Cores** page; its routes appear on the **SMS over IP** page.
