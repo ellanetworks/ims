@@ -4,7 +4,7 @@ description: A hands-on tutorial to run Ella IMS on Google Kubernetes Engine, wi
 
 # Run Ella IMS on GKE
 
-In this tutorial, you run Ella IMS on Google Kubernetes Engine (GKE). Phones reach the P-CSCF over IPsec, which the pod network drops, so the P-CSCF gets a second interface on its own network, from GKE multi-network. An internal passthrough load balancer gives it a fixed address, `10.140.0.100`, which stays when GKE recreates the node.
+In this tutorial, you run Ella IMS on Google Kubernetes Engine (GKE), with the P-CSCF on a second interface from GKE multi-network, at the fixed address `10.140.0.100` of an internal passthrough load balancer.
 
 You can expect to spend about 30 minutes completing this tutorial.
 
@@ -64,7 +64,7 @@ gcloud container node-pools create ims-sip \
 
 ## 4. Give the P-CSCF a fixed address
 
-The NIC's address changes when GKE recreates the node, and phones learn the P-CSCF address only when they set up their IMS PDU session (5G) or PDN connection (4G). Reserve `10.140.0.100` on the SIP subnet, and send all its traffic to the node pool through an internal passthrough Network Load Balancer, which keeps the addresses as sent:
+Reserve `10.140.0.100` on the SIP subnet, and send all its traffic to the node pool through an internal passthrough Network Load Balancer:
 
 ```shell
 gcloud compute addresses create ims-sip-vip \
@@ -100,8 +100,6 @@ gcloud compute forwarding-rules create ims-sip-fr \
   --backend-service ims-sip-bs
 ```
 
-The health check reaches the P-CSCF on TCP port 5060, so only the node running Ella IMS receives traffic.
-
 ## 5. Deploy Ella IMS
 
 ```shell
@@ -109,12 +107,8 @@ git clone --depth 1 https://github.com/ellanetworks/ims.git
 kubectl create namespace ella
 kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
 kubectl apply -k ims/k8s/examples/gke-netdevice
-kubectl get pods -n ella --watch
+kubectl rollout status statefulset/ella-ims -n ella
 ```
-
-Wait until `ella-ims-0` is `Running`, then press `Ctrl+C`.
-
-The example's init container adds `10.140.0.100` to `eth1`, and Ella IMS's `sip.addresses` is `10.140.0.100`. The `ims-sip` Network routes the health check ranges and the phones' IP pool, `10.46.0.0/16`, through `eth1`.
 
 ## 6. Check the P-CSCF address
 
@@ -142,11 +136,13 @@ Open `http://localhost:5020`. The **Initialize Ella IMS** page opens. Enter an e
 
     Ella IMS runs on GKE, with the P-CSCF at `10.140.0.100`.
 
-To connect phones, the SIP VPC must route the phones' IP pool to your core's N6 (5G) or SGi (4G) address, without NAT. Set the core's P-CSCF address to `10.140.0.100`, and follow [Integrate with Ella Core](../how_to/integrate_with_ella_core.md).
+To connect phones, route the phones' IP pool in the SIP VPC to your core's N6 (5G) or SGi (4G) address, without NAT. Set the core's P-CSCF address to `10.140.0.100`, and follow [Integrate with Ella Core](../how_to/integrate_with_ella_core.md).
 
 ## 8. Clean up
 
 ```shell
+kubectl delete statefulset ella-ims -n ella --wait
+kubectl wait --for=delete pod/ella-ims-0 -n ella --timeout=2m
 kubectl delete -k ims/k8s/examples/gke-netdevice
 kubectl delete pvc -n ella --all
 kubectl wait --for=delete pv --all --timeout=5m

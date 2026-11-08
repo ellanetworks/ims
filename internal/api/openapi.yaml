@@ -2129,13 +2129,7 @@ paths:
       tags: [Backup]
       operationId: backup
       summary: Back up the database
-      description: >-
-        Streams a gzipped tar archive of a consistent copy of the database, with a manifest of its format, schema
-        version and time, and the SHA-256 checksums of both. The archive holds the users and their API tokens, the
-        settings (the single sign-on client secret included), the MCPTT users and groups, and the call records. It
-        leaves out the key that signs access tokens, the single sign-on cookie key, the login sessions, and the
-        runtime state: registrations, bindings, subscriptions, P-CSCF flows, IPsec security associations, MCPTT
-        registrations and affiliations, and IP-SM-GW registrations.
+      description: Returns a gzipped tar archive of the database.
       responses:
         "200":
           description: OK
@@ -2875,7 +2869,7 @@ components:
             Absent or empty takes the Origin-Host the peer gives.
         address:
           type: string
-          description: An IPv4 or IPv6 address, or a host name resolved on each connection attempt.
+          description: An IPv4 or IPv6 address, or a host name.
         port:
           type: integer
           minimum: 1

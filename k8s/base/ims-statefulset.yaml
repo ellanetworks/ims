@@ -37,8 +37,6 @@ spec:
               fieldPath: metadata.name
         - name: IMS_DIAMETER_HOST_LABEL
           value: $(POD_NAME)
-        # The P-CSCF sets up IPsec with the phones in the kernel, which takes
-        # CAP_NET_ADMIN, and root, to which Kubernetes gives added capabilities.
         securityContext:
           runAsUser: 0
           runAsGroup: 0
@@ -47,8 +45,6 @@ spec:
           capabilities:
             drop: ["ALL"]
             add: ["NET_ADMIN"]
-        # Phones reach SIP on eth1's address, with no Service in the path.
-        # Diameter connects out from eth0.
         ports:
         - name: http
           containerPort: 5020

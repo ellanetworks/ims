@@ -1,5 +1,3 @@
-# Ella IMS on one node, with SIP on a Multus macvlan interface, eth1, and
-# Diameter on the pod network.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: ella

@@ -1,29 +1,4 @@
 #!/usr/bin/env bash
-# Smoke test of the Kubernetes manifests in k8s/: deploys k8s/examples/multus/,
-# through the overlay ci/k8s/multus, on a single-node kind cluster, and checks
-# the IMS over its API Service, with phones that register and call over IPsec,
-# and across a restart of the pod and, when PREVIOUS_IMAGE is set, an upgrade.
-# k8s/examples/gke-netdevice/ is linted only: it needs GKE.
-#
-# A privileged container, the core, plays the core network with the load client
-# of internal/loadtest: the HSS and the PCRF over Diameter, and the phones of
-# the IP pool 10.46.0.0/16, whose addresses it takes as its own, as a UPF routes
-# them.
-#
-# The kind node gets a second interface, eth1, on a Docker network, N6,
-# 10.6.0.0/24, the master of the SIP NAD: the NAD is deployed as shipped. The
-# core is 10.6.0.2, the gateway to the IP pool of the NAD. Its Diameter address,
-# 10.3.0.2, is off that network, so the IMS reaches it from the pod network,
-# through the node, which masquerades the connections. This host reaches the
-# API on the IMS's SIP address.
-#
-# Needs docker, kind, kubectl, kubeconform, go, curl, jq and the sctp, esp4 and
-# xfrm_user kernel modules. Environment:
-#   IMAGE           the image under test, in the local Docker (ella-ims:latest)
-#   PREVIOUS_IMAGE  an image to deploy first and upgrade from (none)
-#   N6_NET          the first three octets of the N6 network (10.6.0), to
-#                   change on a host that already has it
-#   KEEP            set to keep the cluster, the core and the network afterwards
 set -euo pipefail
 
 IMAGE="${IMAGE:-ella-ims:latest}"
@@ -34,7 +9,6 @@ NODE="${CLUSTER}-control-plane"
 NETWORK=ims-smoke
 CORE=ims-smoke-core
 N6="${N6_NET:-10.6.0}"
-# The network of the NAD of k8s/examples/multus/.
 SHIPPED_N6=10.6.0
 UE_POOL=10.46.0.0/16
 NS=ella
@@ -42,7 +16,6 @@ NS=ella
 MULTUS_VERSION=v4.3.1
 CNI_PLUGINS_VERSION=v1.9.1
 
-# The phones, and how long they make calls, at one per second.
 SUBS=20
 CALL_SECS=30
 
@@ -82,30 +55,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The IMS's address on its Multus interface, the core's, its Diameter address,
-# and the node's, from which the core sees the IMS's Diameter connections.
 SIP_ADDR="${N6}.5"
 CORE_ADDR="${N6}.2"
 CORE_DIAMETER=10.3.0.2
 NODE_N6_ADDR=""
 API_PORT=5020
 
-# The admin of internal/api/apitest, as which the load client logs in too, and
-# the API token with which this script calls the API, set by log_in.
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD="correct horse"
 TOKEN=""
 
-# The JSON result of an API call, with the API token once there is one.
 api() {
   local auth=()
   [ -z "${TOKEN}" ] || auth=(-H "Authorization: Bearer ${TOKEN}")
   curl -fsS --max-time 10 "${auth[@]}" "http://${SIP_ADDR}:${API_PORT}/api/v1$1" "${@:2}"
 }
 
-# Creates the admin if the IMS has no user yet, logs it in, and creates the
-# API token that api sends from then on. Unlike an access token, it outlives
-# the smoke test.
 log_in() {
   local credentials jwt
   credentials="$(jq -n --arg email "${ADMIN_EMAIL}" --arg password "${ADMIN_PASSWORD}" '{email: $email, password: $password}')"
@@ -122,13 +87,10 @@ node_port() { k get service "$1" -o jsonpath="{.spec.ports[?(@.name==\"$2\")].no
 
 node_ip() { kubectl get node "${NODE}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'; }
 
-# The manifests of the overlay, with the network of this host.
 manifests() {
   kubectl kustomize "${ROOT}/ci/k8s/multus" | sed -e "s/\b${SHIPPED_N6//./\\.}\./${N6}./g"
 }
 
-# Waits for ella-ims-0 to be ready, not being deleted, and another pod than
-# the one of UID $1, if given: the replacement of a deleted pod has its name.
 wait_ready() {
   k rollout status statefulset/ella-ims --timeout=180s
   local deadline=$((SECONDS + 120)) uid deleting ready
@@ -143,7 +105,6 @@ wait_ready() {
   fail "ella-ims-0 did not become ready"
 }
 
-# Waits for the API to answer, through the address and port this host uses.
 wait_api() {
   for _ in $(seq 30); do
     api /status >/dev/null 2>&1 && return 0
@@ -152,7 +113,6 @@ wait_api() {
   fail "the API does not answer at ${SIP_ADDR}:${API_PORT}"
 }
 
-# Checks that the P-CSCF listens on the SIP address.
 check_sip() {
   k logs ella-ims-0 | grep '"msg":"ims started"' | tail -n 1 \
     | jq -e --arg want "pcscf ${SIP_ADDR}:5060" '.sip | index($want)' >/dev/null \
@@ -160,7 +120,6 @@ check_sip() {
   echo "P-CSCF on ${SIP_ADDR}:5060"
 }
 
-# Checks that Diameter listens on the pod's address.
 check_diameter() {
   local pod_ip
   pod_ip="$(k get pod ella-ims-0 -o jsonpath='{.status.podIP}')"
@@ -170,12 +129,10 @@ check_diameter() {
   echo "Diameter on ${pod_ip}:3868"
 }
 
-# Deploys the overlay with the given image, loaded into the cluster as ella-ims:ci.
 deploy() {
   docker tag "$1" ella-ims:ci
   kind load docker-image ella-ims:ci --name "${CLUSTER}"
   manifests | kubectl apply -f -
-  # The tag does not change between deploys, so restart to run the new image.
   local old=""
   if [ "${2:-}" = restart ]; then
     old="$(k get pod ella-ims-0 -o jsonpath='{.metadata.uid}')"
@@ -185,11 +142,8 @@ deploy() {
   wait_api
 }
 
-# The number of call records with the given query.
 calls() { api "/call-records?per_page=1&$1" | jq -er .result.total_count; }
 
-# Registers SUBS phones from the core, has them make calls for CALL_SECS, and
-# checks that they were answered.
 load() {
   local since
   since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -220,7 +174,6 @@ step "Create the cluster"
 if ip -4 route show to match "${N6}.1" | grep -qv '^default'; then
   fail "${N6}.0/24 is already routed on this host; set N6_NET to a free /24"
 fi
-# Docker gives addresses from the upper half only, so those of the IMS and the core stay free.
 docker network create "${NETWORK}" --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" >/dev/null
 kind create cluster --name "${CLUSTER}" --wait 120s
 docker network connect "${NETWORK}" "${NODE}"
@@ -240,9 +193,6 @@ kubectl -n kube-system rollout status daemonset/kube-multus-ds --timeout=180s
 endstep
 
 step "Check the Pod Security of the pod"
-# Only the privileged Pod Security Standard allows NET_ADMIN, which IPsec takes,
-# and root, to which Kubernetes gives it. The pod breaks no other rule of the
-# restricted one.
 kubectl create namespace pss-check >/dev/null
 kubectl label namespace pss-check pod-security.kubernetes.io/enforce=restricted >/dev/null
 violations="$(kubectl kustomize "${ROOT}/k8s/base" \
@@ -256,7 +206,6 @@ endstep
 
 step "Start the core"
 (cd "${ROOT}" && CGO_ENABLED=0 go test -c -o "${WORK}/loadtest.test" ./internal/loadtest)
-# The node's image has the tools the core needs: ip, and a shell.
 node_image="$(docker inspect "${NODE}" -f '{{.Config.Image}}')"
 docker run -d --name "${CORE}" --privileged --network "${NETWORK}" --ip "${N6}.2" --entrypoint sleep "${node_image}" infinity >/dev/null
 docker exec "${CORE}" ip route add local "${UE_POOL}" dev lo
@@ -274,7 +223,6 @@ if [ -n "${PREVIOUS_IMAGE}" ]; then
 
   step "Upgrade to ${IMAGE}"
   deploy "${IMAGE}" restart
-  # The API token is in the database.
   api /users/me >/dev/null || fail "the API token created before the upgrade is gone"
   endstep
 else
@@ -308,8 +256,6 @@ endstep
 
 step "Restart the pod"
 uid="$(k get pod ella-ims-0 -o jsonpath='{.metadata.uid}')"
-# The pod keeps its name, so its logs and exit code are gone once it is
-# replaced: follow them from before the deletion.
 k logs -f ella-ims-0 >"${WORK}/stopped.log" 2>&1 &
 k get pod ella-ims-0 -w -o jsonpath='{.metadata.uid} {.status.containerStatuses[0].state.terminated.exitCode}{"\n"}' \
   >"${WORK}/watch.txt" 2>&1 &
@@ -326,13 +272,9 @@ codes="$(awk -v uid="${uid}" '$1 == uid && NF == 2 { print $2 }' "${WORK}/watch.
 tail -n 3 "${WORK}/stopped.log" | cut -c 1-300
 check_sip
 check_diameter
-# The API token is in the database.
 api /users/me >/dev/null || fail "the API token is gone after the restart"
 endstep
 
-# The IPsec security associations were in the pod's network namespace, gone with
-# it: as after a restart of a P-CSCF, the phones register again (TS 24.229
-# §4.14.2).
 step "Register the phones again, and call"
 load
 endstep

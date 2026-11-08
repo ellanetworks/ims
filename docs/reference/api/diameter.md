@@ -46,7 +46,7 @@ This path returns the list of Diameter peers, in the order they were created in.
 | ----------------------- | ------ | ----------- |
 | `id`                    | string | Peer identifier, a UUIDv7. |
 | `host`                  | string | DiameterIdentity of the peer, which must match the Origin-Host of its capabilities exchange. Empty takes the Origin-Host the peer gives. |
-| `address`               | string | IPv4 or IPv6 address or host name of the peer. A host name is resolved on each connection attempt. |
+| `address`               | string | IPv4 or IPv6 address, or host name, of the peer. |
 | `port`                  | int    | Port of the peer. |
 | `transport`             | string | `tcp` or `sctp`. |
 | `applications`          | array  | Applications the peer serves: `cx` for an HSS or an SLF, and `sh` and `s6c` for its IP-SM-GW functions; `rx` for a PCRF or a DRA; `sgd` for an SMSC, an MME or an SMSF. |

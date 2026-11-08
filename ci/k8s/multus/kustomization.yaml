@@ -1,5 +1,3 @@
-# The manifests of k8s/examples/multus as the smoke test deploys them, with the
-# image it loads, and the API on a NodePort.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

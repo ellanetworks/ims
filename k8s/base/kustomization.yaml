@@ -1,6 +1,3 @@
-# What the examples share: one node, with SIP on the second interface eth1 and
-# Diameter on the pod's eth0. An example gives the pod its eth1:
-# k8s/examples/multus/ or k8s/examples/gke-netdevice/.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

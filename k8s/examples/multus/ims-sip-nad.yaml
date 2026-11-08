@@ -1,5 +1,3 @@
-# The network the phones reach Ella IMS on, through the core's N6 (5G) or SGi
-# (4G) address, 10.6.0.2, which routes the phones' IP pool, 10.46.0.0/16.
 apiVersion: "k8s.cni.cncf.io/v1"
 kind: NetworkAttachmentDefinition
 metadata:

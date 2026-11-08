@@ -4,8 +4,6 @@ description: Step-by-step instructions to upgrade Ella IMS.
 
 # Upgrade
 
-Ella IMS restarts on the new version and keeps its database.
-
 === "Snap"
 
     Refresh the snap:
@@ -37,4 +35,10 @@ Ella IMS restarts on the new version and keeps its database.
         kubectl rollout status statefulset/ella-ims -n ella
         ```
 
-The UI shows the running version in its top bar.
+    3. Open the UI and API on your machine:
+
+        ```shell
+        kubectl port-forward -n ella svc/ella-ims 5020:5020
+        ```
+
+Check the running version in the UI's top bar.

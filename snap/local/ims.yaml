@@ -27,6 +27,5 @@ scscf:
 diameter:
   address: 127.0.0.1
   port: 3868
-  # Optional: the first label of the Diameter host, <host_label>.<home network domain>.
-  # Default ims.
+  # Optional: the first label of the Diameter host.
   # host_label: ims-a
