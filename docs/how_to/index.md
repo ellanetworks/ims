@@ -6,7 +6,6 @@ These how-to guides cover key operations and common tasks in Ella IMS.
 - [Upgrade](upgrade.md)
 - [Integrate with Ella Core](integrate_with_ella_core.md)
 - [Connect a Core at Another Site](connect_a_core_at_another_site.md)
-- [Set the Home Network Domain](set_the_home_network_domain.md)
 - [Integrate with an Application Server](integrate_with_application_server.md)
 - [Configure Single Sign-On](configure_single_sign_on.md)
 - [Manage Single Sign-On Users](manage_single_sign_on_users.md)
