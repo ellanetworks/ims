@@ -3,7 +3,6 @@ package settings
 import (
 	"context"
 	"errors"
-	"net/netip"
 	"reflect"
 	"slices"
 	"testing"
@@ -42,6 +41,12 @@ func (f *fakeStore) UpdatePolicy(_ context.Context, p Policy) error { return f.s
 
 func (f *fakeStore) UpdateCallRecords(_ context.Context, c CallRecords) error { return f.save(c) }
 func (f *fakeStore) UpdateIPSMGW(_ context.Context, g IPSMGW) error           { return f.save(g) }
+
+func (f *fakeStore) CreateSMSRoute(_ context.Context, r SMSRoute) error { return f.save(r) }
+
+func (f *fakeStore) UpdateSMSRoute(_ context.Context, r SMSRoute) error { return f.save(r) }
+
+func (f *fakeStore) DeleteSMSRoute(_ context.Context, id string) error { return f.save(id) }
 
 func (f *fakeStore) CreateTrunk(_ context.Context, t Trunk) error { return f.save(t) }
 
@@ -110,7 +115,8 @@ func TestDerivedNames(t *testing.T) {
 
 	for _, tt := range []struct{ name, got, want string }{
 		{"home domain", o.HomeDomain(), "ims.mnc410.mcc310.3gppnetwork.org"},
-		{"Diameter host", o.DiameterHost(), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
+		{"Diameter host", o.DiameterHost(""), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
+		{"labelled Diameter host", o.DiameterHost("ims-1"), "ims-1.ims.mnc410.mcc310.3gppnetwork.org"},
 		{"Diameter realm", o.DiameterRealm(), "ims.mnc410.mcc310.3gppnetwork.org"},
 		{"S-CSCF name", o.SCSCFName(5082), "sip:scscf.ims.mnc410.mcc310.3gppnetwork.org:5082"},
 	} {
@@ -226,14 +232,14 @@ func TestLiveKeepsSettingsWhenTheStoreFails(t *testing.T) {
 
 func hss() Peer {
 	return Peer{
-		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: netip.MustParseAddr("10.0.0.10"), Port: 3868,
+		Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: "10.0.0.10", Port: 3868,
 		Transport: TransportTCP, Applications: []Application{ApplicationCx}, Priority: DefaultPriority,
 	}
 }
 
 func pcrf() Peer {
 	return Peer{
-		Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Address: netip.MustParseAddr("10.0.0.11"), Port: 3868,
+		Host: "pcrf.epc.mnc001.mcc001.3gppnetwork.org", Address: "10.0.0.11", Port: 3868,
 		Transport: TransportSCTP, Applications: []Application{ApplicationRx}, Priority: DefaultPriority,
 	}
 }
@@ -246,40 +252,28 @@ func TestPeerValidate(t *testing.T) {
 		"host not a domain":   {func(p *Peer) { p.Host = "hss ims" }, "host must be a domain name"},
 		"negative priority":   {func(p *Peer) { p.Priority = -1 }, "priority must be between 0 and 65535"},
 		"high priority":       {func(p *Peer) { p.Priority = 65536 }, "priority must be between 0 and 65535"},
-		"no address":          {func(p *Peer) { p.Address = netip.Addr{} }, "address is required"},
-		"unspecified address": {func(p *Peer) { p.Address = netip.IPv6Unspecified() }, "address must be a specific IPv4 or IPv6 address"},
+		"no address":          {func(p *Peer) { p.Address = "" }, "address is required"},
+		"unspecified address": {func(p *Peer) { p.Address = "::" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"mapped address":      {func(p *Peer) { p.Address = "::ffff:10.0.0.10" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"zoned address":       {func(p *Peer) { p.Address = "fe80::1%eth0" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"invalid host name":   {func(p *Peer) { p.Address = "hss..example.org" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
+		"uppercase host name": {func(p *Peer) { p.Address = "HSS.example.org" }, "address must be a specific IPv4 or IPv6 address or a lowercase host name"},
 		"port out of range":   {func(p *Peer) { p.Port = 70000 }, "port must be between 1 and 65535"},
 		"unknown transport":   {func(p *Peer) { p.Transport = "udp" }, "transport must be tcp or sctp"},
 		"no applications":     {func(p *Peer) { p.Applications = nil }, "applications must list at least one of cx, rx, sh, s6c and sgd"},
 		"unknown application": {func(p *Peer) { p.Applications = []Application{"gx"} }, `applications must list cx, rx, sh, s6c or sgd, not "gx"`},
-		"service centres without sgd": {
-			func(p *Peer) { p.ServiceCentres = []string{"15550000000"} }, "service_centres need sgd in applications",
-		},
-		"service centres without host": {
-			func(p *Peer) {
-				p.Host, p.Applications, p.ServiceCentres = "", []Application{ApplicationSGd}, []string{"15550000000"}
-			},
-			"service_centres need a host, the Destination-Host of the short messages",
-		},
-		"service centre not E.164": {
-			func(p *Peer) { p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"+1555"} },
-			`service_centres must be E.164 numbers of up to 15 digits, not "+1555"`,
-		},
-		"service centre too long": {
-			func(p *Peer) {
-				p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"1234567890123456"}
-			},
-			`service_centres must be E.164 numbers of up to 15 digits, not "1234567890123456"`,
-		},
-		"twice a service centre": {
-			func(p *Peer) {
-				p.Applications, p.ServiceCentres = []Application{ApplicationSGd}, []string{"15550000000", "15550000000"}
-			},
-			"service_centres lists 15550000000 twice",
-		},
 		"twice an application": {
 			func(p *Peer) { p.Applications = []Application{ApplicationCx, ApplicationCx} }, "applications lists cx twice",
 		},
+	}
+
+	for _, address := range []string{"10.0.0.10", "2001:db8::10", "hss-0.hss.ims.svc.cluster.local"} {
+		p := hss()
+		p.Address = address
+
+		if err := p.Validate(); err != nil {
+			t.Fatalf("Validate(%s) = %v", address, err)
+		}
 	}
 
 	for name, tt := range tests {
@@ -359,7 +353,7 @@ func TestLivePeers(t *testing.T) {
 	}
 
 	moved := created
-	moved.Address = netip.MustParseAddr("10.0.0.20")
+	moved.Address = "10.0.0.20"
 
 	if err := live.UpdatePeer(t.Context(), moved); err != nil {
 		t.Fatalf("UpdatePeer: %v", err)
@@ -544,17 +538,26 @@ func TestHSSApplicationsDefaultToTheRealmOfCx(t *testing.T) {
 	}
 }
 
-func TestSMSCsOfServiceCentre(t *testing.T) {
+func smscs() (Peer, Peer) {
 	smsc := Peer{
-		ID: "smsc", Host: "smsc.example.org", Address: netip.MustParseAddr("10.0.0.12"), Port: 3868,
+		ID: "smsc", Host: "smsc.example.org", Address: "10.0.0.12", Port: 3868,
 		Transport: TransportSCTP, Applications: []Application{ApplicationSGd}, Priority: 20,
-		ServiceCentres: []string{"15550000000", "15550000001"},
 	}
 	backup := smsc
-	backup.ID, backup.Host, backup.Priority, backup.ServiceCentres = "backup", "backup.example.org", 10, []string{"15550000001"}
+	backup.ID, backup.Host, backup.Address, backup.Priority = "backup", "backup.example.org", "10.0.0.13", 10
+
+	return smsc, backup
+}
+
+func TestSMSCsOfServiceCentre(t *testing.T) {
+	smsc, backup := smscs()
 
 	s := validSettings()
 	s.Peers = []Peer{hss(), smsc, backup}
+	s.SMSRoutes = []SMSRoute{
+		{ID: "a", ServiceCentre: "15550000001", Peers: []string{"smsc", "backup"}},
+		{ID: "b", ServiceCentre: "15550000000", Peers: []string{"smsc"}},
+	}
 
 	if err := s.Validate(); err != nil {
 		t.Fatalf("Validate = %v", err)
@@ -578,7 +581,124 @@ func TestSMSCsOfServiceCentre(t *testing.T) {
 	}
 
 	if got := s.SMSCs("15559999999"); len(got) != 0 {
-		t.Fatalf("SMSCs of an unknown service centre = %v", got)
+		t.Fatalf("SMSCs of an unknown service centre without a default route = %v", got)
+	}
+
+	s.SMSRoutes = append(s.SMSRoutes, SMSRoute{ID: "c", Peers: []string{"backup"}})
+
+	if got := ids(s.SMSCs("15559999999")); !slices.Equal(got, []string{"backup"}) {
+		t.Fatalf("SMSCs of an unknown service centre = %v, want the default route", got)
+	}
+
+	if got := ids(s.SMSCs("15550000000")); !slices.Equal(got, []string{"smsc"}) {
+		t.Fatalf("SMSCs = %v, want its own route over the default route", got)
+	}
+}
+
+func TestSMSRouteValidate(t *testing.T) {
+	smsc, backup := smscs()
+
+	tests := map[string]struct {
+		edit func(*Settings)
+		want string
+	}{
+		"service centre not E.164": {
+			func(s *Settings) { s.SMSRoutes[0].ServiceCentre = "+1555" },
+			"service_centre must be an E.164 number of up to 15 digits, or empty for the default route",
+		},
+		"service centre too long": {
+			func(s *Settings) { s.SMSRoutes[0].ServiceCentre = "1234567890123456" },
+			"service_centre must be an E.164 number of up to 15 digits, or empty for the default route",
+		},
+		"no peers": {func(s *Settings) { s.SMSRoutes[0].Peers = nil }, "peers must list at least one Diameter peer"},
+		"twice a peer": {
+			func(s *Settings) { s.SMSRoutes[0].Peers = []string{"smsc", "smsc"} }, "peers lists smsc twice",
+		},
+		"unknown peer": {
+			func(s *Settings) { s.SMSRoutes[0].Peers = []string{"nope"} }, "peers lists nope, which is not a Diameter peer",
+		},
+		"peer without sgd": {
+			func(s *Settings) { s.Peers[0].Applications = []Application{ApplicationCx} },
+			"Diameter peer smsc.example.org must serve sgd, as the SMS route of service centre 15550000000 uses it",
+		},
+		"peer without host": {
+			func(s *Settings) { s.Peers[0].Host = "" },
+			"Diameter peer 10.0.0.12 must have a host, as the SMS route of service centre 15550000000 uses it",
+		},
+		"twice a service centre": {
+			func(s *Settings) {
+				s.SMSRoutes = append(s.SMSRoutes, SMSRoute{ID: "b", ServiceCentre: "15550000000", Peers: []string{"backup"}})
+			},
+			"An SMS route already has service centre 15550000000",
+		},
+		"twice the default route": {
+			func(s *Settings) {
+				s.SMSRoutes[0].ServiceCentre = ""
+				s.SMSRoutes = append(s.SMSRoutes, SMSRoute{ID: "b", Peers: []string{"backup"}})
+			},
+			"A default SMS route already exists",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := validSettings()
+			s.Peers = []Peer{smsc, backup}
+			s.SMSRoutes = []SMSRoute{{ID: "a", ServiceCentre: "15550000000", Peers: []string{"smsc"}}}
+			tt.edit(&s)
+
+			if err := s.Validate(); err == nil || err.Error() != tt.want {
+				t.Fatalf("Validate = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLiveSMSRoutes(t *testing.T) {
+	smsc, backup := smscs()
+	initial := validSettings()
+	initial.Peers = []Peer{smsc, backup}
+	store := &fakeStore{}
+	live := NewLive(store, initial, nil)
+
+	route, err := live.CreateSMSRoute(t.Context(), SMSRoute{ServiceCentre: "15550000000", Peers: []string{"smsc"}})
+	if err != nil {
+		t.Fatalf("CreateSMSRoute: %v", err)
+	}
+
+	if route.ID == "" {
+		t.Fatal("CreateSMSRoute gave the route no ID")
+	}
+
+	if err := live.DeletePeer(t.Context(), "smsc"); err == nil ||
+		err.Error() != "Diameter peer smsc.example.org is used by the SMS route of service centre 15550000000" {
+		t.Fatalf("DeletePeer in use = %v", err)
+	}
+
+	route.Peers = []string{"backup"}
+
+	if err := live.UpdateSMSRoute(t.Context(), route); err != nil {
+		t.Fatalf("UpdateSMSRoute: %v", err)
+	}
+
+	if err := live.DeletePeer(t.Context(), "smsc"); err != nil {
+		t.Fatalf("DeletePeer no longer in use: %v", err)
+	}
+
+	if err := live.DeleteSMSRoute(t.Context(), route.ID); err != nil {
+		t.Fatalf("DeleteSMSRoute: %v", err)
+	}
+
+	if err := live.DeleteSMSRoute(t.Context(), route.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second DeleteSMSRoute = %v, want %v", err, ErrNotFound)
+	}
+
+	if err := live.UpdateSMSRoute(t.Context(), route); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateSMSRoute of a deleted route = %v, want %v", err, ErrNotFound)
+	}
+
+	if got := live.Get().SMSRoutes; len(got) != 0 {
+		t.Fatalf("routes = %+v, want none", got)
 	}
 }
 
@@ -671,7 +791,7 @@ func TestSameNode(t *testing.T) {
 	s.Peers = []Peer{hss()}
 
 	for name, edit := range map[string]func(*Settings){
-		"another address":   func(t *Settings) { t.Peers[0].Address = netip.MustParseAddr("10.0.0.20") },
+		"another address":   func(t *Settings) { t.Peers[0].Address = "10.0.0.20" },
 		"another host":      func(t *Settings) { t.Peers[0].Host = "hss2.ims.mnc001.mcc001.3gppnetwork.org" },
 		"another priority":  func(t *Settings) { t.Peers[0].Priority = 1 },
 		"more applications": func(t *Settings) { t.Peers[0].Applications = []Application{ApplicationCx, ApplicationRx} },

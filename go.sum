@@ -7,12 +7,12 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
 github.com/coreos/go-oidc/v3 v3.21.0 h1:wZo4Q9Pum8dYEj0eMUPrqR+kvuGkeUplbLpNCkBqoWM=
 github.com/coreos/go-oidc/v3 v3.21.0/go.mod h1:DYCf24+ncYi+XkIH97GY1+dqoRlbaSI26KVTCI9SrY4=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/ellanetworks/core/diameter v0.0.0-20261029224453-05651a99fe33 h1:P0Va5MXb7R64ic6vayOGK9DPcte+G1A6SVPZxp3F6uc=
-github.com/ellanetworks/core/diameter v0.0.0-20261029224453-05651a99fe33/go.mod h1:gskT7CTW6KQlLge0De8okxdR57vW0mKB60QjQwjS18U=
+github.com/ellanetworks/core/diameter v0.0.0-20261106235918-1d44c8b88d17 h1:GZ/2oVwhIEjKJtIbgMoq7Y5emxCuXtJ64GSbTciWiCY=
+github.com/ellanetworks/core/diameter v0.0.0-20261106235918-1d44c8b88d17/go.mod h1:gskT7CTW6KQlLge0De8okxdR57vW0mKB60QjQwjS18U=
 github.com/ellanetworks/core/nas v0.0.0-20261022122753-8d5c8bdaaf89 h1:PQwyaxlbXNZU2GOSIcjezCVEGvQbx+pbtfJMp9hjpOY=
 github.com/ellanetworks/core/nas v0.0.0-20261022122753-8d5c8bdaaf89/go.mod h1:+m1zZW4SV5qyBNZeVupiMMaP+7eXCd6EcHzHeEY2qsM=
-github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f h1:467mMwOqgbeKZQPV/Jztg1RJFofLhJ5NqJGzT96SUrM=
-github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f/go.mod h1:qttv0gHtCuOunPG/VvNgd4p4RTzj3Q5Gh7g4Rd14MYw=
+github.com/ellanetworks/core/sctp v0.0.0-20261106235918-1d44c8b88d17 h1:V4ceOn8LZFdGkj6wKkc4eZ4th6BWb1rJR+zKqdmwvi0=
+github.com/ellanetworks/core/sctp v0.0.0-20261106235918-1d44c8b88d17/go.mod h1:qttv0gHtCuOunPG/VvNgd4p4RTzj3Q5Gh7g4Rd14MYw=
 github.com/felixge/httpsnoop v1.1.0 h1:3YtUj32ZZkqZtt3sZZsClsymw/QDuVfpNhoA31zeORc=
 github.com/felixge/httpsnoop v1.1.0/go.mod h1:Zqxgdd+1Rkcz8euOqdr7lqgCRJztwr5hp9vDSi5UZCE=
 github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=

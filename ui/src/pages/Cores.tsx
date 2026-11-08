@@ -14,15 +14,16 @@ import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import CopyButton from "@/components/CopyButton";
+import Copyable from "@/components/Copyable";
 import DiameterPeerDialog from "@/components/DiameterPeerDialog";
 import DomainName from "@/components/DomainName";
 import EditPolicyDialog from "@/components/EditPolicyDialog";
-import EditIPSMGWDialog from "@/components/EditIPSMGWDialog";
 import EditRouteDialog from "@/components/EditRouteDialog";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import QueryAlert from "@/components/QueryAlert";
+import { realmRow, RouteStatus } from "@/components/RealmRow";
+import SectionHeader from "@/components/SectionHeader";
 import { useAuth } from "@/contexts/AuthContext";
 import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
 import SettingsTable, { type SettingRow } from "@/components/SettingsTable";
@@ -35,7 +36,6 @@ import {
   listDiameterRoutes,
   peerName,
 } from "@/queries/diameter";
-import { getIPSMGW } from "@/queries/ipsmgw";
 import { getPolicy, type PolicyWithStatus } from "@/queries/policy";
 import { getSIPStatus } from "@/queries/sip";
 import { formatEndpoint, pcscfAddresses } from "@/utils/addresses";
@@ -57,48 +57,15 @@ const gridSx = {
   },
 };
 
-function Copyable({ value, label }: { value: string; label: string }) {
-  return (
-    <Stack direction="row" sx={{ alignItems: "center", gap: 0.5 }}>
-      <span>
-        <DomainName name={value} />
-      </span>
-      <CopyButton value={value} label={label} />
-    </Stack>
-  );
-}
-
 // TS 24.229 clause 9.2.1
 // RFC 3261 section 19.1.2
 const SIP_PORT = 5060;
 
-const routeHelp: Record<DiameterRoute["application"], string> = {
+const routeHelp: Record<"cx" | "rx" | "sh", string> = {
   cx: "The realm of your HSS, where Cx requests go.",
   rx: "The realm of your PCRF, where Rx requests go.",
-  sh: "The realm of your HSS, where the IP-SM-GW's Sh requests go.",
-  s6c: "The realm of your HSS, where the IP-SM-GW's S6c requests go.",
+  sh: "The realm of your HSS, where the Sh requests of this IMS's application servers go.",
 };
-
-const defaultRealmLabel = (application: DiameterRoute["application"]) =>
-  application === "sh" || application === "s6c" ? "HSS realm" : "home domain";
-
-const routeState = (route: DiameterRoute | undefined) =>
-  route?.peers.find((p) => p.status.state === "open")?.status.state ??
-  route?.peers[0]?.status.state;
-
-function routeStatus(route: DiameterRoute | undefined): ReactNode {
-  if (!route) return null;
-  const state = routeState(route);
-  return state ? (
-    <PeerStateChip state={state} />
-  ) : (
-    <Chip
-      label={`no ${applicationLabels[route.application]} peer`}
-      color="error"
-      size="small"
-    />
-  );
-}
 
 function policyStatus(
   policy: PolicyWithStatus,
@@ -110,7 +77,9 @@ function policyStatus(
 
   switch (policy.interface) {
     case "rx":
-      return routeStatus(routes?.find((r) => r.application === "rx"));
+      return (
+        <RouteStatus route={routes?.find((r) => r.application === "rx")} />
+      );
     case "n5": {
       const last = policy.status.last;
       if (!last) return null;
@@ -129,37 +98,6 @@ function policyStatus(
   }
 }
 
-function SectionHeader({
-  id,
-  title,
-  description,
-  first,
-  children,
-}: {
-  id: string;
-  title: string;
-  description: string;
-  first?: boolean;
-  children?: ReactNode;
-}) {
-  return (
-    <Box sx={{ mt: first ? 0 : 4, mb: 2 }}>
-      <Stack
-        direction="row"
-        sx={{ alignItems: "center", justifyContent: "space-between", gap: 2 }}
-      >
-        <Typography id={id} variant="h6" component="h2">
-          {title}
-        </Typography>
-        {children}
-      </Stack>
-      <Typography variant="body2" color="text.secondary">
-        {description}
-      </Typography>
-    </Box>
-  );
-}
-
 export default function Cores() {
   const queryClient = useQueryClient();
   const { showSnackbar } = useSnackbar();
@@ -171,7 +109,6 @@ export default function Cores() {
   const [deleting, setDeleting] = useState<DiameterPeer | null>(null);
   const [editingRoute, setEditingRoute] = useState<DiameterRoute | null>(null);
   const [editingPolicy, setEditingPolicy] = useState(false);
-  const [editingIPSMGW, setEditingIPSMGW] = useState(false);
 
   const sip = useQuery({ queryKey: ["sip"], queryFn: getSIPStatus });
   const identity = useQuery({
@@ -193,7 +130,6 @@ export default function Cores() {
     queryFn: getPolicy,
     refetchInterval: REFRESH_MS,
   });
-  const ipsmgw = useQuery({ queryKey: ["ip-sm-gw"], queryFn: getIPSMGW });
 
   const deletion = useMutation({
     mutationFn: (peer: DiameterPeer) => deleteDiameterPeer(peer.id),
@@ -291,26 +227,13 @@ export default function Cores() {
   const route = (application: DiameterRoute["application"]) =>
     routes.data?.find((r) => r.application === application);
 
-  const realmRow = (application: DiameterRoute["application"]): SettingRow => {
-    const r = route(application);
-    return {
-      label: `${applicationLabels[application]} Realm`,
-      help: routeHelp[application],
-      value: r && (
-        <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
-          <DomainName name={r.destination_realm} />
-          {r.realm === "" && (
-            <Chip
-              label={defaultRealmLabel(application)}
-              size="small"
-              variant="outlined"
-            />
-          )}
-        </Stack>
-      ),
-      onEdit: r && canDiameter ? () => setEditingRoute(r) : undefined,
-    };
-  };
+  const realm = (application: "cx" | "rx" | "sh"): SettingRow =>
+    realmRow(
+      route(application),
+      application,
+      routeHelp[application],
+      canDiameter ? setEditingRoute : undefined,
+    );
 
   const imsRows: SettingRow[] = [
     {
@@ -342,7 +265,7 @@ export default function Cores() {
     },
     {
       label: "Diameter Host",
-      help: "This IMS's Diameter name. Set by the Operator ID.",
+      help: "This IMS's Diameter name: its host label, then the home network domain. Set the label with diameter.host_label in the configuration file. Default ims.",
       value: identity.data && (
         <Copyable value={identity.data.host} label="Diameter Host" />
       ),
@@ -376,7 +299,7 @@ export default function Cores() {
     },
   ];
   if (policy.data?.interface === "rx") {
-    policyRows.push(realmRow("rx"));
+    policyRows.push(realm("rx"));
   }
   if (policy.data?.interface === "n5") {
     policyRows.push({
@@ -413,13 +336,13 @@ export default function Cores() {
         title="HSS"
         description="Where the IMS authenticates phones and gets their subscriber profiles."
       >
-        {routeStatus(route("cx"))}
+        <RouteStatus route={route("cx")} />
       </SectionHeader>
       <QueryAlert query={routes} subject="Diameter routes" />
       <SettingsTable
         label="HSS"
         loading={routes.isPending}
-        rows={[realmRow("cx"), realmRow("sh"), realmRow("s6c")]}
+        rows={[realm("cx"), realm("sh")]}
       />
 
       <SectionHeader
@@ -442,43 +365,9 @@ export default function Cores() {
       />
 
       <SectionHeader
-        id="sms-title"
-        title="SMS over IP"
-        description="The built-in IP-SM-GW, which carries SMS between phones on IMS and your SMSC."
-      />
-      <QueryAlert query={ipsmgw} subject="IP-SM-GW" />
-      {ipsmgw.data?.number === "" && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          No IP-SM-GW number: phones get no SMS over IP.
-        </Alert>
-      )}
-      <SettingsTable
-        label="SMS over IP"
-        loading={ipsmgw.isPending}
-        rows={[
-          {
-            label: "IP-SM-GW Name",
-            help: "The application server of your iFCs for SMS over IP.",
-            value: ipsmgw.data && (
-              <Copyable value={ipsmgw.data.name} label="IP-SM-GW Name" />
-            ),
-          },
-          {
-            label: "IP-SM-GW Number",
-            help: "Registered at the HSS for phones that can take SMS over IP.",
-            value: ipsmgw.data && (ipsmgw.data.number || "—"),
-            onEdit:
-              ipsmgw.data && auth.can("ip_sm_gw:update")
-                ? () => setEditingIPSMGW(true)
-                : undefined,
-          },
-        ]}
-      />
-
-      <SectionHeader
         id="peers-title"
         title={peers.data ? `Peers (${peers.data.length})` : "Peers"}
-        description="The Diameter connections to your HSS, PCRF and SMSC."
+        description="The Diameter connections to your HSS, PCRF, SMSC, MME and SMSF."
       >
         {canDiameter && (
           <Button
@@ -533,12 +422,6 @@ export default function Cores() {
           route={editingRoute}
           homeDomain={identity.data?.realm ?? ""}
           onClose={() => setEditingRoute(null)}
-        />
-      )}
-      {editingIPSMGW && ipsmgw.data && (
-        <EditIPSMGWDialog
-          ipsmgw={ipsmgw.data}
-          onClose={() => setEditingIPSMGW(false)}
         />
       )}
       {editingPolicy && policy.data && (

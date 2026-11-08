@@ -37,9 +37,8 @@ func TestShortMessageSubmitIsInItsTrace(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.SIP.Addresses = []netip.Addr{loopback}
-	p := smsc.config("smsc")
-	p.ServiceCentres = []string{"15550000000"}
-	cfg.Peers = append(cfg.Peers, p)
+	cfg.Peers = append(cfg.Peers, smsc.config("smsc"))
+	cfg.SMSRoutes = []settings.SMSRoute{{ID: "sc", ServiceCentre: "15550000000", Peers: []string{"smsc"}}}
 	cfg.TracerProvider = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
 
 	srv := startIMS(t, cfg)

@@ -44,16 +44,46 @@ It answers `204 No Content`.
 
 ## Check Readiness
 
-This path returns whether the IMS can serve requests: its database answers, and it is not shutting down. It takes no token.
+This path returns whether the IMS can serve requests, and the result of each check. It takes no token.
 
 | Method | Path             |
 | ------ | ---------------- |
 | GET    | `/api/v1/readyz` |
 
-It answers `204 No Content` when ready, and `503 Service Unavailable` otherwise:
+### Checks
+
+| Name       | Passes when |
+| ---------- | ----------- |
+| `shutdown` | The IMS is not stopping. |
+| `database` | The database answers. |
+
+### Response Fields
+
+| Field             | Type    | Description |
+| ----------------- | ------- | ----------- |
+| `ready`           | boolean | Whether every check passes. |
+| `checks`          | array   | The checks, in order. |
+| `checks[].name`   | string  | Name of the check. |
+| `checks[].ok`     | boolean | Whether it passes. |
+| `checks[].detail` | string  | Why it fails. Empty when it passes. |
+
+### Response Codes
+
+| Code  | Description |
+| ----- | ----------- |
+| `200` | Every check passes. |
+| `503` | A check fails. |
+
+### Sample Response
 
 ```json
 {
-    "error": "Not ready"
+    "result": {
+        "ready": false,
+        "checks": [
+            {"name": "shutdown", "ok": false, "detail": "the IMS is shutting down"},
+            {"name": "database", "ok": true, "detail": ""}
+        ]
+    }
 }
 ```
