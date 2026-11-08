@@ -171,9 +171,7 @@ func TestForwardNonInvite(t *testing.T) {
 		reply(t, s.callee, fwd, f, 202)
 		wantResponse(t, s.caller, 202)
 
-		if n := s.r.p.Pending(); n != 0 {
-			t.Errorf("%d pending contexts after the final response", n)
-		}
+		wantNoPending(t, s.r.p)
 
 		s.caller.RecvNone(quiet)
 	})

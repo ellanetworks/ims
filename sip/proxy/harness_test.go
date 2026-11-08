@@ -263,6 +263,20 @@ func wantResponse(t *testing.T, s *siptest.Socket, code int) *sip.Response {
 	return res
 }
 
+func wantNoPending(t *testing.T, p *proxy.Proxy) {
+	t.Helper()
+
+	deadline := time.Now().Add(siptest.Timeout)
+
+	for p.Pending() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pending contexts after the final response", p.Pending())
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func reply(t *testing.T, s *siptest.Socket, req *sip.Request, f sip.Flow, code int, extra ...string) {
 	t.Helper()
 
