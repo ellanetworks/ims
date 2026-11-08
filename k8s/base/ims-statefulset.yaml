@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/instance: ella-ims
         app.kubernetes.io/part-of: ella
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 37
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:

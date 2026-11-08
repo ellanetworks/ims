@@ -1,6 +1,8 @@
 # The network the phones reach Ella IMS on: the subnet ims-sip of the VPC
 # ims-sip, whose routes take the phones' IP pool, 10.46.0.0/16, to the core's
-# N6 (5G) or SGi (4G) address.
+# N6 (5G) or SGi (4G) address. 35.191.0.0/16 and 130.211.0.0/22 are Google
+# Cloud's health check ranges: the pod answers the load balancer's health
+# checks on eth1, too.
 apiVersion: networking.gke.io/v1
 kind: GKENetworkParamSet
 metadata:
@@ -22,3 +24,5 @@ spec:
     name: ims-sip
   routes:
   - to: 10.46.0.0/16
+  - to: 35.191.0.0/16
+  - to: 130.211.0.0/22

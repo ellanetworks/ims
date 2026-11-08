@@ -105,6 +105,7 @@ Choose one of the installation methods below.
             target: /ims.yaml
         entrypoint: /bin/ims --config /ims.yaml
         restart: unless-stopped
+        stop_grace_period: 37s
         network_mode: host
         cap_add:
           - NET_ADMIN
@@ -167,7 +168,15 @@ Choose one of the installation methods below.
           --additional-node-network network=<vpc>,subnetwork=<subnet>
         ```
 
-        Edit `ims/k8s/examples/gke-netdevice/ims-sip-network.yaml`: set `vpc` and `vpcSubnet`, and the phones' IP pool in `routes`.
+        For Diameter over SCTP, use `--image-type UBUNTU_CONTAINERD` instead.
+
+        The NIC's address changes when GKE recreates the node, and phones learn the P-CSCF address only when they set up their IMS PDU session (5G) or PDN connection (4G). Give the P-CSCF a fixed address: an internal passthrough Network Load Balancer on the SIP VPC, with a reserved address, an `L3_DEFAULT` forwarding rule on all ports, the node pool's instance group as backend, and a TCP health check on port 5060. [Run Ella IMS on GKE](../tutorials/ims_on_gke.md) has the commands.
+
+        Edit `ims/k8s/examples/gke-netdevice/`:
+
+        - `ims-sip-network.yaml`: set `vpc` and `vpcSubnet`, and the phones' IP pool in `routes`. Keep the routes for Google Cloud's health check ranges.
+        - `ims.yaml`: set `sip.addresses` to the load balancer's address.
+        - `kustomization.yaml`: set the same address in the `pcscf-address` init container.
 
         Deploy Ella IMS:
 
@@ -175,7 +184,7 @@ Choose one of the installation methods below.
         kubectl apply -k ims/k8s/examples/gke-netdevice
         ```
 
-        GKE passes the node's second NIC to the pod, so the P-CSCF address is that NIC's address, and each node of the pool runs one Ella IMS pod.
+        GKE passes the node's second NIC to the pod, so each node of the pool runs one Ella IMS pod. The P-CSCF address is the load balancer's, which needs one P-CSCF behind it: one load balancer per P-CSCF.
 
     Find the P-CSCF address, the `pcscf` entry of `sip`:
 

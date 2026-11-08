@@ -140,6 +140,20 @@ describe("Cores", () => {
     ]);
   });
 
+  it("explains where the Diameter host comes from", async () => {
+    serve();
+
+    renderWithClient(<Cores />);
+
+    await screen.findByText(identity.host);
+    fireEvent.mouseOver(screen.getByText("Diameter Host"));
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "This IMS's Diameter name: its host label, then the home network domain. Set the label with diameter.host_label in the configuration file. Default ims.",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("flags a P-CSCF port phones do not expect", async () => {
     serve({
       listeners: [

@@ -342,7 +342,7 @@ export default function Cores() {
     },
     {
       label: "Diameter Host",
-      help: "This IMS's Diameter name. Set by the Operator ID.",
+      help: "This IMS's Diameter name: its host label, then the home network domain. Set the label with diameter.host_label in the configuration file. Default ims.",
       value: identity.data && (
         <Copyable value={identity.data.host} label="Diameter Host" />
       ),

@@ -58,6 +58,7 @@ nav:
   - Tutorials:
     - tutorials/index.md
     - Make Your First Voice Call: tutorials/first_voice_call.md
+    - Run Ella IMS on GKE: tutorials/ims_on_gke.md
   - How-to Guides:
     - how_to/index.md
     - Install: how_to/install.md

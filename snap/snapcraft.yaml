@@ -22,6 +22,7 @@ apps:
     install-mode: disable
     command: bin/ims --config $SNAP_COMMON/ims.yaml
     restart-condition: on-failure
+    stop-timeout: 37s
     plugs:
       - network-bind
       - network-control

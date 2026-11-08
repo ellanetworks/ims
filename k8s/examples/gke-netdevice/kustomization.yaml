@@ -1,12 +1,20 @@
 # Ella IMS on one node of GKE, with SIP on a VM NIC that GKE multi-network
 # passes to the pod as eth1, and Diameter on the pod network. The node pool
-# ims-sip has an additional node network on the VPC ims-sip.
+# ims-sip has an additional node network on the VPC ims-sip. An internal
+# passthrough Network Load Balancer on that VPC, 10.140.0.100, sends all
+# traffic to the node pool, without NAT: the P-CSCF keeps that address when GKE
+# recreates the node. One load balancer per P-CSCF.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: ella
 resources:
   - ../../base
   - ims-sip-network.yaml
+configMapGenerator:
+  - name: ims-config
+    behavior: replace
+    files:
+      - ims.yaml
 patches:
   - patch: |
       apiVersion: apps/v1
@@ -26,3 +34,18 @@ patches:
           spec:
             nodeSelector:
               cloud.google.com/gke-nodepool: ims-sip
+            initContainers:
+            - name: pcscf-address
+              image: busybox:1.36
+              command:
+              - sh
+              - -c
+              - ip addr add 10.140.0.100/32 dev eth1 || true; ip addr show eth1
+              securityContext:
+                runAsUser: 0
+                runAsGroup: 0
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+                  add: ["NET_ADMIN"]
