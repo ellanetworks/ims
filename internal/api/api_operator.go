@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/ellanetworks/ims/internal/settings"
 )
@@ -9,6 +10,7 @@ import (
 type Operator struct {
 	MCC       string    `json:"mcc"`
 	MNC       string    `json:"mnc"`
+	Domain    string    `json:"domain"`
 	Numbering Numbering `json:"numbering"`
 }
 
@@ -33,8 +35,9 @@ func UpdateOperator(cfg Config) http.Handler {
 		}
 
 		o := settings.Operator{
-			MCC: p.MCC,
-			MNC: p.MNC,
+			MCC:    p.MCC,
+			MNC:    p.MNC,
+			Domain: strings.ToLower(strings.TrimSuffix(p.Domain, ".")),
 			Numbering: settings.Numbering{
 				CountryCode:         p.Numbering.CountryCode,
 				NationalPrefix:      p.Numbering.NationalPrefix,
@@ -54,8 +57,9 @@ func UpdateOperator(cfg Config) http.Handler {
 
 func operatorResponse(o settings.Operator) Operator {
 	return Operator{
-		MCC: o.MCC,
-		MNC: o.MNC,
+		MCC:    o.MCC,
+		MNC:    o.MNC,
+		Domain: o.Domain,
 		Numbering: Numbering{
 			CountryCode:         o.Numbering.CountryCode,
 			NationalPrefix:      o.Numbering.NationalPrefix,

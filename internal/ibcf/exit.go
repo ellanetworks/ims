@@ -234,7 +234,7 @@ func (b *IBCF) exitOf(ctx context.Context, in *sip.Request, privacy sip.Privacy)
 			return exit{}, false
 		}
 
-		x.asserted = sip.Address{Display: caller.Display, URI: phoneURI(caller.URI.User, b.cfg.HomeDomain)}
+		x.asserted = sip.Address{Display: caller.Display, URI: phoneURI(caller.URI.User, b.cfg.Home.Primary())}
 		x.caller = x.asserted
 
 		return x, true
@@ -247,7 +247,7 @@ func (b *IBCF) exitOf(ctx context.Context, in *sip.Request, privacy sip.Privacy)
 		return exit{}, false
 	}
 
-	x.asserted = sip.Address{URI: phoneURI(fwd.number, b.cfg.HomeDomain)}
+	x.asserted = sip.Address{URI: phoneURI(fwd.number, b.cfg.Home.Primary())}
 	x.forwarder = &fwd
 	x.caller = b.originalCaller(in.Header)
 
@@ -256,7 +256,7 @@ func (b *IBCF) exitOf(ctx context.Context, in *sip.Request, privacy sip.Privacy)
 
 func (b *IBCF) originalCaller(h sip.Header) sip.Address {
 	if caller, ok := callerOf(h); ok {
-		return sip.Address{Display: caller.Display, URI: phoneURI(caller.URI.User, b.cfg.HomeDomain)}
+		return sip.Address{Display: caller.Display, URI: phoneURI(caller.URI.User, b.cfg.Home.Primary())}
 	}
 
 	from, err := h.From()
@@ -266,7 +266,7 @@ func (b *IBCF) originalCaller(h sip.Header) sip.Address {
 	}
 
 	if number, ok := globalNumber(from.URI); ok {
-		return sip.Address{Display: from.Display, URI: phoneURI(number, b.cfg.HomeDomain)}
+		return sip.Address{Display: from.Display, URI: phoneURI(number, b.cfg.Home.Primary())}
 	}
 
 	return sip.Address{Display: from.Display, URI: from.URI}
@@ -392,7 +392,7 @@ func (b *IBCF) toTrunk(c *call, next target, callID, fromTag string) (*sip.Reque
 // TS 24.229 clause 5.10.8
 // TS 24.604 clause 4.5.2.6.2.2
 func (b *IBCF) served(f forwarder, privacy sip.Privacy, trusted bool) (sip.URI, sip.Privacy) {
-	u := phoneURI(f.number, b.cfg.HomeDomain)
+	u := phoneURI(f.number, b.cfg.Home.Primary())
 	asked := !privacy.Has(sip.PrivacyNone) && (privacy.Has(sip.PrivacyHistory) || privacy.Has(sip.PrivacyHeader))
 
 	var embedded sip.Header

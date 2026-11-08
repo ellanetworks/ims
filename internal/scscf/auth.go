@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -36,7 +37,7 @@ func (c *credentials) answers(ch *challenge) bool {
 	return c != nil && ch != nil && c.nonce != "" && c.nonce == ch.nonce
 }
 
-func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
+func parseAuthorization(h sip.Header, realms homedomain.Domains) (*credentials, error) {
 	var first *credentials
 
 	for _, v := range h.Values("Authorization") {
@@ -49,7 +50,7 @@ func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
 			continue
 		}
 
-		if strings.EqualFold(c.realm, realm) {
+		if realms.Has(c.realm) {
 			return c, nil
 		}
 

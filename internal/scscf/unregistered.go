@@ -43,7 +43,7 @@ func (r *Registrar) unregisteredProfile(ctx context.Context, u sip.URI) (db.Impl
 
 func (r *Registrar) keptSet(ctx context.Context, u sip.URI) (db.ImplicitSet, bool, error) {
 	now := r.clock.Now()
-	keys := identityKeys(u, r.cfg.HomeDomain)
+	keys := identityKeys(u, r.cfg.Home)
 
 	sets, err := r.cfg.DB.FindUnregisteredSets(ctx, append(slices.Clone(keys), canonicalIdentity(u)))
 	if err != nil {
@@ -212,7 +212,7 @@ func (r *Registrar) release(ctx context.Context, s db.ImplicitSet, now time.Time
 		return nil
 	}
 
-	regs, _, err := Recipients(ctx, r.cfg.DB, u, r.cfg.HomeDomain)
+	regs, _, err := Recipients(ctx, r.cfg.DB, u, r.cfg.Home)
 	if err != nil || registeredAt(regs, now) {
 		return err
 	}

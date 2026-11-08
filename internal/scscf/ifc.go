@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -16,8 +17,8 @@ import (
 // TS 29.228 clause B.2.1
 // TS 23.003 clause 13.4A
 // TS 23.003 clause 13.5
-func serviceProfile(sub cx.IMSSubscription, u sip.URI, homeDomain string) (cx.ServiceProfile, bool) {
-	keys := identityKeys(u, homeDomain)
+func serviceProfile(sub cx.IMSSubscription, u sip.URI, homeDomains homedomain.Domains) (cx.ServiceProfile, bool) {
+	keys := identityKeys(u, homeDomains)
 
 	for _, p := range sub.ServiceProfiles {
 		for _, id := range p.PublicIdentities {
@@ -42,7 +43,7 @@ func serviceProfile(sub cx.IMSSubscription, u sip.URI, homeDomain string) (cx.Se
 
 // TS 29.228 clause 6.1.2 table 6.1.2.2
 // TS 29.228 clause 6.1.2.1
-func serviceProfileOf(sub cx.IMSSubscription, u sip.URI, wildcard, homeDomain string) (cx.ServiceProfile, bool) {
+func serviceProfileOf(sub cx.IMSSubscription, u sip.URI, wildcard string, homeDomains homedomain.Domains) (cx.ServiceProfile, bool) {
 	if wildcard != "" {
 		for _, p := range sub.ServiceProfiles {
 			for _, id := range p.PublicIdentities {
@@ -54,7 +55,7 @@ func serviceProfileOf(sub cx.IMSSubscription, u sip.URI, wildcard, homeDomain st
 		}
 	}
 
-	return serviceProfile(sub, u, homeDomain)
+	return serviceProfile(sub, u, homeDomains)
 }
 
 func wildcarded(id cx.ProfileIdentity) bool {

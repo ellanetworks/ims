@@ -7,9 +7,7 @@ import (
 	"hash/maphash"
 	"log/slog"
 	"net/netip"
-	"regexp"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +39,7 @@ type Config struct {
 	Addresses   []netip.Addr
 	Transaction transaction.Config
 	HomeDomain  string
+	PLMN        string
 	Store       Store
 	HSS         HSS
 	SMSCs       SMSCs
@@ -85,6 +84,8 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		return nil, errors.New("start the IP-SM-GW: no SIP address to listen on")
 	case cfg.HomeDomain == "":
 		return nil, errors.New("start the IP-SM-GW: no home domain to name it under")
+	case cfg.PLMN == "":
+		return nil, errors.New("start the IP-SM-GW: no PLMN")
 	}
 
 	rows, err := cfg.Store.IPSMGWRegistrations(ctx)
@@ -99,7 +100,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 
 	a := &AS{
 		log: logger, smscs: cfg.SMSCs, router: cfg.Router, nodes: cfg.Nodes, number: cfg.Number, home: cfg.HomeDomain,
-		plmn: plmnOf(cfg.HomeDomain), metrics: cfg.Metrics,
+		plmn: cfg.PLMN, metrics: cfg.Metrics,
 	}
 
 	for _, addr := range cfg.Addresses {
@@ -267,16 +268,4 @@ func (a *AS) logTransaction(ctx context.Context, req *sip.Request, res *sip.Resp
 	}
 
 	a.log.DebugContext(ctx, "SIP transaction", attrs...)
-}
-
-// TS 23.003 clause 13.2
-var homeRealm = regexp.MustCompile(`^ims\.mnc([0-9]{3})\.mcc([0-9]{3})\.3gppnetwork\.org$`)
-
-func plmnOf(home string) string {
-	m := homeRealm.FindStringSubmatch(strings.ToLower(home))
-	if m == nil {
-		return "000000"
-	}
-
-	return m[2] + m[1]
 }

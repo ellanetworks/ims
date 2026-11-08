@@ -191,7 +191,7 @@ func (r *Registrar) authorize(ctx context.Context, req *sip.Request, routes []si
 		return nil, res
 	}
 
-	keys := identityKeys(req.URI, r.cfg.HomeDomain)
+	keys := identityKeys(req.URI, r.cfg.Home)
 
 	all, err := r.cfg.DB.ListRegistrationsByIdentities(ctx, keys)
 	if err != nil {

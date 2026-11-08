@@ -8,6 +8,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/sip"
 )
@@ -20,7 +21,7 @@ func (v coreView) ListRegistrations(ctx context.Context, search string, page, pe
 		return nil, 0, err
 	}
 
-	homeDomain := v.s.settings.Get().Operator.HomeDomain()
+	homeDomains := v.s.settings.Get().Operator.HomeDomains()
 	out := make([]api.RegistrationStatus, 0, len(impis))
 
 	for _, impi := range impis {
@@ -37,7 +38,7 @@ func (v coreView) ListRegistrations(ctx context.Context, search string, page, pe
 		out = append(out, registrationStatus(impi, regs, flows, now))
 	}
 
-	if err := v.registeredWith(ctx, out, homeDomain, now); err != nil {
+	if err := v.registeredWith(ctx, out, homeDomains, now); err != nil {
 		return nil, 0, err
 	}
 
@@ -45,7 +46,7 @@ func (v coreView) ListRegistrations(ctx context.Context, search string, page, pe
 }
 
 // TS 24.229 clause 5.4.3.3
-func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationStatus, homeDomain string, now time.Time) error {
+func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationStatus, homeDomains homedomain.Domains, now time.Time) error {
 	type ref struct{ reg, set, id int }
 
 	var (
@@ -68,7 +69,7 @@ func (v coreView) registeredWith(ctx context.Context, page []api.RegistrationSta
 		return nil
 	}
 
-	reach, err := scscf.RecipientsOf(ctx, v.s.database, uris, homeDomain)
+	reach, err := scscf.RecipientsOf(ctx, v.s.database, uris, homeDomains)
 	if err != nil {
 		return err
 	}

@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
 // TS 24.229 clause 5.4.3.3
 // TS 23.228 clause 4.3.3.4
-func Recipients(ctx context.Context, store *db.DB, u sip.URI, homeDomain string) (regs []db.Registration, barred bool, err error) {
-	reach, err := RecipientsOf(ctx, store, []sip.URI{u}, homeDomain)
+func Recipients(ctx context.Context, store *db.DB, u sip.URI, homeDomains homedomain.Domains) (regs []db.Registration, barred bool, err error) {
+	reach, err := RecipientsOf(ctx, store, []sip.URI{u}, homeDomains)
 	if err != nil {
 		return nil, false, err
 	}
@@ -27,13 +28,13 @@ type Reach struct {
 	Barred        bool
 }
 
-func RecipientsOf(ctx context.Context, store *db.DB, uris []sip.URI, homeDomain string) ([]Reach, error) {
+func RecipientsOf(ctx context.Context, store *db.DB, uris []sip.URI, homeDomains homedomain.Domains) ([]Reach, error) {
 	keys := make([][]string, len(uris))
 
 	var all []string
 
 	for i, u := range uris {
-		keys[i] = identityKeys(u, homeDomain)
+		keys[i] = identityKeys(u, homeDomains)
 
 		for _, k := range keys[i] {
 			if !slices.Contains(all, k) {

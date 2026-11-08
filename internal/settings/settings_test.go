@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +86,14 @@ func TestValidate(t *testing.T) {
 		"same prefixes":        func(o *Operator) { o.Numbering.NationalPrefix, o.Numbering.InternationalPrefix = "0", "0" },
 		"negative min digits":  func(o *Operator) { o.Numbering.MinNationalDigits = -1 },
 		"min digits over 15":   func(o *Operator) { o.Numbering.MinNationalDigits = 16 },
+		"one-label domain":     func(o *Operator) { o.Domain = "localhost" },
+		"uppercase domain":     func(o *Operator) { o.Domain = "IMS.example.com" },
+		"empty label":          func(o *Operator) { o.Domain = "ims..example.com" },
+		"hyphen-edged label":   func(o *Operator) { o.Domain = "-ims.example.com" },
+		"underscore in domain": func(o *Operator) { o.Domain = "ims_1.example.com" },
+		"IP address domain":    func(o *Operator) { o.Domain = "192.0.2.1" },
+		"long label":           func(o *Operator) { o.Domain = strings.Repeat("a", 64) + ".com" },
+		"long domain":          func(o *Operator) { o.Domain = strings.Repeat("a.", 127) + "com" },
 	}
 
 	if err := validSettings().Validate(); err != nil {
@@ -96,6 +105,13 @@ func TestValidate(t *testing.T) {
 
 	if err := noPrefixes.Validate(); err != nil {
 		t.Fatalf("Validate without prefixes: %v", err)
+	}
+
+	withDomain := validOperator()
+	withDomain.Domain = "ims.example-1.com"
+
+	if err := withDomain.Validate(); err != nil {
+		t.Fatalf("Validate with a domain: %v", err)
 	}
 
 	for name, edit := range tests {
@@ -145,6 +161,44 @@ func TestHomeDomain(t *testing.T) {
 	}
 }
 
+func TestConfiguredDomain(t *testing.T) {
+	o := Operator{MCC: "310", MNC: "410", Domain: "ims.example.com"}
+
+	for _, tt := range []struct{ name, got, want string }{
+		{"home domain", o.HomeDomain(), "ims.example.com"},
+		{"derived domain", o.DerivedDomain(), "ims.mnc410.mcc310.3gppnetwork.org"},
+		{"Diameter host", o.DiameterHost(""), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
+		{"Diameter realm", o.DiameterRealm(), "ims.mnc410.mcc310.3gppnetwork.org"},
+		{"S-CSCF name", o.SCSCFName(5082), "sip:scscf.ims.mnc410.mcc310.3gppnetwork.org:5082"},
+		{"PLMN", o.PLMN(), "310410"},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
+		}
+	}
+
+	if got, want := []string(o.HomeDomains()), []string{"ims.example.com", "ims.mnc410.mcc310.3gppnetwork.org"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("HomeDomains = %v, want %v", got, want)
+	}
+
+	want := []string{
+		"ims.example.com", "ims.mnc410.mcc310.3gppnetwork.org",
+		"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.ims.mnc410.mcc310.3gppnetwork.org",
+	}
+	if got := o.SIPAliases(); !reflect.DeepEqual(got, want) {
+		t.Errorf("SIPAliases = %v, want %v", got, want)
+	}
+
+	derived := Operator{MCC: "310", MNC: "410", Domain: "ims.mnc410.mcc310.3gppnetwork.org"}
+	if got := derived.HomeDomains(); len(got) != 1 {
+		t.Errorf("HomeDomains of the derived domain configured = %v, want one domain", got)
+	}
+
+	if got := (Operator{MCC: "001", MNC: "01"}).PLMN(); got != "001001" {
+		t.Errorf("PLMN = %q, want 001001", got)
+	}
+}
+
 func TestSameIdentity(t *testing.T) {
 	o := validOperator()
 
@@ -161,6 +215,20 @@ func TestSameIdentity(t *testing.T) {
 
 	if other := (Operator{MCC: "001", MNC: "02"}); o.SameIdentity(other) {
 		t.Fatal("another MNC kept the identity")
+	}
+
+	named := o
+	named.Domain = "ims.example.com"
+
+	if o.SameIdentity(named) {
+		t.Fatal("a configured domain kept the identity")
+	}
+
+	renamed := named
+	renamed.MNC = "02"
+
+	if named.SameIdentity(renamed) {
+		t.Fatal("another MNC under a configured domain kept the identity")
 	}
 }
 

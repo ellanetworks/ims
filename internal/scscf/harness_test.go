@@ -24,6 +24,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/diametertest"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -32,6 +33,8 @@ import (
 	"github.com/ellanetworks/ims/sip/transaction"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var homeDomains = homedomain.New(homeDomain)
 
 const (
 	homeDomain = "ims.mnc001.mcc001.3gppnetwork.org"
@@ -479,7 +482,7 @@ func newHarnessTraced(t *testing.T, tp trace.TracerProvider) *harness {
 	h.icscf = siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
 
 	h.cfg = Config{
-		HomeDomain:           homeDomain,
+		Home:                 homeDomains,
 		Name:                 sip.URI{Scheme: "sip", Host: scscfName, Port: sipPort},
 		MinExpires:           60 * time.Second,
 		MaxExpires:           3600 * time.Second,

@@ -104,6 +104,7 @@ type Server struct {
 
 	ipsmgw           atomic.Pointer[ipsmgw.AS]
 	ipsmgwHomeDomain string
+	ipsmgwPLMN       string
 
 	trunks *trunkmon.Monitor
 
@@ -264,7 +265,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	if err := s.startIPSMGW(ctx, initial.Operator.HomeDomain()); err != nil {
+	if err := s.startIPSMGW(ctx, initial.Operator); err != nil {
 		s.stopMCPTT(ctx)
 
 		_ = s.records.Close(ctx)
@@ -577,7 +578,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 		cancel()
 	}
 
-	renamedIPSMGW := s.ipsmgw.Load() != nil && s.ipsmgwHomeDomain != st.Operator.HomeDomain()
+	renamedIPSMGW := s.ipsmgw.Load() != nil && (s.ipsmgwHomeDomain != st.Operator.HomeDomain() || s.ipsmgwPLMN != st.Operator.PLMN())
 	if renamedIPSMGW {
 		stopCtx, cancel := context.WithTimeout(ctx, mcpttStopTime)
 		s.stopIPSMGW(stopCtx)
@@ -599,7 +600,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	}
 
 	if renamedIPSMGW {
-		if err := s.startIPSMGW(ctx, st.Operator.HomeDomain()); err != nil {
+		if err := s.startIPSMGW(ctx, st.Operator); err != nil {
 			s.Logger.ErrorContext(ctx, "failed to restart the IP-SM-GW for the new home domain", slog.Any("error", err))
 		}
 	}

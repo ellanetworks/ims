@@ -299,7 +299,7 @@ This path returns the route of each routed application: `cx`, `rx`, `sh`, then `
 | ------------------- | ------ | ----------- |
 | `application`       | string | `cx`, `rx`, `sh` or `s6c`. |
 | `realm`             | string | Configured realm: of the HSS for `cx`, `sh` and `s6c`, of the PCRF for `rx`. Empty if not set. |
-| `destination_realm` | string | Destination-Realm of the requests. If `realm` is empty: the `cx` realm for `sh` and `s6c`, the home domain otherwise. |
+| `destination_realm` | string | Destination-Realm of the requests. If `realm` is empty: the `cx` realm for `sh` and `s6c`, the domain derived from the MCC and MNC otherwise. |
 | `peers`             | array  | Peers serving the application, in the order requests try them, each with its `id`, `host`, `priority` and `status`. |
 
 ### Sample Response

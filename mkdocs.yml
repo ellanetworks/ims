@@ -65,6 +65,7 @@ nav:
     - Upgrade: how_to/upgrade.md
     - Integrate with Ella Core: how_to/integrate_with_ella_core.md
     - Connect a Core at Another Site: how_to/connect_a_core_at_another_site.md
+    - Set the Home Network Domain: how_to/set_the_home_network_domain.md
     - Integrate with an Application Server: how_to/integrate_with_application_server.md
     - Configure Single Sign-On: how_to/configure_single_sign_on.md
     - Manage Single Sign-On Users: how_to/manage_single_sign_on_users.md

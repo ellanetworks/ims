@@ -21,9 +21,11 @@ import (
 
 var errNoCore = errors.New("the IMS core is restarting")
 
-func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
+func (s *Server) startIPSMGW(ctx context.Context, op settings.Operator) error {
+	homeDomain := op.HomeDomain()
+
 	a, err := ipsmgw.Start(ctx, ipsmgw.Config{
-		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain,
+		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain, PLMN: op.PLMN(),
 		Store:   s.database,
 		Metrics: s.metrics.ipsmgw,
 		HSS:     shClient{s}, SMSCs: smscClient{s}, Router: s6cClient{s}, Nodes: nodesClient{s}, Number: func() string { return s.settings.Get().IPSMGW.Number }, Logger: s.Logger,
@@ -33,7 +35,7 @@ func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
 	}
 
 	s.ases.resolver.Set(ipsmgw.Host(homeDomain), a.Servers())
-	s.ipsmgwHomeDomain = homeDomain
+	s.ipsmgwHomeDomain, s.ipsmgwPLMN = homeDomain, op.PLMN()
 	s.ipsmgw.Store(a)
 
 	return nil

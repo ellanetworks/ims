@@ -120,7 +120,7 @@ func BenchmarkOriginatingChain(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	r := &Registrar{cfg: Config{HomeDomain: homeDomain}, log: slog.New(slog.DiscardHandler)}
+	r := &Registrar{cfg: Config{Home: homeDomains}, log: slog.New(slog.DiscardHandler)}
 	req := benchInvite()
 
 	u, err := sip.ParseURI(testMSISDN)
@@ -150,11 +150,11 @@ func BenchmarkOriginatingChain(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			if _, ok := assertedAlias(served, sub, homeDomain); !ok {
+			if _, ok := assertedAlias(served, sub, homeDomains); !ok {
 				b.Fatal("no alias")
 			}
 
-			p, ok := serviceProfile(sub, served.URI, homeDomain)
+			p, ok := serviceProfile(sub, served.URI, homeDomains)
 			if !ok {
 				b.Fatal("no service profile")
 			}

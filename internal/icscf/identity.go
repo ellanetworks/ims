@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -72,7 +73,7 @@ func telURI(u sip.URI) (sip.URI, bool, error) {
 	return tel, true, nil
 }
 
-func credentials(h sip.Header, realm string) (sip.Auth, bool) {
+func credentials(h sip.Header, realms homedomain.Domains) (sip.Auth, bool) {
 	var (
 		first sip.Auth
 		found bool
@@ -84,7 +85,7 @@ func credentials(h sip.Header, realm string) (sip.Auth, bool) {
 			continue
 		}
 
-		if r, _ := a.Params.Get("realm"); strings.EqualFold(sip.Unquote(r), realm) {
+		if r, _ := a.Params.Get("realm"); realms.Has(sip.Unquote(r)) {
 			return a, true
 		}
 

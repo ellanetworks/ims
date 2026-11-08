@@ -15,8 +15,8 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 
 	o := &s.Operator
 
-	if err := d.conn.QueryRowContext(ctx, `SELECT mcc, mnc, country_code, national_prefix, international_prefix,
-		min_national_digits FROM operator WHERE id = 1`).Scan(&o.MCC, &o.MNC, &o.Numbering.CountryCode,
+	if err := d.conn.QueryRowContext(ctx, `SELECT mcc, mnc, domain, country_code, national_prefix, international_prefix,
+		min_national_digits FROM operator WHERE id = 1`).Scan(&o.MCC, &o.MNC, &o.Domain, &o.Numbering.CountryCode,
 		&o.Numbering.NationalPrefix, &o.Numbering.InternationalPrefix, &o.Numbering.MinNationalDigits); err != nil {
 		return settings.Settings{}, fmt.Errorf("get operator: %w", err)
 	}
@@ -141,8 +141,8 @@ func (d *DB) routes(ctx context.Context) ([]settings.Route, error) {
 func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	if _, err := d.conn.ExecContext(ctx, `UPDATE operator SET mcc = ?, mnc = ?, country_code = ?, national_prefix = ?,
-		international_prefix = ?, min_national_digits = ? WHERE id = 1`, o.MCC, o.MNC, o.Numbering.CountryCode,
+	if _, err := d.conn.ExecContext(ctx, `UPDATE operator SET mcc = ?, mnc = ?, domain = ?, country_code = ?, national_prefix = ?,
+		international_prefix = ?, min_national_digits = ? WHERE id = 1`, o.MCC, o.MNC, o.Domain, o.Numbering.CountryCode,
 		o.Numbering.NationalPrefix, o.Numbering.InternationalPrefix, o.Numbering.MinNationalDigits); err != nil {
 		return fmt.Errorf("update operator: %w", err)
 	}

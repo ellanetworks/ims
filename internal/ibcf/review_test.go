@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -59,13 +60,13 @@ func TestExitOnlyFromICSCF(t *testing.T) {
 	rogue := newParty(t, s.net, "rogue", netip.MustParseAddrPort("10.0.0.9:5060"))
 
 	b, err := launch(t, Config{
-		HomeDomain: home,
-		Internal:   []netip.AddrPort{netip.MustParseAddrPort("10.0.0.2:5085")},
-		External:   []netip.AddrPort{netip.MustParseAddrPort("203.0.113.2:5060")},
-		ICSCF:      []netip.AddrPort{imsAddr},
-		Trust:      trust.New(nil, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}),
-		BGCF:       bgcf.New(s.settings, nil),
-		Settings:   s.settings,
+		Home:     homedomain.New(home),
+		Internal: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.2:5085")},
+		External: []netip.AddrPort{netip.MustParseAddrPort("203.0.113.2:5060")},
+		ICSCF:    []netip.AddrPort{imsAddr},
+		Trust:    trust.New(nil, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}),
+		BGCF:     bgcf.New(s.settings, nil),
+		Settings: s.settings,
 	}, s.net.Config(transaction.Config{}), false)
 	if err != nil {
 		t.Fatal(err)

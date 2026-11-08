@@ -252,8 +252,8 @@ func newWorldTraced(t *testing.T, store *fakeStore, tp trace.TracerProvider) *wo
 
 	a, err := Start(context.Background(), Config{
 		Addresses: []netip.Addr{w.scscf.Addr().Addr()}, Transaction: n.Config(transaction.Config{TracerProvider: tp}),
-		HomeDomain: home,
-		Store:      store, HSS: w.hss, SMSCs: w.smscs, Router: w.router, Nodes: w.nodes,
+		HomeDomain: home, PLMN: "001001",
+		Store: store, HSS: w.hss, SMSCs: w.smscs, Router: w.router, Nodes: w.nodes,
 		Number: func() string { return "15550000100" },
 	})
 	if err != nil {

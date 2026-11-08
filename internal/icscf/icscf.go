@@ -9,6 +9,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
@@ -44,7 +45,7 @@ type Resolver interface {
 }
 
 type Config struct {
-	HomeDomain string
+	Home homedomain.Domains
 
 	Layer *transaction.Layer
 	Proxy *proxy.Proxy

@@ -18,8 +18,8 @@ This path returns the home domain, the host names the IMS answers to, and the SI
 
 | Field                    | Type   | Description |
 | ------------------------ | ------ | ----------- |
-| `home_domain`            | string | Home network domain name, derived from the MCC and MNC. |
-| `aliases`                | array  | Host names the IMS answers to. |
+| `home_domain`            | string | Home network domain name: the operator `domain`, or the domain derived from the MCC and MNC if it is empty. |
+| `aliases`                | array  | Host names the IMS answers to: the home domain, the domain derived from the MCC and MNC if it differs, and the P-CSCF and S-CSCF host names. |
 | `listeners`              | array  | SIP listeners. |
 | `listeners[].role`       | string | `pcscf`, `pcscf-protected`, `icscf`, `scscf`, `ibcf`, `ibcf-external` or `ibcf-external-tls`. |
 | `listeners[].address`    | string | Address and port. |

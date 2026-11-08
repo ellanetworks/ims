@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Box } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import DomainName from "@/components/DomainName";
+import EditHomeDomainDialog from "@/components/EditHomeDomainDialog";
 import EditNumberingDialog from "@/components/EditNumberingDialog";
 import EditOperatorIdDialog from "@/components/EditOperatorIdDialog";
 import PageHeader from "@/components/PageHeader";
@@ -9,14 +10,16 @@ import QueryAlert from "@/components/QueryAlert";
 import SettingsTable, { SubFields } from "@/components/SettingsTable";
 import { useAuth } from "@/contexts/AuthContext";
 import { getOperator } from "@/queries/operator";
-import { homeDomain } from "@/utils/operator";
+import { derivedDomain, homeDomain } from "@/utils/operator";
 
 const orNA = (value: string) => value || "N/A";
 
 export default function Operator() {
   const auth = useAuth();
   const editable = auth.can("operator:update");
-  const [editing, setEditing] = useState<"id" | "numbering" | null>(null);
+  const [editing, setEditing] = useState<"id" | "domain" | "numbering" | null>(
+    null,
+  );
   const operator = useQuery({
     queryKey: ["operator"],
     queryFn: getOperator,
@@ -37,14 +40,36 @@ export default function Operator() {
         rows={[
           {
             label: "Operator ID (MCC/MNC)",
-            help: "Mobile Country Code and Mobile Network Code of your network. They set this IMS's home network domain, Diameter host and realm.",
+            help: "Mobile Country Code and Mobile Network Code of your network. They set this IMS's Diameter host and realm, and its home network domain unless you set one.",
             value: data && `${data.mcc} / ${data.mnc}`,
             onEdit: editable ? () => setEditing("id") : undefined,
           },
           {
             label: "Home Network Domain",
-            help: "Set by the Operator ID. Must match the ISIM of your SIMs, if they have one.",
-            value: data && <DomainName name={homeDomain(data.mcc, data.mnc)} />,
+            help: "Derived from the Operator ID unless you set one. Must match your HSS, and the ISIM of your SIMs if they have one. Phones without an ISIM always use the derived domain, which stays accepted.",
+            value: data && (
+              <SubFields
+                rows={[
+                  [
+                    "Domain",
+                    <DomainName key="domain" name={homeDomain(data)} />,
+                  ],
+                  [
+                    "Also Accepted",
+                    data.domain &&
+                    data.domain !== derivedDomain(data.mcc, data.mnc) ? (
+                      <DomainName
+                        key="derived"
+                        name={derivedDomain(data.mcc, data.mnc)}
+                      />
+                    ) : (
+                      "N/A"
+                    ),
+                  ],
+                ]}
+              />
+            ),
+            onEdit: editable ? () => setEditing("domain") : undefined,
           },
           {
             label: "Numbering",
@@ -71,6 +96,12 @@ export default function Operator() {
       />
       {editing === "id" && data && (
         <EditOperatorIdDialog
+          operator={data}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      {editing === "domain" && data && (
+        <EditHomeDomainDialog
           operator={data}
           onClose={() => setEditing(null)}
         />

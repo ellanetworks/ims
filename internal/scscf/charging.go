@@ -12,7 +12,7 @@ const pChargingVector = "P-Charging-Vector"
 // TS 24.229 clause 5.4.1.7
 // TS 24.229 clause 5.4.2.1.2
 func (r *Registrar) chargingVector(icid string) string {
-	return "icid-value=" + icid + ";orig-ioi=" + r.cfg.HomeDomain
+	return "icid-value=" + icid + ";orig-ioi=" + r.cfg.Home.Primary()
 }
 
 func icidOf(h sip.Header) string {
@@ -49,7 +49,7 @@ func (r *Registrar) toASCharging(h *sip.Header) {
 
 	ps.Del("term-ioi")
 	ps.Del("transit-ioi")
-	ps.Set("orig-ioi", r.cfg.HomeDomain)
+	ps.Set("orig-ioi", r.cfg.Home.Primary())
 
 	h.Add(pChargingVector, strings.TrimPrefix(ps.String(), ";"))
 }

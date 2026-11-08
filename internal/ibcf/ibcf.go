@@ -11,6 +11,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/bgcf"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -43,7 +44,7 @@ var sessionTimer = ua.SessionTimer{Interval: 30 * time.Minute, MinSE: 90 * time.
 var allow = []string{"INVITE", "ACK", "CANCEL", "BYE", "PRACK", "UPDATE", "OPTIONS", "INFO"}
 
 type Config struct {
-	HomeDomain string
+	Home homedomain.Domains
 
 	Layer *transaction.Layer
 
@@ -90,7 +91,7 @@ func New(ctx context.Context, cfg Config) (*IBCF, error) {
 		return nil, errors.New("start the IBCF: no external address")
 	case len(cfg.ICSCF) == 0:
 		return nil, errors.New("start the IBCF: no I-CSCF")
-	case cfg.HomeDomain == "":
+	case cfg.Home.Primary() == "":
 		return nil, errors.New("start the IBCF: no home domain")
 	case cfg.BGCF == nil || cfg.Settings == nil || cfg.Trust == nil:
 		return nil, errors.New("start the IBCF: no BGCF, settings or trust domain")

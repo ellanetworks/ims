@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -193,15 +194,15 @@ func newResolvingTLSScene(t *testing.T, ca *sbitlstest.CA, certificate bool, tru
 	s.st = settings.Settings{Trunks: []settings.Trunk{trunk}, SIPRoutes: []settings.SIPRoute{{ID: "default", Trunks: []string{trunk.ID}}}}
 
 	cfg := Config{
-		HomeDomain: home,
-		Internal:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		TLS:        []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		ICSCF:      []netip.AddrPort{s.ims.udp},
-		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
-		BGCF:       bgcf.New(s.settings, nil),
-		Settings:   s.settings,
-		Resolve:    resolve,
+		Home:     homedomain.New(home),
+		Internal: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		External: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		TLS:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		ICSCF:    []netip.AddrPort{s.ims.udp},
+		Trust:    trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
+		BGCF:     bgcf.New(s.settings, nil),
+		Settings: s.settings,
+		Resolve:  resolve,
 	}
 
 	if certificate {

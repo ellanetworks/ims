@@ -13,6 +13,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/siptest"
@@ -481,7 +482,7 @@ func TestNormaliseOnNet(t *testing.T) {
 
 	for _, tt := range tests {
 		u, _ := sip.ParseURI(tt.in)
-		if _, onNet, ok := tt.n.normalise(u, homeDomain); !ok || onNet != tt.want {
+		if _, onNet, ok := tt.n.normalise(u, homeDomains); !ok || onNet != tt.want {
 			t.Errorf("%s: normalise(%s) on-net = %v, %v, want %v", tt.name, tt.in, onNet, ok, tt.want)
 		}
 	}
@@ -1065,7 +1066,7 @@ func TestNormalise(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, _, ok := n.normalise(u, homeDomain)
+			got, _, ok := n.normalise(u, homeDomains)
 			switch {
 			case tt.want == "" && ok:
 				t.Errorf("normalise(%s) = %s, want it unchanged", tt.in, got)
@@ -1076,7 +1077,7 @@ func TestNormalise(t *testing.T) {
 	}
 
 	u, _ := sip.ParseURI("tel:02079460000;phone-context=" + homeDomain)
-	if _, _, ok := (Numbering{}).normalise(u, homeDomain); ok {
+	if _, _, ok := (Numbering{}).normalise(u, homeDomains); ok {
 		t.Error("normalised without a numbering rule")
 	}
 }
@@ -1104,7 +1105,7 @@ func TestLocalNumber(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if got := localNumber(u, homeDomain); got != tt.want {
+		if got := localNumber(u, homeDomains); got != tt.want {
 			t.Errorf("localNumber(%s) = %v, want %v", tt.uri, got, tt.want)
 		}
 	}
@@ -1155,7 +1156,7 @@ func TestAssertedAlias(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, ok := assertedAlias(a, sub, homeDomain)
+			got, ok := assertedAlias(a, sub, homeDomains)
 			if ok != (tt.want != "") || ok && got.String() != tt.want {
 				t.Fatalf("assertedAlias(%s) = %s, %v, want %q", tt.asserted, got, ok, tt.want)
 			}
@@ -1190,9 +1191,44 @@ func TestIdentityKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if got := identityKeys(u, homeDomain); !slices.Equal(got, tt.want) {
+		if got := identityKeys(u, homeDomains); !slices.Equal(got, tt.want) {
 			t.Errorf("identityKeys(%s) = %v, want %v", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestConfiguredHomeDomain(t *testing.T) {
+	const configured = "ims.example.com"
+
+	domains := homedomain.New(configured, homeDomain)
+
+	parse := func(s string) sip.URI {
+		u, err := sip.ParseURI(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return u
+	}
+
+	for _, d := range domains {
+		if !localNumber(parse("sip:02079460000@"+d+";user=phone"), domains) {
+			t.Errorf("a local number in %s is not local", d)
+		}
+
+		if _, _, ok := (Numbering{CountryCode: "44", NationalPrefix: "0"}).normalise(parse("tel:02079460000;phone-context="+d), domains); !ok {
+			t.Errorf("phone-context %s is not home-local", d)
+		}
+	}
+
+	want := []string{testTel, "sip:+15551230001@" + configured + ";user=phone", testMSISDN}
+	if got := identityKeys(parse(testTel), domains); !slices.Equal(got, want) {
+		t.Errorf("identityKeys = %v, want %v", got, want)
+	}
+
+	a, ok := assertedAlias(sip.Address{URI: parse(testTel)}, cx.IMSSubscription{}, domains)
+	if want := "<sip:+15551230001@" + configured + ";user=phone>"; !ok || a.String() != want {
+		t.Errorf("assertedAlias = %s, %v, want %s", a, ok, want)
 	}
 }
 

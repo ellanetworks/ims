@@ -19,6 +19,7 @@ import (
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/icscf"
 	"github.com/ellanetworks/ims/internal/ipsec"
@@ -168,11 +169,11 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		}
 	}
 
-	homeDomain := op.HomeDomain()
+	homeDomains := op.HomeDomains()
 	breakout := bgcf.New(live, states)
 
 	if cfg.IBCF != nil {
-		if err := s.startIBCF(ctx, cfg, tm, homeDomain, domain, breakout, live, changed, records, m, logger); err != nil {
+		if err := s.startIBCF(ctx, cfg, tm, homeDomains, domain, breakout, live, changed, records, m, logger); err != nil {
 			return nil, errors.Join(err, s.Close(ctx))
 		}
 	}
@@ -183,7 +184,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	}
 
 	s.registrar = scscf.New(scscf.Config{
-		HomeDomain: homeDomain,
+		Home:       homeDomains,
 		Name:       scscfName,
 		MinExpires: tm.minExpires,
 
@@ -217,7 +218,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		}),
 		Port:          pcscfPort,
 		ICSCFPort:     icscfPort,
-		HomeDomain:    homeDomain,
+		HomeDomain:    homeDomains.Primary(),
 		SCSCF:         pcscf.SCSCF{Name: scscfName, Listeners: s.bound(roleSCSCF)},
 		Registrations: database,
 		IPsec: pcscf.IPsec{
@@ -262,12 +263,12 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	trusted := func(f sip.Flow) bool { return domain.Trusted(f.Remote.Addr()) }
 
 	ic := icscf.New(icscf.Config{
-		HomeDomain: homeDomain,
-		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
-		Port:       icscfPort,
-		Trust:      domain,
-		Resolver:   resolver,
+		Home:     homeDomains,
+		Layer:    layer,
+		Proxy:    proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
+		Port:     icscfPort,
+		Trust:    domain,
+		Resolver: resolver,
 		SCSCF: icscf.SCSCF{
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
@@ -308,7 +309,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 
 // TS 23.228 clause 4.14
 // TS 24.229 clause 5.10.1
-func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, tm timers, homeDomain string, domain *trust.Domain, breakout *bgcf.BGCF,
+func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, tm timers, homeDomains homedomain.Domains, domain *trust.Domain, breakout *bgcf.BGCF,
 	live func() settings.Settings, changed func() <-chan struct{}, records *callrecords.Recorder, m *metrics, logger *slog.Logger,
 ) error {
 	secure, cert, err := ibcfTLS(cfg.IBCF.External)
@@ -353,7 +354,7 @@ func (s *sipServer) startIBCF(ctx context.Context, cfg config.Config, tm timers,
 	}
 
 	b, err := ibcf.New(ctx, ibcf.Config{
-		HomeDomain:  homeDomain,
+		Home:        homeDomains,
 		Layer:       s.layer,
 		Internal:    internal,
 		External:    external,
