@@ -21,11 +21,13 @@ type IPSMGWRegistration struct {
 }
 
 // TS 29.328 clause 6.1.2.1
+// TS 29.328 clause 6.5
 type IPSMGWHSSRegistration struct {
 	UserKey string
 	MSISDN  string
 	IMPU    string
 	Number  string
+	HSS     HSS
 }
 
 func (d *DB) IPSMGWRegistrations(ctx context.Context) (_ []IPSMGWRegistration, err error) {
@@ -94,8 +96,8 @@ func (d *DB) DeleteIPSMGWRegistration(ctx context.Context, impuKey string) (err 
 func (d *DB) IPSMGWHSSRegistrations(ctx context.Context) (_ []IPSMGWHSSRegistration, err error) {
 	defer d.observe(poolWrite, &err)()
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT user_key, msisdn, impu, number FROM ip_sm_gw_hss_registrations
-		ORDER BY user_key`)
+	rows, err := d.conn.QueryContext(ctx, `SELECT user_key, msisdn, impu, number, hss_host, hss_realm
+		FROM ip_sm_gw_hss_registrations ORDER BY user_key`)
 	if err != nil {
 		return nil, fmt.Errorf("get IP-SM-GW HSS registrations: %w", err)
 	}
@@ -107,7 +109,7 @@ func (d *DB) IPSMGWHSSRegistrations(ctx context.Context) (_ []IPSMGWHSSRegistrat
 	for rows.Next() {
 		var r IPSMGWHSSRegistration
 
-		if err := rows.Scan(&r.UserKey, &r.MSISDN, &r.IMPU, &r.Number); err != nil {
+		if err := rows.Scan(&r.UserKey, &r.MSISDN, &r.IMPU, &r.Number, &r.HSS.Host, &r.HSS.Realm); err != nil {
 			return nil, fmt.Errorf("get IP-SM-GW HSS registrations: %w", err)
 		}
 
@@ -125,7 +127,8 @@ func (d *DB) PutIPSMGWHSSRegistration(ctx context.Context, r IPSMGWHSSRegistrati
 	defer d.observe(poolWrite, &err)()
 
 	if _, err := d.conn.ExecContext(ctx, `INSERT OR REPLACE INTO ip_sm_gw_hss_registrations (user_key, msisdn, impu,
-		number) VALUES (?, ?, ?, ?)`, r.UserKey, r.MSISDN, r.IMPU, r.Number); err != nil {
+		number, hss_host, hss_realm) VALUES (?, ?, ?, ?, ?, ?)`, r.UserKey, r.MSISDN, r.IMPU, r.Number, r.HSS.Host,
+		r.HSS.Realm); err != nil {
 		return fmt.Errorf("put IP-SM-GW HSS registration: %w", err)
 	}
 

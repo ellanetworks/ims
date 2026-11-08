@@ -4,9 +4,9 @@ go 1.27.3
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/ellanetworks/core/diameter v0.0.0-20261029224453-05651a99fe33
+	github.com/ellanetworks/core/diameter v0.0.0-20261106235918-1d44c8b88d17
 	github.com/ellanetworks/core/nas v0.0.0-20261022122753-8d5c8bdaaf89
-	github.com/ellanetworks/core/sctp v0.0.0-20260928204907-fc197c42dc3f
+	github.com/ellanetworks/core/sctp v0.0.0-20261106235918-1d44c8b88d17
 	github.com/ellanetworks/ims/sip v0.0.0-20261015132646-e86e133378fd
 	github.com/go-jose/go-jose/v4 v4.1.8
 	github.com/golang-jwt/jwt/v5 v5.3.1

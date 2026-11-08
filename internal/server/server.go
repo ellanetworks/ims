@@ -10,12 +10,14 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/as"
+	"github.com/ellanetworks/ims/internal/backup"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
@@ -89,6 +91,9 @@ type Server struct {
 	metrics     *metrics
 	stopPrune   context.CancelFunc
 	pruneDone   chan struct{}
+	readiness   *readiness
+	stopReady   context.CancelFunc
+	readyDone   chan struct{}
 	settings    *settings.Live
 	apiServer   *http.Server
 	apiListener net.Listener
@@ -220,6 +225,10 @@ func (s *Server) Start(ctx context.Context) error {
 		return live.Get().Peers, coreView{s}.Peers()
 	}, func() []settings.Trunk { return live.Get().Trunks })
 
+	s.readiness = &readiness{
+		ping: database.Ping, stopping: s.draining.Load, metrics: s.metrics.readiness, logger: s.Logger,
+	}
+
 	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
 
 	s.guardTrunks(ctx, live)
@@ -291,13 +300,15 @@ func (s *Server) Start(ctx context.Context) error {
 	apiCfg := api.Config{
 		Settings:       live,
 		Diameter:       view,
+		DiameterLabel:  s.Config.Diameter.HostLabel,
 		SIP:            view,
 		Registrations:  view,
 		Policy:         view,
 		CallRecords:    database,
+		Backups:        &backup.Backups{DB: database, Dir: filepath.Dir(cfg.DB.Path), Now: time.Now},
 		SIPTrunks:      s.trunkStates(),
 		Frontend:       ui.FS(),
-		Ready:          func(ctx context.Context) error { return s.ready(ctx, database) },
+		Ready:          s.readiness.checks,
 		Metrics:        s.metrics.registry,
 		Requests:       s.metrics.requests,
 		Auth:           database,
@@ -349,6 +360,15 @@ func (s *Server) Start(ctx context.Context) error {
 			Store: database, Retention: func() time.Duration { return live.Get().CallRecords.Retention() },
 			Interval: s.PruneInterval, Logger: s.Logger,
 		})
+	}()
+
+	readyCtx, stopReady := context.WithCancel(context.WithoutCancel(ctx))
+	s.stopReady, s.readyDone = stopReady, make(chan struct{})
+
+	go func() {
+		defer close(s.readyDone)
+
+		s.readiness.run(readyCtx)
 	}()
 
 	v := version.Get()
@@ -689,6 +709,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.stopPrune()
 	<-s.pruneDone
 
+	s.stopReady()
+	<-s.readyDone
+
 	if err := s.database.Close(); err != nil {
 		s.Logger.WarnContext(ctx, "failed to close the database", slog.Any("error", err))
 	}
@@ -724,14 +747,6 @@ func (s *Server) stopTracing(ctx context.Context) {
 	if err := s.shutdownTracing(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to export the last spans", slog.Any("error", err))
 	}
-}
-
-func (s *Server) ready(ctx context.Context, database *db.DB) error {
-	if s.draining.Load() {
-		return errors.New("shutting down")
-	}
-
-	return database.Ping(ctx)
 }
 
 func before(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {

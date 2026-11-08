@@ -1,0 +1,11 @@
+logging:
+  level: info
+db:
+  path: /data/ims.db
+api:
+  address: 0.0.0.0
+  port: 5020
+sip:
+  addresses: [10.60.0.100]
+diameter:
+  name: eth0

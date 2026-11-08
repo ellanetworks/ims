@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -265,7 +266,14 @@ func TestLoadInvalid(t *testing.T) {
 	}{
 		{"missing db path", validAPI + validDiameter, "db.path is required"},
 		{"unknown log level", "logging:\n  level: trace\n" + valid + validDiameter, `level string "trace": unknown name`},
-		{"no sip addresses", validDB + validAPI + validDiameter, "sip.addresses needs at least one address"},
+		{"no sip addresses", validDB + validAPI + validDiameter, "sip.name or sip.addresses is required"},
+		{"sip name and addresses", validDB + validAPI + "sip:\n  name: lo\n  addresses: [10.0.0.5]\n" + validDiameter, "sip.name and sip.addresses cannot both be set"},
+		{"unknown sip interface", validDB + validAPI + "sip:\n  name: ims-missing0\n" + validDiameter, "sip.name ims-missing0:"},
+		{"diameter name and address", valid + "diameter:\n  name: lo\n  address: 10.0.0.5\n", "diameter.name and diameter.address cannot both be set"},
+		{"unknown diameter interface", valid + "diameter:\n  name: ims-missing0\n", "diameter.name ims-missing0:"},
+		{"uppercase host label", valid + validDiameter + "  host_label: IMS-1\n", `diameter.host_label "IMS-1" must contain only lowercase letters, digits and hyphens`},
+		{"host label with a dot", valid + validDiameter + "  host_label: ims.1\n", `diameter.host_label "ims.1" must contain only lowercase letters, digits and hyphens`},
+		{"host label ending in a hyphen", valid + validDiameter + "  host_label: ims-\n", `diameter.host_label "ims-" must not start or end with a hyphen`},
 		{"unspecified sip address", validDB + validAPI + "sip:\n  addresses: [0.0.0.0]\n" + validDiameter, "sip.addresses: 0.0.0.0 must be a specific address"},
 		{"unspecified sip ipv6 address", validDB + validAPI + "sip:\n  addresses: [\"::\"]\n" + validDiameter, "sip.addresses: :: must be a specific address"},
 		{"sip address with zone", validDB + validAPI + "sip:\n  addresses: [\"fe80::1%eth0\"]\n" + validDiameter, "sip.addresses: fe80::1%eth0 must not have a zone"},
@@ -301,7 +309,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"the operator", valid + validDiameter + "ims:\n  mcc: \"001\"\n", "field ims not found"},
 		{"the peers", valid + validDiameter + "  peers: []\n", "field peers not found"},
 		{"the policy", valid + "pcscf:\n  policy:\n    rx: pcrf\n" + validDiameter, "field policy not found"},
-		{"missing diameter", valid, "diameter.address is required"},
+		{"missing diameter", valid, "diameter.name or diameter.address is required"},
 		{"unspecified diameter address", valid + "diameter:\n  address: 0.0.0.0\n", "diameter.address must be a specific address"},
 		{"diameter port out of range", valid + "diameter:\n  address: 10.0.0.5\n  port: 70000\n", "diameter.port 70000 is out of range"},
 		{"n5 tls without ca", valid + validDiameter + strings.Replace(n5TLS, "    ca: /etc/ims/tls/ca.crt\n", "", 1), "n5.tls.ca is required"},
@@ -393,6 +401,44 @@ func TestLoadInvalid(t *testing.T) {
 				t.Fatalf("Load error = %v, want it to contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadInterfaces(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+"sip:\n  name: lo\n"+"diameter:\n  name: lo\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	loopback := netip.MustParseAddr("127.0.0.1")
+
+	if !slices.Contains(cfg.SIP.Addresses, loopback) {
+		t.Fatalf("sip addresses = %v, want %s among them", cfg.SIP.Addresses, loopback)
+	}
+
+	if !slices.Contains(cfg.Diameter.Addrs(), loopback) {
+		t.Fatalf("diameter addresses = %v, want %s among them", cfg.Diameter.Addrs(), loopback)
+	}
+}
+
+func TestLoadDiameterHostLabel(t *testing.T) {
+	cfg, err := Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+"  host_label: ims-0\n"))
+	if err != nil || cfg.Diameter.HostLabel != "ims-0" {
+		t.Fatalf("Load = %+v, %v, want host label ims-0", cfg.Diameter, err)
+	}
+
+	t.Setenv(EnvDiameterHostLabel, "ims-1")
+
+	cfg, err = Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter+"  host_label: ims-0\n"))
+	if err != nil || cfg.Diameter.HostLabel != "ims-1" {
+		t.Fatalf("Load = %+v, %v, want the label of %s", cfg.Diameter, err, EnvDiameterHostLabel)
+	}
+
+	t.Setenv(EnvDiameterHostLabel, "IMS_1")
+
+	_, err = Load(writeConfig(t, validDB+validAPI+validSIP+validDiameter))
+	if want := EnvDiameterHostLabel + ` "IMS_1" must contain only lowercase letters, digits and hyphens`; err == nil || err.Error() != want {
+		t.Fatalf("Load error = %v, want %q", err, want)
 	}
 }
 

@@ -33,7 +33,7 @@ import {
   type CallOutcome,
 } from "@/queries/callRecords";
 import { listDiameterPeers, peerName } from "@/queries/diameter";
-import { getIPSMGW } from "@/queries/ipsmgw";
+import { getIPSMGW, listSMSRoutes } from "@/queries/ipsmgw";
 import {
   countClientRegistrations,
   countGroupCalls,
@@ -307,6 +307,10 @@ export default function Dashboard() {
   const hasTrunks = (trunks.data?.length ?? 0) > 0;
   const trafficSize = hasTrunks ? QUARTER : TRAFFIC_THIRD;
   const ipsmgw = useQuery({ queryKey: ["ip-sm-gw"], queryFn: getIPSMGW });
+  const smsRoutes = useQuery({
+    queryKey: ["sms-routes"],
+    queryFn: listSMSRoutes,
+  });
   const mcptt = useMCPTTStatus();
   const mcpttOn = !!mcptt.status;
   const pttClients = useQuery({
@@ -355,8 +359,8 @@ export default function Dashboard() {
     ? CALL_OUTCOMES.filter((o) => ALWAYS_SHOWN.includes(o) || byOutcome[o] > 0)
     : [];
 
-  const smscs = (peers.data ?? []).filter(
-    (p) => (p.service_centres ?? []).length > 0,
+  const smscs = (peers.data ?? []).filter((p) =>
+    (smsRoutes.data ?? []).some((r) => r.peers.includes(p.id)),
   );
   const pcscfs = sip.data ? pcscfAddresses(sip.data.listeners) : [];
 
@@ -504,9 +508,13 @@ export default function Dashboard() {
         <Grid size={HALF}>
           <Panel
             title="SMS over IP"
-            to="/cores"
-            loading={ipsmgw.isPending || peers.isPending}
-            error={failedToLoad(ipsmgw) || failedToLoad(peers)}
+            to="/sms"
+            loading={ipsmgw.isPending || peers.isPending || smsRoutes.isPending}
+            error={
+              failedToLoad(ipsmgw) ||
+              failedToLoad(peers) ||
+              failedToLoad(smsRoutes)
+            }
             action={
               ipsmgw.data && <ServiceState enabled={!!ipsmgw.data.number} />
             }

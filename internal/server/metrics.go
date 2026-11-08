@@ -67,6 +67,7 @@ type metrics struct {
 	ibcf         *ibcf.Metrics
 	trunks       *trunkmon.Metrics
 	trunkMedia   *trgw.Metrics
+	readiness    *readinessMetrics
 }
 
 func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]settings.Peer, []diameter.PeerStatus),
@@ -80,6 +81,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		ibcf:          ibcf.NewMetrics(),
 		trunks:        trunkmon.NewMetrics(),
 		trunkMedia:    trgw.NewMetrics(),
+		readiness:     newReadinessMetrics(),
 		sipResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ellaims_sip_responses_total",
 			Help: "Final responses the P-CSCF sent to UEs, by method and status class.",
@@ -152,6 +154,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m.registry.MustRegister(m.ibcf.Collectors()...)
 	m.registry.MustRegister(m.trunks.Collectors()...)
 	m.registry.MustRegister(m.trunkMedia.Collectors()...)
+	m.registry.MustRegister(m.readiness.collectors()...)
 
 	return m
 }

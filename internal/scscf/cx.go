@@ -113,7 +113,7 @@ func (r *Registrar) cx(ctx context.Context, to db.HSS, build func(tgpp.Envelope)
 		ans, err = r.cxTo(ctx, to, build)
 	} else {
 		ans, err = r.cxBound(ctx, to, build)
-		if undeliverable(ans, err) {
+		if Undeliverable(ans, err) {
 			r.log.InfoContext(ctx, "the HSS of the registration is unreachable, trying the realm of the HSS", slog.String("hss", to.Host),
 				slog.Any("error", undeliverableReason(ans, err)))
 
@@ -165,7 +165,7 @@ func (r *Registrar) cxTo(ctx context.Context, to db.HSS, build func(tgpp.Envelop
 
 // RFC 6733 section 7.1.3
 // RFC 3539 section 3.10
-func undeliverable(ans *diameter.Message, err error) bool {
+func Undeliverable(ans *diameter.Message, err error) bool {
 	if err != nil {
 		return errors.Is(err, diameter.ErrNotConnected) || errors.Is(err, diameter.ErrUnableToDeliver) ||
 			errors.Is(err, diameter.ErrApplicationUnsupported)
