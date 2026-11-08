@@ -12,7 +12,9 @@ import (
 	"github.com/ellanetworks/core/diameter/sgd"
 	"github.com/ellanetworks/core/diameter/sh"
 	"github.com/ellanetworks/core/diameter/tgpp"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
+	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/sip/transaction"
 )
@@ -65,15 +67,16 @@ func (s *Server) ipsmgwNumberChanged(ctx context.Context) {
 type shClient struct{ s *Server }
 
 // TS 29.328 clause 6.1.2.1
-func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, number string) error {
-	core := c.s.core.Load()
-	if core == nil {
-		return errNoCore
+// TS 29.328 clause 6.5
+func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, number string, to db.HSS) (db.HSS, error) {
+	cr := c.s.core.Load()
+	if cr == nil {
+		return db.HSS{}, errNoCore
 	}
 
 	data, err := sh.MarshalShData(sh.ShData{SMSRegistration: &sh.SMSRegistrationInfo{IPSMGWNumber: number}})
 	if err != nil {
-		return err
+		return db.HSS{}, err
 	}
 
 	id := sh.UserIdentity{MSISDN: user.MSISDN}
@@ -81,33 +84,48 @@ func (c shClient) UpdateSMSRegistration(ctx context.Context, user ipsmgw.User, n
 		id.PublicIdentity = user.IMPU.Identity().String()
 	}
 
-	req, err := sh.NewProfileUpdateRequest(tgpp.Envelope{
-		SessionID:        core.node.NewSessionID(),
-		Origin:           core.node.Identity(),
-		DestinationRealm: core.realms.of(settings.ApplicationSh)(),
-	}, sh.ProfileUpdateRequest{
-		User:           id,
-		DataReferences: []sh.DataReference{sh.DataSMSRegistrationInfo},
-		UserData:       data,
-	})
-	if err != nil {
-		return err
+	update := sh.ProfileUpdateRequest{User: id, DataReferences: []sh.DataReference{sh.DataSMSRegistrationInfo}, UserData: data}
+
+	ans, err := c.update(ctx, cr, to, update)
+	if to.Host != "" && scscf.Undeliverable(ans, err) {
+		ans, err = c.update(ctx, cr, db.HSS{}, update)
 	}
 
-	ans, err := observedDiameter{core.node, c.s.metrics}.Send(ctx, req, diameter.FailFast())
 	if err != nil {
-		return fmt.Errorf("Sh-Update: %w", err)
+		return db.HSS{}, fmt.Errorf("Sh-Update: %w", err)
 	}
 
 	if _, err := sh.ParseProfileUpdateAnswer(ans); err != nil {
 		if r, ok := tgpp.ResultOf(err); ok && r.Code >= 5000 && r.Code < 6000 {
-			return fmt.Errorf("Sh-Update: %w: %w", ipsmgw.ErrRejected, err)
+			return db.HSS{}, fmt.Errorf("Sh-Update: %w: %w", ipsmgw.ErrRejected, err)
 		}
 
-		return fmt.Errorf("Sh-Update: %w", err)
+		return db.HSS{}, fmt.Errorf("Sh-Update: %w", err)
 	}
 
-	return nil
+	origin := tgpp.ParseEnvelope(ans).Origin
+
+	return db.HSS{Host: origin.OriginHost, Realm: origin.OriginRealm}, nil
+}
+
+func (c shClient) update(ctx context.Context, cr *core, to db.HSS, update sh.ProfileUpdateRequest) (*diameter.Message, error) {
+	env := tgpp.Envelope{
+		SessionID:        cr.node.NewSessionID(),
+		Origin:           cr.node.Identity(),
+		DestinationHost:  to.Host,
+		DestinationRealm: to.Realm,
+	}
+
+	if to.Host == "" || to.Realm == "" {
+		env.DestinationRealm = cr.realms.of(settings.ApplicationSh)()
+	}
+
+	req, err := sh.NewProfileUpdateRequest(env, update)
+	if err != nil {
+		return nil, err
+	}
+
+	return observedDiameter{cr.node, c.s.metrics}.Send(ctx, req, diameter.FailFast())
 }
 
 // TS 24.011 clause 10
@@ -116,13 +134,7 @@ const smscAttemptTimeout = 10 * time.Second
 type smscClient struct{ s *Server }
 
 func (c smscClient) Any() bool {
-	for _, p := range c.s.settings.Get().Peers {
-		if len(p.ServiceCentres) > 0 {
-			return true
-		}
-	}
-
-	return false
+	return len(c.s.settings.Get().SMSRoutes) > 0
 }
 
 // TS 29.338 clause 6.3.1.1

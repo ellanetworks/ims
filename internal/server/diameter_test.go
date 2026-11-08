@@ -107,7 +107,7 @@ func (f *fakePeer) config(id string) settings.Peer {
 	return settings.Peer{
 		ID:           id,
 		Host:         f.host,
-		Address:      loopback,
+		Address:      loopback.String(),
 		Port:         f.port,
 		Transport:    settings.TransportTCP,
 		Applications: f.apps,
@@ -288,6 +288,39 @@ func TestDiameterPeersOpen(t *testing.T) {
 
 	if status := getDiameter(t, srv); status.Host != imsHost || status.Realm != imsRealm {
 		t.Errorf("identity = %s %s, want %s %s", status.Host, status.Realm, imsHost, imsRealm)
+	}
+}
+
+func TestDiameterHostLabelAndPeerName(t *testing.T) {
+	host := "ims-1." + imsRealm
+
+	_, addr := diametertest.Listen(t, diametertest.Config{
+		Identity: diameter.Identity{
+			OriginHost:      "hss.ims.mnc001.mcc001.3gppnetwork.org",
+			OriginRealm:     imsRealm,
+			HostIPAddresses: []netip.Addr{loopback},
+			ProductName:     "fake",
+		},
+		Peer:    diameter.Peer{ID: "ims", Host: host, Applications: []diameter.Application{applications[settings.ApplicationCx]}},
+		Handler: diameter.NewMux(),
+	})
+
+	cfg := testConfig(t)
+	cfg.Diameter.HostLabel = "ims-1"
+	cfg.Peers = seedPeers(settings.Peer{
+		ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org", Address: "localhost", Port: int(addr.Port()),
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
+		Priority: settings.DefaultPriority,
+	})
+
+	srv := startIMS(t, cfg)
+
+	if p := waitOpen(t, srv, "hss")["hss"]; p.Address != "localhost" || p.Status.RemoteAddress != "127.0.0.1" {
+		t.Errorf("peer = %+v, want localhost reached at 127.0.0.1", p)
+	}
+
+	if status := getDiameter(t, srv); status.Host != host {
+		t.Errorf("identity = %s, want %s", status.Host, host)
 	}
 }
 
@@ -492,7 +525,7 @@ func TestDiameterPeerDialsIMS(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.Peers = seedPeers(settings.Peer{
-		ID: "hss", Host: hssHost, Address: loopback, Port: unusedPort(t),
+		ID: "hss", Host: hssHost, Address: loopback.String(), Port: unusedPort(t),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 	cfg.Diameter.Port = unusedPort(t)
@@ -526,7 +559,7 @@ func TestDiameterElection(t *testing.T) {
 
 	cfg := testConfig(t)
 	cfg.Peers = seedPeers(settings.Peer{
-		ID: "hss", Host: hssHost, Address: loopback, Port: hss.port(),
+		ID: "hss", Host: hssHost, Address: loopback.String(), Port: hss.port(),
 		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 	})
 	cfg.Diameter.Port = unusedPort(t)
@@ -564,7 +597,7 @@ func TestDiameterHandshakeTimeout(t *testing.T) {
 
 			cfg := testConfig(t)
 			cfg.Peers = seedPeers(settings.Peer{
-				ID: "hss", Host: hssHost, Address: loopback, Port: hss.port(),
+				ID: "hss", Host: hssHost, Address: loopback.String(), Port: hss.port(),
 				Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
 			})
 			cfg.Diameter.Port = unusedPort(t)
@@ -766,7 +799,7 @@ func TestDiameterPeersRouteThePreviousRealms(t *testing.T) {
 	previous := settings.Settings{
 		Operator: settings.Operator{MCC: "001", MNC: "01"},
 		Peers: []settings.Peer{{
-			ID: "core", Host: "core.epc.example.org", Address: netip.MustParseAddr("192.0.2.1"), Port: 3868,
+			ID: "core", Host: "core.epc.example.org", Address: "192.0.2.1", Port: 3868,
 			Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx}, Priority: 10,
 		}},
 		Routes: []settings.Route{
@@ -803,7 +836,7 @@ func TestDiameterPeersOfSGdHaveNoRoute(t *testing.T) {
 	st := settings.Settings{
 		Operator: settings.Operator{MCC: "001", MNC: "01"},
 		Peers: []settings.Peer{{
-			ID: "core", Host: "core.epc.example.org", Address: netip.MustParseAddr("192.0.2.1"), Port: 3868,
+			ID: "core", Host: "core.epc.example.org", Address: "192.0.2.1", Port: 3868,
 			Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationS6c, settings.ApplicationSGd},
 			Priority:     10,
 		}},
@@ -830,6 +863,26 @@ func TestDiameterPeersOfSGdHaveNoRoute(t *testing.T) {
 		{ID: sgd.ApplicationID, VendorID: tgpp.VendorID},
 	}; !slices.Equal(got, want) {
 		t.Fatalf("applications = %+v, want %+v", got, want)
+	}
+}
+
+func TestDiameterPeersByNameOrAddress(t *testing.T) {
+	st := settings.Settings{
+		Operator: settings.Operator{MCC: "001", MNC: "01"},
+		Peers: []settings.Peer{
+			{ID: "hss", Address: "192.0.2.1", Port: 3868, Applications: []settings.Application{settings.ApplicationCx}},
+			{ID: "smsc", Address: "smsc-0.smsc.ella.svc.cluster.local", Port: 3868, Applications: []settings.Application{settings.ApplicationSGd}},
+		},
+	}
+
+	peers := diameterPeers(st)
+
+	if p := peers[0]; p.Name != "" || !slices.Equal(p.Addresses, []netip.Addr{netip.MustParseAddr("192.0.2.1")}) {
+		t.Fatalf("peer by address = %+v", p)
+	}
+
+	if p := peers[1]; p.Name != "smsc-0.smsc.ella.svc.cluster.local" || len(p.Addresses) != 0 {
+		t.Fatalf("peer by name = %+v", p)
 	}
 }
 

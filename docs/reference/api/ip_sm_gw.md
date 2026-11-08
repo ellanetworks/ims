@@ -64,3 +64,85 @@ This path sets the IP-SM-GW number. The IP-SM-GW registers the new number at the
     }
 }
 ```
+
+## List SMS Routes
+
+This path returns the SMS routes, ordered by identifier. An SMS route sends the short messages from phones of a service centre address to the Diameter peers of its SMS-IWMSC.
+
+| Method | Path                      |
+| ------ | ------------------------- |
+| GET    | `/api/v1/ip-sm-gw/routes` |
+
+### Response Fields
+
+| Field            | Type   | Description |
+| ---------------- | ------ | ----------- |
+| `id`             | string | Route identifier, a UUIDv7. |
+| `service_centre` | string | E.164 service centre address, without `+`. Empty for the default route, which serves the service centre addresses of no other route. |
+| `peers`          | array  | Identifiers of the Diameter peers of the route. Short messages try them by peer priority, lowest first. |
+
+### Sample Response
+
+```json
+{
+    "result": {
+        "items": [
+            {
+                "id": "01a1796b-90b3-74bc-b148-bdc28999206e",
+                "service_centre": "15550000000",
+                "peers": ["01a1796b-90b3-74bc-b148-bdc28999206a"]
+            }
+        ]
+    }
+}
+```
+
+## Get an SMS Route
+
+| Method | Path                           |
+| ------ | ------------------------------ |
+| GET    | `/api/v1/ip-sm-gw/routes/{id}` |
+
+The response has the fields of [List SMS Routes](#list-sms-routes).
+
+## Create an SMS Route
+
+| Method | Path                      |
+| ------ | ------------------------- |
+| POST   | `/api/v1/ip-sm-gw/routes` |
+
+### Request Body
+
+| Field            | Type   | Required | Description |
+| ---------------- | ------ | -------- | ----------- |
+| `service_centre` | string | No       | E.164 number of 1 to 15 digits, without `+`, or empty for the default route. Unique among routes. Default empty. |
+| `peers`          | array  | Yes      | At least one Diameter peer identifier, each once. Each peer serves `sgd` and has a host. |
+
+### Response Codes
+
+| Code  | Description |
+| ----- | ----------- |
+| `409` | Another route has the same service centre, or a peer does not serve `sgd` or has no host. |
+
+### Sample Request
+
+```json
+{
+    "service_centre": "15550000000",
+    "peers": ["01a1796b-90b3-74bc-b148-bdc28999206a"]
+}
+```
+
+## Update an SMS Route
+
+| Method | Path                           |
+| ------ | ------------------------------ |
+| PUT    | `/api/v1/ip-sm-gw/routes/{id}` |
+
+The request body and response codes are those of [Create an SMS Route](#create-an-sms-route).
+
+## Delete an SMS Route
+
+| Method | Path                           |
+| ------ | ------------------------------ |
+| DELETE | `/api/v1/ip-sm-gw/routes/{id}` |

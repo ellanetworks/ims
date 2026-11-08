@@ -19,7 +19,8 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
         - `cert` (string): The path to the PEM certificate chain, the server's certificate first.
         - `key` (string): The path to the PEM private key.
 - `sip` (object): SIP, for every CSCF.
-    - `addresses` (list of strings): The IP addresses the CSCFs listen on and phones reach. At least one; specific addresses, not `0.0.0.0` or `::`.
+    - `name` (string): The network interface whose addresses the CSCFs listen on and phones reach. Either `name` or `addresses` must be set.
+    - `addresses` (list of strings): The IP addresses the CSCFs listen on and phones reach. Specific addresses, not `0.0.0.0` or `::`. Either `name` or `addresses` must be set.
     - `trusted_networks` (list of strings, optional): The networks, in CIDR notation, of the other nodes of the trust domain, such as Application Servers. The S-CSCF accepts requests only from them, the I-CSCF accepts their asserted identities, and Application Servers are sent requests only in them. Must not cover every address of a family. See [Security](../explanation/security.md#the-trust-domain).
 - `pcscf` (object, optional): The P-CSCF.
     - `port` (int, optional): The SIP port, UDP and TCP. Default `5060`.
@@ -32,8 +33,10 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
     - `port` (int, optional): The SIP port, UDP and TCP. Default `5080`.
     - `as_timeout` (duration, optional): How long an Application Server has to respond before the default handling of its iFC applies, e.g. `4s`. Under `32s`. Default `4s`.
 - `diameter` (object): Diameter, to the HSS and the PCRF.
-    - `address` (string): The IP address of the Diameter connections, advertised to peers. A specific address, not `0.0.0.0` or `::`.
+    - `name` (string): The network interface of the Diameter connections, on all its addresses, advertised to peers. Either `name` or `address` must be set.
+    - `address` (string): The IP address of the Diameter connections, advertised to peers. A specific address, not `0.0.0.0` or `::`. Either `name` or `address` must be set.
     - `port` (int, optional): The port. Default `3868`.
+    - `host_label` (string, optional): The first label of the node's [Diameter host](connectivity.md#diameter-identity). Default `ims`.
 - `n5` (object, optional): N5, to a PCF. Required to select the PCF as the policy function.
     - `notify` (object): Where the P-CSCF receives the PCF's notifications.
         - `address` (string): The IP address. A specific address, not `0.0.0.0` or `::`.

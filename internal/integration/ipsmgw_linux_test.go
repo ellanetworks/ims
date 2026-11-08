@@ -115,8 +115,8 @@ func (s *scene) fakeCore(imsi string) *fakeCore {
 
 	id := s.addPeer(api.DiameterPeerParams{
 		Host: coreHost, Address: addr.Addr().String(), Port: int(addr.Port()), Applications: []string{"sh", "s6c", "sgd"},
-		ServiceCentres: []string{serviceCentre},
 	})
+	s.post("/api/v1/ip-sm-gw/routes", api.SMSRouteParams{ServiceCentre: serviceCentre, Peers: []string{id}}, nil)
 	s.put("/api/v1/diameter/routes/sh", api.DiameterRouteParams{Realm: coreRealm})
 	s.put("/api/v1/diameter/routes/s6c", api.DiameterRouteParams{Realm: coreRealm})
 	s.put("/api/v1/ip-sm-gw", api.IPSMGWParams{Number: ipsmgwNumber})

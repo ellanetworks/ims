@@ -27,7 +27,7 @@ These paths take no token: `GET /api/v1/livez`, `GET /api/v1/readyz`, `GET /api/
 | Read Only       | `2`       | Reading the settings, the registrations, the call records and the MCPTT state. |
 | Network Manager | `3`       | Read Only, plus changing the settings and re-authenticating registrations. |
 
-Only an Admin manages users. Every user reads its own user, changes its own password, and manages its own API tokens.
+Only an Admin manages users and [backs up](backup.md). Every user reads its own user, changes its own password, and manages its own API tokens.
 
 An API token has the role of its user, but cannot create API tokens, change a password, or manage users or [single sign-on](oidc.md).
 
@@ -49,7 +49,7 @@ A failed response carries an `error`:
 }
 ```
 
-`GET /api/v1/livez` and `GET /api/v1/readyz` answer 204 with no body when they succeed. `GET /api/v1/metrics` returns text in the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details), `GET /api/v1/openapi.yaml` returns YAML, and unknown paths and methods answer in plain text.
+`GET /api/v1/livez` answers 204 with no body. `GET /api/v1/metrics` returns text in the [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details), `GET /api/v1/openapi.yaml` returns YAML, and unknown paths and methods answer in plain text.
 
 ## OpenAPI Specification
 

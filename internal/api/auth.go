@@ -96,6 +96,7 @@ const (
 	PermReadProfiles              Permission = "pprof:read"
 	PermReadOIDC                  Permission = "oidc:read"
 	PermUpdateOIDC                Permission = "oidc:update"
+	PermBackup                    Permission = "backup:manage"
 )
 
 var readPermissions = []Permission{
@@ -109,7 +110,7 @@ var operatePermissions = []Permission{
 }
 
 var permissions = map[db.Role][]Permission{
-	db.RoleAdmin:          slices.Concat(readPermissions, operatePermissions, []Permission{PermManageUsers, PermReadProfiles, PermReadOIDC, PermUpdateOIDC}),
+	db.RoleAdmin:          slices.Concat(readPermissions, operatePermissions, []Permission{PermManageUsers, PermReadProfiles, PermReadOIDC, PermUpdateOIDC, PermBackup}),
 	db.RoleReadOnly:       readPermissions,
 	db.RoleNetworkManager: slices.Concat(readPermissions, operatePermissions),
 }

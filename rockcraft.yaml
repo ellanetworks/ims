@@ -16,6 +16,7 @@ services:
     command: ims --config /ims.yaml
     startup: enabled
     on-failure: restart
+    kill-delay: 37s
 
 parts:
   core:

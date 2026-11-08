@@ -248,6 +248,20 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
+func TestLoginsFromManyNetworksDoNotLockOutOthers(t *testing.T) {
+	a := newTestAPI(t)
+
+	for i := range api.MaxRateKeys {
+		req := request(http.MethodPost, "/api/v1/auth/login", "", "")
+		req.RemoteAddr = fmt.Sprintf("[2001:db8:%x:%x::1]:4242", i>>16, i&0xffff)
+		serve(a.handler, req)
+	}
+
+	if code := a.loginFrom("203.0.113.30:4242", testAdmin, testPassword); code != http.StatusOK {
+		t.Fatalf("login once the clients are full = %d, want %d", code, http.StatusOK)
+	}
+}
+
 func TestLoginRateLimitPerIPv6Prefix(t *testing.T) {
 	a := newTestAPI(t)
 

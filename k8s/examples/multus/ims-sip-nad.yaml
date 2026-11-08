@@ -1,8 +1,7 @@
-# The network Ella IMS reaches the HSS and the PCRF on.
 apiVersion: "k8s.cni.cncf.io/v1"
 kind: NetworkAttachmentDefinition
 metadata:
-  name: ims-diameter
+  name: ims-sip
 spec:
   config: '{
     "cniVersion": "1.0.0",
@@ -12,7 +11,10 @@ spec:
     "ipam": {
       "type": "static",
       "addresses": [
-        {"address": "10.3.0.5/24"}
+        {"address": "10.6.0.5/24"}
+      ],
+      "routes": [
+        {"dst": "10.46.0.0/16", "gw": "10.6.0.2"}
       ]
     }
   }'

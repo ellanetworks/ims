@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
@@ -22,18 +23,17 @@ type DiameterStatus struct {
 func GetDiameterStatus(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		op := cfg.Settings.Get().Operator
-		writeResponse(r.Context(), w, DiameterStatus{Host: op.DiameterHost(), Realm: op.DiameterRealm()}, http.StatusOK, cfg.Logger)
+		writeResponse(r.Context(), w, DiameterStatus{Host: op.DiameterHost(cfg.DiameterLabel), Realm: op.DiameterRealm()}, http.StatusOK, cfg.Logger)
 	})
 }
 
 type DiameterPeerParams struct {
-	Host           string   `json:"host"`
-	Address        string   `json:"address"`
-	Port           int      `json:"port,omitempty"`
-	Transport      string   `json:"transport,omitempty"`
-	Applications   []string `json:"applications"`
-	Priority       *int     `json:"priority,omitempty"`
-	ServiceCentres []string `json:"service_centres,omitempty"`
+	Host         string   `json:"host"`
+	Address      string   `json:"address"`
+	Port         int      `json:"port,omitempty"`
+	Transport    string   `json:"transport,omitempty"`
+	Applications []string `json:"applications"`
+	Priority     *int     `json:"priority,omitempty"`
 }
 
 type DiameterPeer struct {
@@ -146,13 +146,18 @@ func peerSettings(params DiameterPeerParams) (settings.Peer, error) {
 		p.Priority = *params.Priority
 	}
 
-	if params.Address != "" {
-		a, err := netip.ParseAddr(params.Address)
-		if err != nil {
-			return settings.Peer{}, settings.Invalidf("address must be an IPv4 or IPv6 address")
+	if address := strings.TrimSpace(params.Address); address != "" {
+		if a, err := netip.ParseAddr(address); err == nil {
+			address = a.Unmap().String()
+		} else {
+			address = strings.ToLower(address)
 		}
 
-		p.Address = a.Unmap()
+		if !settings.CanonicalPeerAddress(address) {
+			return settings.Peer{}, settings.Invalidf("address must be an IPv4 or IPv6 address or a host name")
+		}
+
+		p.Address = address
 	}
 
 	if p.Port == 0 {
@@ -166,8 +171,6 @@ func peerSettings(params DiameterPeerParams) (settings.Peer, error) {
 	for _, a := range params.Applications {
 		p.Applications = append(p.Applications, settings.Application(a))
 	}
-
-	p.ServiceCentres = params.ServiceCentres
 
 	return p, nil
 }
@@ -200,13 +203,12 @@ func peerResponse(p settings.Peer, statuses map[string]diameter.PeerStatus) Diam
 	resp := DiameterPeer{
 		ID: p.ID,
 		DiameterPeerParams: DiameterPeerParams{
-			Host:           p.Host,
-			Address:        p.Address.String(),
-			Port:           p.Port,
-			Transport:      string(p.Transport),
-			Applications:   []string{},
-			Priority:       &p.Priority,
-			ServiceCentres: p.ServiceCentres,
+			Host:         p.Host,
+			Address:      p.Address,
+			Port:         p.Port,
+			Transport:    string(p.Transport),
+			Applications: []string{},
+			Priority:     &p.Priority,
 		},
 		Status: peerStatus(p, statuses),
 	}

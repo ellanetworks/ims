@@ -8,7 +8,7 @@ Diameter peers are the HSSs, SLFs, PCRFs, DRAs, SMSCs, MMEs and SMSFs Ella IMS c
 
 ## Get the Diameter Identity
 
-This path returns the Diameter identity of the IMS, derived from the operator settings.
+This path returns the [Diameter identity](../connectivity.md#diameter-identity) of the node.
 
 | Method | Path               |
 | ------ | ------------------ |
@@ -18,7 +18,7 @@ This path returns the Diameter identity of the IMS, derived from the operator se
 
 | Field   | Type   | Description |
 | ------- | ------ | ----------- |
-| `host`  | string | Origin-Host of the IMS. |
+| `host`  | string | Origin-Host of the node. |
 | `realm` | string | Origin-Realm of the IMS. |
 
 ### Sample Response
@@ -46,12 +46,11 @@ This path returns the list of Diameter peers, in the order they were created in.
 | ----------------------- | ------ | ----------- |
 | `id`                    | string | Peer identifier, a UUIDv7. |
 | `host`                  | string | DiameterIdentity of the peer, which must match the Origin-Host of its capabilities exchange. Empty takes the Origin-Host the peer gives. |
-| `address`               | string | IPv4 or IPv6 address of the peer. |
+| `address`               | string | IPv4 or IPv6 address, or host name, of the peer. |
 | `port`                  | int    | Port of the peer. |
 | `transport`             | string | `tcp` or `sctp`. |
 | `applications`          | array  | Applications the peer serves: `cx` for an HSS or an SLF, and `sh` and `s6c` for its IP-SM-GW functions; `rx` for a PCRF or a DRA; `sgd` for an SMSC, an MME or an SMSF. |
-| `priority`              | int    | Requests try the peers serving their application by priority, lowest first, and share them between peers of the same priority. SMSCs of the same service centre are tried by priority. |
-| `service_centres`       | array  | Service centre addresses of an SMSC, E.164 numbers without `+`. Absent if none. |
+| `priority`              | int    | Requests try the peers serving their application by priority, lowest first, and share them between peers of the same priority. The peers of an SMS route are tried by priority. |
 | `status`                | object | Connection to the peer. |
 | `status.state`          | string | `down`, `connecting`, `open`, `suspect`, `reopen` or `closing`. `down` until the IMS has tried the peer. |
 | `status.since`          | string | Time of the last state change (RFC 3339). |
@@ -155,12 +154,11 @@ This path creates a Diameter peer, which the IMS then connects to.
 | Field             | Type   | Required | Description |
 | ----------------- | ------ | -------- | ----------- |
 | `host`            | string | No       | Domain name. Unique among peers. |
-| `address`         | string | Yes      | Specific IPv4 or IPv6 address. |
+| `address`         | string | Yes      | Specific IPv4 or IPv6 address, or host name. |
 | `port`            | int    | No       | 1–65535. Default `3868`. |
 | `transport`       | string | No       | `tcp` or `sctp`. Default `tcp`. |
 | `applications`    | array  | Yes      | At least one of `cx`, `rx`, `sh`, `s6c` and `sgd`, each once. |
 | `priority`        | int    | No       | 0–65535. Default `10`. |
-| `service_centres` | array  | No       | E.164 numbers of 1 to 15 digits, without `+`, each once. Requires `sgd` in `applications` and a `host`. |
 
 ### Response Codes
 
@@ -219,7 +217,7 @@ This path replaces a Diameter peer, which the IMS then reconnects to. The reques
 | Code  | Description |
 | ----- | ----------- |
 | `404` | No peer has this identifier. |
-| `409` | Another peer has the same host, or the same address and transport without a host; or the policy interface is `rx` and no other peer serves `rx`. |
+| `409` | Another peer has the same host, or the same address and transport without a host; the policy interface is `rx` and no other peer serves `rx`; or an SMS route has the peer, which then needs `sgd` and a host. |
 
 ### Sample Request
 
@@ -275,7 +273,7 @@ This path deletes a Diameter peer.
 | Code  | Description |
 | ----- | ----------- |
 | `404` | No peer has this identifier. |
-| `409` | The policy interface is `rx` and no other peer serves `rx`. |
+| `409` | The policy interface is `rx` and no other peer serves `rx`, or an SMS route has the peer. |
 
 ### Sample Response
 
