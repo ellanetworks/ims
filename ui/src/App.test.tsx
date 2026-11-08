@@ -72,12 +72,12 @@ describe("App", () => {
         .map((link) => [link.textContent, link.getAttribute("href")]),
     ).toEqual([
       ["Dashboard", "/dashboard"],
+      ["Operator", "/operator"],
       ["Cores", "/cores"],
       ["SIP Trunks", "/sip-trunks"],
-      ["SMS over IP", "/sms"],
-      ["Operator", "/operator"],
       ["Registrations", "/registrations"],
       ["Calls", "/calls"],
+      ["SMS over IP", "/sms"],
       ["Push-to-Talk", "/ptt"],
       ["Users", "/users"],
       ["Single Sign-On", "/single-sign-on"],
@@ -186,12 +186,12 @@ describe("App", () => {
         .map((link) => link.textContent),
     ).toEqual([
       "Dashboard",
+      "Operator",
       "Cores",
       "SIP Trunks",
-      "SMS over IP",
-      "Operator",
       "Registrations",
       "Calls",
+      "SMS over IP",
       "Push-to-Talk",
     ]);
 
@@ -199,6 +199,7 @@ describe("App", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Cores" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Services")).toBeInTheDocument();
     expect(screen.queryByText("System")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Add Peer" }),

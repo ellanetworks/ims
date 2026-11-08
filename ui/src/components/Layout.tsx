@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AppBar,
   Box,
@@ -89,69 +89,80 @@ interface NavItem {
   permission: Permission;
 }
 
-const navItems: NavItem[] = [
+const navSections: { title?: string; items: NavItem[] }[] = [
   {
-    to: "/dashboard",
-    label: "Dashboard",
-    icon: <DashboardIcon color="primary" />,
-    permission: "diameter:read",
+    items: [
+      {
+        to: "/dashboard",
+        label: "Dashboard",
+        icon: <DashboardIcon color="primary" />,
+        permission: "diameter:read",
+      },
+      {
+        to: "/operator",
+        label: "Operator",
+        icon: <FeedIcon color="primary" />,
+        permission: "operator:read",
+      },
+      {
+        to: "/cores",
+        label: "Cores",
+        icon: <HubIcon color="primary" />,
+        permission: "diameter:read",
+      },
+      {
+        to: "/sip-trunks",
+        label: "SIP Trunks",
+        icon: <LanIcon color="primary" />,
+        permission: "sip_trunk:read",
+      },
+      {
+        to: "/registrations",
+        label: "Registrations",
+        icon: <PhoneAndroidIcon color="primary" />,
+        permission: "registration:read",
+      },
+      {
+        to: "/calls",
+        label: "Calls",
+        icon: <CallIcon color="primary" />,
+        permission: "call_record:read",
+      },
+    ],
   },
   {
-    to: "/cores",
-    label: "Cores",
-    icon: <HubIcon color="primary" />,
-    permission: "diameter:read",
+    title: "Services",
+    items: [
+      {
+        to: "/sms",
+        label: "SMS over IP",
+        icon: <SmsIcon color="primary" />,
+        permission: "ip_sm_gw:read",
+      },
+      {
+        to: "/ptt",
+        label: "Push-to-Talk",
+        icon: <RecordVoiceOverIcon color="primary" />,
+        permission: "mcptt:read",
+      },
+    ],
   },
   {
-    to: "/sip-trunks",
-    label: "SIP Trunks",
-    icon: <LanIcon color="primary" />,
-    permission: "sip_trunk:read",
-  },
-  {
-    to: "/sms",
-    label: "SMS over IP",
-    icon: <SmsIcon color="primary" />,
-    permission: "ip_sm_gw:read",
-  },
-  {
-    to: "/operator",
-    label: "Operator",
-    icon: <FeedIcon color="primary" />,
-    permission: "operator:read",
-  },
-  {
-    to: "/registrations",
-    label: "Registrations",
-    icon: <PhoneAndroidIcon color="primary" />,
-    permission: "registration:read",
-  },
-  {
-    to: "/calls",
-    label: "Calls",
-    icon: <CallIcon color="primary" />,
-    permission: "call_record:read",
-  },
-  {
-    to: "/ptt",
-    label: "Push-to-Talk",
-    icon: <RecordVoiceOverIcon color="primary" />,
-    permission: "mcptt:read",
-  },
-];
-
-const systemItems: NavItem[] = [
-  {
-    to: "/users",
-    label: "Users",
-    icon: <AdminPanelSettingsIcon color="primary" />,
-    permission: "user:admin",
-  },
-  {
-    to: "/single-sign-on",
-    label: "Single Sign-On",
-    icon: <KeyIcon color="primary" />,
-    permission: "oidc:read",
+    title: "System",
+    items: [
+      {
+        to: "/users",
+        label: "Users",
+        icon: <AdminPanelSettingsIcon color="primary" />,
+        permission: "user:admin",
+      },
+      {
+        to: "/single-sign-on",
+        label: "Single Sign-On",
+        icon: <KeyIcon color="primary" />,
+        permission: "oidc:read",
+      },
+    ],
   },
 ];
 
@@ -341,26 +352,26 @@ export default function Layout({ children }: { children: ReactNode }) {
           sx={{ flexGrow: 1, overflow: "auto" }}
         >
           <List>
-            {navItems
-              .filter(({ permission }) => auth.can(permission))
-              .map((item) => (
-                <NavLink
-                  key={item.to}
-                  item={item}
-                  pathname={pathname}
-                  onClick={handleNavClick}
-                />
-              ))}
-            {systemItems.some(({ permission }) => auth.can(permission)) && (
-              <>
-                <ListSubheader
-                  sx={{ borderTop: 1, borderColor: "divider", mt: 1, pt: 1 }}
-                >
-                  System
-                </ListSubheader>
-                {systemItems
-                  .filter(({ permission }) => auth.can(permission))
-                  .map((item) => (
+            {navSections.map(({ title, items }) => {
+              const visible = items.filter(({ permission }) =>
+                auth.can(permission),
+              );
+              if (visible.length === 0) return null;
+              return (
+                <Fragment key={title ?? "main"}>
+                  {title && (
+                    <ListSubheader
+                      sx={{
+                        borderTop: 1,
+                        borderColor: "divider",
+                        mt: 1,
+                        pt: 1,
+                      }}
+                    >
+                      {title}
+                    </ListSubheader>
+                  )}
+                  {visible.map((item) => (
                     <NavLink
                       key={item.to}
                       item={item}
@@ -368,8 +379,9 @@ export default function Layout({ children }: { children: ReactNode }) {
                       onClick={handleNavClick}
                     />
                   ))}
-              </>
-            )}
+                </Fragment>
+              );
+            })}
           </List>
         </Box>
 
