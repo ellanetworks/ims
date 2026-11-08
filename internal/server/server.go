@@ -101,10 +101,12 @@ type Server struct {
 	mcptt           atomic.Pointer[mcptt.AS]
 	ases            builtinASs
 	mcpttHomeDomain string
+	mcpttHosts      []string
 
 	ipsmgw           atomic.Pointer[ipsmgw.AS]
 	ipsmgwHomeDomain string
 	ipsmgwPLMN       string
+	ipsmgwHosts      []string
 
 	trunks *trunkmon.Monitor
 
@@ -254,7 +256,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	if cfg.MCPTT != nil {
-		if err := s.startMCPTT(ctx, initial.Operator.HomeDomain()); err != nil {
+		if err := s.startMCPTT(ctx, initial.Operator.HomeDomains()); err != nil {
 			_ = s.records.Close(ctx)
 			_ = apiLn.Close()
 			_ = database.Close()
@@ -594,7 +596,7 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	s.records.CloseOpen()
 
 	if renamed {
-		if err := s.startMCPTT(ctx, st.Operator.HomeDomain()); err != nil {
+		if err := s.startMCPTT(ctx, st.Operator.HomeDomains()); err != nil {
 			s.Logger.ErrorContext(ctx, "failed to restart MCPTT for the new home domain", slog.Any("error", err))
 		}
 	}
@@ -612,6 +614,8 @@ func (s *Server) restartCore(ctx context.Context, st settings.Settings, why stri
 	}
 
 	s.core.Store(c)
+	s.routeMCPTT(st.Operator.HomeDomains())
+	s.routeIPSMGW(st.Operator.HomeDomains())
 	s.resubscribeMCPTT(ctx)
 	s.resubscribeIPSMGW(ctx)
 	s.reprobeTrunks()

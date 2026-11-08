@@ -94,6 +94,9 @@ func TestValidate(t *testing.T) {
 		"IP address domain":    func(o *Operator) { o.Domain = "192.0.2.1" },
 		"long label":           func(o *Operator) { o.Domain = strings.Repeat("a", 64) + ".com" },
 		"long domain":          func(o *Operator) { o.Domain = strings.Repeat("a.", 127) + "com" },
+		"inter-PLMN domain":    func(o *Operator) { o.Domain = "3gppnetwork.org" },
+		"parent of derived":    func(o *Operator) { o.Domain = "mcc001.3gppnetwork.org" },
+		"another PLMN domain":  func(o *Operator) { o.Domain = "ims.mnc002.mcc001.3gppnetwork.org" },
 	}
 
 	if err := validSettings().Validate(); err != nil {
@@ -112,6 +115,13 @@ func TestValidate(t *testing.T) {
 
 	if err := withDomain.Validate(); err != nil {
 		t.Fatalf("Validate with a domain: %v", err)
+	}
+
+	withDerived := validOperator()
+	withDerived.Domain = withDerived.DerivedDomain()
+
+	if err := withDerived.Validate(); err != nil {
+		t.Fatalf("Validate with the derived domain: %v", err)
 	}
 
 	for name, edit := range tests {

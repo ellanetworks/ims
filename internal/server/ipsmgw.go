@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/core/diameter/sh"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -34,9 +35,9 @@ func (s *Server) startIPSMGW(ctx context.Context, op settings.Operator) error {
 		return err
 	}
 
-	s.ases.resolver.Set(ipsmgw.Host(homeDomain), a.Servers())
 	s.ipsmgwHomeDomain, s.ipsmgwPLMN = homeDomain, op.PLMN()
 	s.ipsmgw.Store(a)
+	s.routeIPSMGW(op.HomeDomains())
 
 	return nil
 }
@@ -47,10 +48,16 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 		return
 	}
 
-	s.ases.resolver.Set(ipsmgw.Host(s.ipsmgwHomeDomain), nil)
+	s.ipsmgwHosts = s.ases.route(s.ipsmgwHosts, nil, nil)
 
 	if err := a.Shutdown(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
+	}
+}
+
+func (s *Server) routeIPSMGW(domains homedomain.Domains) {
+	if a := s.ipsmgw.Load(); a != nil {
+		s.ipsmgwHosts = s.ases.route(s.ipsmgwHosts, asHosts(domains, ipsmgw.Host), a.Servers())
 	}
 }
 

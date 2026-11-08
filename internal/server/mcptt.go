@@ -7,6 +7,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/mcptt"
 	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
 	"github.com/ellanetworks/ims/internal/mcptt/controlling"
@@ -16,8 +17,9 @@ import (
 
 var errMCPTTRestarting = errors.New("MCPTT is restarting")
 
-func (s *Server) startMCPTT(ctx context.Context, homeDomain string) error {
+func (s *Server) startMCPTT(ctx context.Context, domains homedomain.Domains) error {
 	cfg := s.Config.MCPTT
+	homeDomain := domains.Primary()
 
 	a, err := mcptt.Start(ctx, mcptt.Config{
 		MCPTT: *cfg, Addresses: s.Config.SIP.Addresses, Network: s.ases.network, HomeDomain: homeDomain,
@@ -27,12 +29,9 @@ func (s *Server) startMCPTT(ctx context.Context, homeDomain string) error {
 		return err
 	}
 
-	if cfg.Mode == config.MCPTTModeIMS {
-		s.ases.resolver.Set(mcptt.Host(homeDomain), a.Servers())
-	}
-
 	s.mcpttHomeDomain = homeDomain
 	s.mcptt.Store(a)
+	s.routeMCPTT(domains)
 
 	return nil
 }
@@ -43,11 +42,20 @@ func (s *Server) stopMCPTT(ctx context.Context) {
 		return
 	}
 
-	s.ases.resolver.Set(mcptt.Host(s.mcpttHomeDomain), nil)
+	s.mcpttHosts = s.ases.route(s.mcpttHosts, nil, nil)
 
 	if err := a.Shutdown(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to stop MCPTT cleanly", slog.Any("error", err))
 	}
+}
+
+func (s *Server) routeMCPTT(domains homedomain.Domains) {
+	a := s.mcptt.Load()
+	if a == nil || s.Config.MCPTT.Mode != config.MCPTTModeIMS {
+		return
+	}
+
+	s.mcpttHosts = s.ases.route(s.mcpttHosts, asHosts(domains, mcptt.Host), a.Servers())
 }
 
 func (s *Server) resubscribeMCPTT(ctx context.Context) {

@@ -30,12 +30,17 @@ describe("homeDomain", () => {
 });
 
 describe("domainError", () => {
-  it.each(["", "ims.example.com", "ims-1.example.com", "a.b.c.example.co"])(
-    "accepts %s",
-    (domain) => {
-      expect(domainError(domain)).toBeUndefined();
-    },
-  );
+  it.each([
+    "",
+    "ims.example.com",
+    "ims-1.example.com",
+    "a.b.c.example.co",
+    "ims.mnc001.mcc001.3gppnetwork.org",
+  ])("accepts %s", (domain) => {
+    expect(
+      domainError(domain, "ims.mnc001.mcc001.3gppnetwork.org"),
+    ).toBeUndefined();
+  });
 
   it.each([
     "localhost",
@@ -46,7 +51,12 @@ describe("domainError", () => {
     "192.0.2.1",
     `${"a".repeat(64)}.com`,
     `${"a.".repeat(127)}com`,
+    "3gppnetwork.org",
+    "mcc001.3gppnetwork.org",
+    "ims.mnc002.mcc001.3gppnetwork.org",
   ])("rejects %s", (domain) => {
-    expect(domainError(domain)).toBeDefined();
+    expect(
+      domainError(domain, "ims.mnc001.mcc001.3gppnetwork.org"),
+    ).toBeDefined();
   });
 });

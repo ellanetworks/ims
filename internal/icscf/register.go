@@ -1,6 +1,7 @@
 package icscf
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -76,7 +77,7 @@ func (i *ICSCF) parseRegister(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	if reg.uar.VisitedNetwork == "" {
-		reg.uar.VisitedNetwork = i.cfg.Home.Primary()
+		reg.uar.VisitedNetwork = cmp.Or(i.cfg.NetworkID, i.cfg.Home.Primary())
 	}
 
 	return reg, nil

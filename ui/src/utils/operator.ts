@@ -9,8 +9,10 @@ export const homeDomain = (operator: {
 }) => operator.domain || derivedDomain(operator.mcc, operator.mnc);
 
 // RFC 1035 section 2.3.1
+// RFC 1035 section 2.3.4
 // RFC 1123 section 2.1
-export const domainError = (domain: string) => {
+// TS 23.003 annex D
+export const domainError = (domain: string, derived: string) => {
   if (domain === "") return undefined;
   if (domain.length > 253) return "At most 253 characters";
   const labels = domain.split(".");
@@ -19,5 +21,10 @@ export const domainError = (domain: string) => {
     return "Lowercase letters, digits and hyphens, in labels of 1 to 63 characters";
   if (/^\d+$/.test(labels[labels.length - 1]))
     return "A domain name, not an IP address";
+  if (
+    (domain === "3gppnetwork.org" || domain.endsWith(".3gppnetwork.org")) &&
+    domain !== derived
+  )
+    return `Under 3gppnetwork.org, only ${derived}`;
   return undefined;
 };

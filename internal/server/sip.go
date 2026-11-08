@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -219,6 +220,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		Port:          pcscfPort,
 		ICSCFPort:     icscfPort,
 		HomeDomain:    homeDomains.Primary(),
+		NetworkID:     op.DerivedDomain(),
 		SCSCF:         pcscf.SCSCF{Name: scscfName, Listeners: s.bound(roleSCSCF)},
 		Registrations: database,
 		IPsec: pcscf.IPsec{
@@ -263,12 +265,13 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	trusted := func(f sip.Flow) bool { return domain.Trusted(f.Remote.Addr()) }
 
 	ic := icscf.New(icscf.Config{
-		Home:     homeDomains,
-		Layer:    layer,
-		Proxy:    proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
-		Port:     icscfPort,
-		Trust:    domain,
-		Resolver: resolver,
+		Home:      homeDomains,
+		NetworkID: op.DerivedDomain(),
+		Layer:     layer,
+		Proxy:     proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
+		Port:      icscfPort,
+		Trust:     domain,
+		Resolver:  resolver,
 		SCSCF: icscf.SCSCF{
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
@@ -786,4 +789,27 @@ func (h *placeholderHandler) respond(ctx context.Context, tx *transaction.Server
 type builtinASs struct {
 	network  *transaction.Network
 	resolver *as.Resolver
+}
+
+func (b builtinASs) route(old, hosts []string, servers []sip.Server) []string {
+	for _, h := range old {
+		if !slices.Contains(hosts, h) {
+			b.resolver.Set(h, nil)
+		}
+	}
+
+	for _, h := range hosts {
+		b.resolver.Set(h, servers)
+	}
+
+	return hosts
+}
+
+func asHosts(domains homedomain.Domains, host func(string) string) []string {
+	hosts := make([]string, len(domains))
+	for i, d := range domains {
+		hosts[i] = host(d)
+	}
+
+	return hosts
 }

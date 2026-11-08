@@ -133,6 +133,7 @@ type challenge struct {
 	callID  string
 	impu    string
 	impuKey string
+	realm   string
 	nonce   string
 	vector  authVector
 	resyncs int

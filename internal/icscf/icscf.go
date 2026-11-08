@@ -45,7 +45,8 @@ type Resolver interface {
 }
 
 type Config struct {
-	Home homedomain.Domains
+	Home      homedomain.Domains
+	NetworkID string
 
 	Layer *transaction.Layer
 	Proxy *proxy.Proxy

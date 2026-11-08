@@ -1,6 +1,7 @@
 package scscf
 
 import (
+	"cmp"
 	"net/url"
 	"slices"
 	"strings"
@@ -251,7 +252,7 @@ func assertedAlias(asserted sip.Address, sub cx.IMSSubscription, homeDomains hom
 
 	switch {
 	case asserted.URI.IsTel() && global:
-		return sip.Address{Display: asserted.Display, URI: phoneURI(number, homeDomains.Primary())}, true
+		return sip.Address{Display: asserted.Display, URI: phoneURI(number, userHome(sub, homeDomains))}, true
 	case asserted.URI.IsTel() || !asserted.URI.IsSIP():
 		return sip.Address{}, false
 	case global:
@@ -349,4 +350,28 @@ func isDigits(s string) bool {
 	}
 
 	return s != ""
+}
+
+// TS 24.229 clause 5.4.3.2
+func userHome(sub cx.IMSSubscription, homeDomains homedomain.Domains) string {
+	host := ""
+
+	for _, p := range sub.ServiceProfiles {
+		for _, id := range p.PublicIdentities {
+			u, err := sip.ParseURI(id.Identity)
+			if err != nil || !u.IsSIP() || !homeDomains.Has(u.Host) {
+				continue
+			}
+
+			if !id.Barred {
+				return strings.ToLower(u.Host)
+			}
+
+			if host == "" {
+				host = strings.ToLower(u.Host)
+			}
+		}
+	}
+
+	return cmp.Or(host, homeDomains.Primary())
 }

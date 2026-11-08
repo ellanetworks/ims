@@ -32,7 +32,7 @@ export default function EditHomeDomainDialog({
   });
 
   const derived = derivedDomain(operator.mcc, operator.mnc);
-  const error = domainError(domain);
+  const error = domainError(domain, derived);
   const next = homeDomain({ ...operator, domain });
   const renamed = error === undefined && next !== homeDomain(operator);
 

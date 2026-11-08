@@ -114,6 +114,7 @@ func ValidLabel(label string) error {
 }
 
 // RFC 1035 section 2.3.1
+// RFC 1035 section 2.3.4
 // RFC 1123 section 2.1
 func ValidDomain(domain string) error {
 	if len(domain) > maxDomainLength {
@@ -133,6 +134,18 @@ func ValidDomain(domain string) error {
 
 	if isDigits(labels[len(labels)-1]) {
 		return errors.New("must be a domain name, not an IP address")
+	}
+
+	return nil
+}
+
+const interPLMNDomain = "3gppnetwork.org"
+
+// TS 23.003 clause 13.2
+// TS 23.003 annex D
+func (o Operator) ownDomain() error {
+	if (o.Domain == interPLMNDomain || strings.HasSuffix(o.Domain, "."+interPLMNDomain)) && o.Domain != o.DerivedDomain() {
+		return fmt.Errorf("under %s must be %s", interPLMNDomain, o.DerivedDomain())
 	}
 
 	return nil
@@ -216,6 +229,10 @@ func (o Operator) Validate() error {
 
 	if o.Domain != "" {
 		if err := ValidDomain(o.Domain); err != nil {
+			return invalidf("domain %s", err)
+		}
+
+		if err := o.ownDomain(); err != nil {
 			return invalidf("domain %s", err)
 		}
 	}

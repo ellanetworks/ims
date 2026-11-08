@@ -1230,6 +1230,16 @@ func TestConfiguredHomeDomain(t *testing.T) {
 	if want := "<sip:+15551230001@" + configured + ";user=phone>"; !ok || a.String() != want {
 		t.Errorf("assertedAlias = %s, %v, want %s", a, ok, want)
 	}
+
+	derived := cx.IMSSubscription{ServiceProfiles: []cx.ServiceProfile{{PublicIdentities: []cx.ProfileIdentity{
+		{Identity: "sip:001010000000001@" + configured, Barred: true},
+		{Identity: "sip:+15551230001@" + homeDomain},
+	}}}}
+
+	a, ok = assertedAlias(sip.Address{URI: parse(testTel)}, derived, domains)
+	if want := "<sip:+15551230001@" + homeDomain + ";user=phone>"; !ok || a.String() != want {
+		t.Errorf("assertedAlias for a user in %s = %s, %v, want %s", homeDomain, a, ok, want)
+	}
 }
 
 func TestTargetSetOrder(t *testing.T) {
