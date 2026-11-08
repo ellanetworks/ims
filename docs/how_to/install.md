@@ -125,7 +125,9 @@ Choose one of the installation methods below.
 
 === "Kubernetes"
 
-    Ensure your Kubernetes cluster is running with the [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) installed.
+    Ensure your Kubernetes cluster nodes meet the [system requirements](../reference/system_reqs.md).
+
+    Phones reach the P-CSCF over IPsec, on its own address. Pod networks can drop or NAT IPsec, so the P-CSCF is always on a second interface of the pod, `eth1`, from [Multus](https://github.com/k8snetworkplumbingwg/multus-cni) or from [GKE multi-network](https://cloud.google.com/kubernetes-engine/docs/how-to/setup-multinetwork-support-for-pods). Diameter is on the pod network, `eth0`.
 
     Download the Ella IMS manifests:
 
@@ -133,24 +135,61 @@ Choose one of the installation methods below.
     git clone --depth 1 https://github.com/ellanetworks/ims.git
     ```
 
-    Edit `ims/k8s/ims-sip-nad.yaml`: set `master`, the SIP address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address.
-
-    Edit `ims/k8s/ims-diameter-nad.yaml`: set `master` and the Diameter address.
-
-    Create the namespace:
+    Create the namespace. IPsec needs the `NET_ADMIN` capability, as root, which only the privileged Pod Security Standard allows:
 
     ```shell
     kubectl create namespace ella
     kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
     ```
 
-    Deploy Ella IMS:
+    === "Multus"
+
+        Install Multus and the `macvlan` and `static` CNI plugins on the nodes.
+
+        Edit `ims/k8s/examples/multus/ims-sip-nad.yaml`: set `master` to the node's interface on the network phones reach Ella IMS on, the P-CSCF address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address.
+
+        Deploy Ella IMS:
+
+        ```shell
+        kubectl apply -k ims/k8s/examples/multus
+        ```
+
+    === "GKE"
+
+        Create a Standard cluster with `--enable-dataplane-v2`, `--enable-ip-alias` and `--enable-multi-networking`, and a VPC with a subnet for SIP that routes the phones' IP pool to the core's N6 (5G) or SGi (4G) address.
+
+        Create a node pool with a second NIC on that subnet:
+
+        ```shell
+        gcloud container node-pools create ims-sip \
+          --cluster <cluster> \
+          --image-type cos_containerd \
+          --additional-node-network network=<vpc>,subnetwork=<subnet>
+        ```
+
+        Edit `ims/k8s/examples/gke-netdevice/ims-sip-network.yaml`: set `vpc` and `vpcSubnet`, and the phones' IP pool in `routes`.
+
+        Deploy Ella IMS:
+
+        ```shell
+        kubectl apply -k ims/k8s/examples/gke-netdevice
+        ```
+
+        GKE passes the node's second NIC to the pod, so the P-CSCF address is that NIC's address, and each node of the pool runs one Ella IMS pod.
+
+    Find the P-CSCF address, the `pcscf` entry of `sip`:
 
     ```shell
-    kubectl apply -k ims/k8s
+    kubectl logs -n ella ella-ims-0 | grep '"ims started"'
     ```
 
-    Ella IMS's UI and API are on the `ella-ims` NodePort Service.
+    Open the UI and API on your machine:
+
+    ```shell
+    kubectl port-forward -n ella svc/ella-ims 5020:5020
+    ```
+
+    Ella IMS's Diameter host is `ella-ims-0.ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org`, after the pod's name. The HSS and the PCRF see its Diameter connections come from the pod's address, or from the node's where the cluster masquerades pod traffic.
 
 Ella IMS's UI and API are at `http://<host-ip>:5020`. Open the UI and create the first user.
 

@@ -29,6 +29,7 @@ tags:
   - name: Registrations
   - name: Call records
   - name: IP-SM-GW
+  - name: Backup
   - name: MCPTT service configuration
   - name: MCPTT users
   - name: MCPTT groups
@@ -1567,16 +1568,31 @@ paths:
       security: []
       summary: Check readiness
       description: >-
-        Answers whether the IMS can serve requests: its database answers, and it is not shutting down.
+        Answers whether the IMS can serve requests, with the result of each check: `shutdown` passes when the IMS
+        is not stopping, and `database` when the database answers.
       responses:
-        "204":
-          description: Ready.
-        "503":
-          description: Not ready.
+        "200":
+          description: Every check passes.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/ReadinessResult"
+        "503":
+          description: A check fails.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResult"
 
   /api/v1/status:
     get:
@@ -2108,6 +2124,42 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/backup:
+    get:
+      tags: [Backup]
+      operationId: backup
+      summary: Back up the database
+      description: >-
+        Streams a gzipped tar archive of a consistent copy of the database, with a manifest of its format, schema
+        version and time, and the SHA-256 checksums of both. The archive holds the users and their API tokens, the
+        settings (the single sign-on client secret included), the MCPTT users and groups, and the call records. It
+        leaves out the key that signs access tokens, the single sign-on cookie key, the login sessions, and the
+        runtime state: registrations, bindings, subscriptions, P-CSCF flows, IPsec security associations, MCPTT
+        registrations and affiliations, and IP-SM-GW registrations.
+      responses:
+        "200":
+          description: OK
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="ims-backup-20261104T120000Z.tar.gz"
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Backups are not available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/oidc:
     get:
       tags: [Single sign-on]
@@ -2532,6 +2584,33 @@ components:
         examples: ["sip:fire@mcptt.example.com"]
 
   schemas:
+    ReadinessCheck:
+      type: object
+      required: [name, ok, detail]
+      properties:
+        name:
+          type: string
+          enum: [shutdown, database]
+        ok:
+          type: boolean
+        detail:
+          type: string
+          description: Why the check fails. Empty when it passes.
+    ReadinessResult:
+      type: object
+      required: [result]
+      properties:
+        result:
+          type: object
+          required: [ready, checks]
+          properties:
+            ready:
+              type: boolean
+              description: Whether every check passes.
+            checks:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReadinessCheck"
     LoginParams:
       type: object
       required: [email, password]

@@ -37,6 +37,7 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`. |
 | `ellaims_database_query_errors_total` | Counter | Failed database calls, by connection pool. |
 | `ellaims_database_storage_bytes` | Gauge | Size of the database on disk, by file: `main`, `wal`. |
+| `ellaims_ready_check` | Gauge | 1 when the readiness check passes, 0 when it fails, by check (`shutdown`, `database`). |
 | `go_*` | Gauge, Counter, Summary | Go runtime: goroutines, heap, garbage-collection pauses. |
 | `process_*` | Gauge, Counter | Process: memory, CPU, open file descriptors, start time. |
 

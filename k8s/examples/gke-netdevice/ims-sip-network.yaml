@@ -1,0 +1,24 @@
+# The network the phones reach Ella IMS on: the subnet ims-sip of the VPC
+# ims-sip, whose routes take the phones' IP pool, 10.46.0.0/16, to the core's
+# N6 (5G) or SGi (4G) address.
+apiVersion: networking.gke.io/v1
+kind: GKENetworkParamSet
+metadata:
+  name: ims-sip
+spec:
+  vpc: ims-sip
+  vpcSubnet: ims-sip
+  deviceMode: NetDevice
+---
+apiVersion: networking.gke.io/v1
+kind: Network
+metadata:
+  name: ims-sip
+spec:
+  type: Device
+  parametersRef:
+    group: networking.gke.io
+    kind: GKENetworkParamSet
+    name: ims-sip
+  routes:
+  - to: 10.46.0.0/16

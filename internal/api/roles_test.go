@@ -74,6 +74,7 @@ func TestRoles(t *testing.T) {
 		"GET /api/v1/call-records/{id}":                             all,
 		"GET /api/v1/ip-sm-gw":                                      all,
 		"PUT /api/v1/ip-sm-gw":                                      operator,
+		"GET /api/v1/backup":                                        admin,
 		"GET /api/v1/oidc":                                          admin,
 		"PUT /api/v1/oidc":                                          admin,
 		"POST /api/v1/oidc/discovery":                               admin,

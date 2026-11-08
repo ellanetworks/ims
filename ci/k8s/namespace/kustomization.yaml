@@ -1,0 +1,5 @@
+# The namespace of the smoke test: it allows the NET_ADMIN capability of IPsec.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml

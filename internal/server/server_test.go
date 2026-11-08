@@ -167,7 +167,7 @@ func TestServerStartShutdown(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	for path, want := range map[string]int{"/api/v1/livez": http.StatusNoContent, "/api/v1/readyz": http.StatusNoContent} {
+	for path, want := range map[string]int{"/api/v1/livez": http.StatusNoContent, "/api/v1/readyz": http.StatusOK} {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.APIAddr().String()+path, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -187,8 +187,8 @@ func TestServerStartShutdown(t *testing.T) {
 
 	srv.draining.Store(true)
 
-	if err := srv.ready(ctx, srv.database); err == nil {
-		t.Fatal("ready while shutting down")
+	if checks := srv.readiness.checks(ctx); checks[0].Name != CheckShutdown || checks[0].OK {
+		t.Fatalf("checks while shutting down = %+v", checks)
 	}
 }
 

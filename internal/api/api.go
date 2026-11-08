@@ -27,8 +27,9 @@ type Config struct {
 	Registrations  Registrations
 	Policy         Policy
 	CallRecords    CallRecords
+	Backups        Backups
 	Frontend       fs.FS
-	Ready          func(ctx context.Context) error
+	Ready          func(ctx context.Context) []Check
 	Metrics        prometheus.Gatherer
 	Requests       *RequestMetrics
 	MCPTT          MCPTTSettings
@@ -201,6 +202,7 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/call-records/{id}", PermReadCallRecords, GetCallRecord(cfg)},
 		{"GET /api/v1/ip-sm-gw", PermReadIPSMGW, GetIPSMGW(cfg)},
 		{"PUT /api/v1/ip-sm-gw", PermUpdateIPSMGW, UpdateIPSMGW(cfg)},
+		{"GET /api/v1/backup", PermBackup, Backup(a)},
 		{"GET /api/v1/oidc", PermReadOIDC, a.needsLogin(GetOIDC(cfg))},
 		{"PUT /api/v1/oidc", PermUpdateOIDC, a.needsLogin(UpdateOIDC(a))},
 		{"POST /api/v1/oidc/discovery", PermUpdateOIDC, a.needsLogin(DiscoverOIDC(cfg))},
