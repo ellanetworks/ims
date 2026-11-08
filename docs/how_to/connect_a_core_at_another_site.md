@@ -24,6 +24,8 @@ The examples use these addresses:
 
 Set up a routed link, such as an IPsec VPN like [Google Cloud VPN](https://cloud.google.com/network-connectivity/docs/vpn/concepts/overview), between the core's site and the network of `10.6.0.5`. Keep NAT out of the path from the core's N6 or SGi interface to `10.6.0.5`.
 
+Use address ranges that don't overlap between the two sites, nor with any other site on the same VPN. On Ella IMS's side, this includes the node subnets, the pod range and the subnet of `10.6.0.5`.
+
 ## 2. Route the phones' traffic
 
 - At the core's site, route `10.6.0.5` from the core's N6 or SGi interface through the link.
@@ -45,7 +47,8 @@ From `10.46.0.0/16` to `10.6.0.5`, allow:
 ## 5. Point the core and Ella IMS at each other
 
 - In the core, set the P-CSCF address to `10.6.0.5`. In Ella Core, it is **Operator → IMS → P-CSCF Addresses**.
-- In Ella IMS, add `10.3.0.2` as the HSS and PCRF peer, as in [Integrate with Ella Core](integrate_with_ella_core.md), step 4.
+- In Ella IMS, go to the **Cores** page. Under **Peers**, click **Create Peer**, enter `10.3.0.2`, check **HSS**, **PCRF** and **Sh**, and click **Create**. For SMS over IP, also check **S6c**, and set **Transport** to **SCTP**.
+- Set the realms, as in [Integrate with Ella Core](integrate_with_ella_core.md), step 4.
 
 ## 6. Verify
 
