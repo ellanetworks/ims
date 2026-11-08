@@ -61,7 +61,7 @@ The domain derived from the MCC and MNC stays a home domain when `domain` is set
 | -------------------------------- | ------ | -------- | ----------- |
 | `mcc`                            | string | Yes      | 3 digits. |
 | `mnc`                            | string | Yes      | 2 or 3 digits. |
-| `domain`                         | string | No       | Domain name of at least two labels, up to 253 characters, stored in lowercase. Default empty: derived from the MCC and MNC. |
+| `domain`                         | string | No       | Domain name of at least two labels, up to 253 characters, stored in lowercase. Under `3gppnetwork.org`, only the domain derived from the MCC and MNC. Default empty: derived from the MCC and MNC. |
 | `numbering`                      | object | Yes      | |
 | `numbering.country_code`         | string | Yes      | 1 to 3 digits, not starting with 0. |
 | `numbering.national_prefix`      | string | Yes      | Up to 4 digits. Differs from `international_prefix` unless empty. |
