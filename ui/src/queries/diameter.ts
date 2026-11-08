@@ -21,7 +21,6 @@ export interface DiameterPeerParams {
   transport?: DiameterTransport;
   applications: DiameterApplication[];
   priority?: number;
-  service_centres?: string[];
 }
 
 export interface DiameterPeerStatus {

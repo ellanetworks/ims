@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"strings"
 
 	"github.com/ellanetworks/ims/internal/settings"
@@ -27,6 +26,10 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 	}
 
 	if s.Routes, err = d.routes(ctx); err != nil {
+		return settings.Settings{}, err
+	}
+
+	if s.SMSRoutes, err = d.smsRoutes(ctx); err != nil {
 		return settings.Settings{}, err
 	}
 
@@ -60,8 +63,8 @@ func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 }
 
 func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT id, host, address, port, transport, applications, priority,
-		service_centres FROM diameter_peers ORDER BY id`)
+	rows, err := d.conn.QueryContext(ctx, `SELECT id, host, address, port, transport, applications, priority
+		FROM diameter_peers ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("get Diameter peers: %w", err)
 	}
@@ -72,29 +75,19 @@ func (d *DB) peers(ctx context.Context) ([]settings.Peer, error) {
 
 	for rows.Next() {
 		var (
-			p                  settings.Peer
-			address, transport string
-			applications       string
-			serviceCentres     string
+			p            settings.Peer
+			transport    string
+			applications string
 		)
 
-		if err := rows.Scan(&p.ID, &p.Host, &address, &p.Port, &transport, &applications, &p.Priority,
-			&serviceCentres); err != nil {
+		if err := rows.Scan(&p.ID, &p.Host, &p.Address, &p.Port, &transport, &applications, &p.Priority); err != nil {
 			return nil, fmt.Errorf("get Diameter peers: %w", err)
-		}
-
-		if p.Address, err = netip.ParseAddr(address); err != nil {
-			return nil, fmt.Errorf("get Diameter peer %s: %w", p.ID, err)
 		}
 
 		p.Transport = settings.Transport(transport)
 
 		for a := range strings.SplitSeq(applications, ",") {
 			p.Applications = append(p.Applications, settings.Application(a))
-		}
-
-		if serviceCentres != "" {
-			p.ServiceCentres = strings.Split(serviceCentres, ",")
 		}
 
 		peers = append(peers, p)
@@ -161,7 +154,7 @@ func (d *DB) CreatePeer(ctx context.Context, p settings.Peer) (err error) {
 	defer d.observe(poolWrite, &err)()
 
 	if _, err := d.conn.ExecContext(ctx, `INSERT INTO diameter_peers (id, host, address, port, transport,
-		applications, priority, service_centres) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, peerRow(p)...); err != nil {
+		applications, priority) VALUES (?, ?, ?, ?, ?, ?, ?)`, peerRow(p)...); err != nil {
 		return fmt.Errorf("create Diameter peer: %w", err)
 	}
 
@@ -174,7 +167,7 @@ func (d *DB) UpdatePeer(ctx context.Context, p settings.Peer) (err error) {
 	row := peerRow(p)
 
 	res, err := d.conn.ExecContext(ctx, `UPDATE diameter_peers SET host = ?, address = ?, port = ?, transport = ?,
-		applications = ?, priority = ?, service_centres = ? WHERE id = ?`, append(row[1:], row[0])...)
+		applications = ?, priority = ? WHERE id = ?`, append(row[1:], row[0])...)
 	if err != nil {
 		return fmt.Errorf("update Diameter peer: %w", err)
 	}
@@ -246,8 +239,7 @@ func peerRow(p settings.Peer) []any {
 	}
 
 	return []any{
-		p.ID, p.Host, p.Address.String(), p.Port, string(p.Transport), strings.Join(apps, ","), p.Priority,
-		strings.Join(p.ServiceCentres, ","),
+		p.ID, p.Host, p.Address, p.Port, string(p.Transport), strings.Join(apps, ","), p.Priority,
 	}
 }
 

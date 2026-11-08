@@ -50,7 +50,6 @@ const smsc = peer({
   host: "smsc.node.epc.mnc001.mcc001.3gppnetwork.org",
   address: "192.0.2.7",
   applications: ["sgd"],
-  service_centres: ["15550000000"],
   status: { state: "down", error: "connection refused" },
 });
 
@@ -86,6 +85,14 @@ const serve = ({
         "/api/v1/sip": () => json(200, { result: sip }),
         "/api/v1/diameter": () => json(200, { result: identity }),
         "/api/v1/diameter/peers": () => json(200, { result: { items: peers } }),
+        "/api/v1/ip-sm-gw/routes": () =>
+          json(200, {
+            result: {
+              items: peers.some((p) => p.id === smsc.id)
+                ? [{ id: "r", service_centre: "", peers: [smsc.id] }]
+                : [],
+            },
+          }),
         "/api/v1/ip-sm-gw": () =>
           json(200, {
             result: {

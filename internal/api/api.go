@@ -21,13 +21,15 @@ import (
 type Config struct {
 	Settings       Settings
 	Diameter       Diameter
+	DiameterLabel  string
 	SIPTrunks      settings.TrunkStates
 	SIP            SIP
 	Registrations  Registrations
 	Policy         Policy
 	CallRecords    CallRecords
+	Backups        Backups
 	Frontend       fs.FS
-	Ready          func(ctx context.Context) error
+	Ready          func(ctx context.Context) []Check
 	Metrics        prometheus.Gatherer
 	Requests       *RequestMetrics
 	MCPTT          MCPTTSettings
@@ -55,6 +57,9 @@ type Settings interface {
 	UpdatePolicy(ctx context.Context, p settings.Policy) error
 	UpdateCallRecords(ctx context.Context, c settings.CallRecords) error
 	UpdateIPSMGW(ctx context.Context, g settings.IPSMGW) error
+	CreateSMSRoute(ctx context.Context, r settings.SMSRoute) (settings.SMSRoute, error)
+	UpdateSMSRoute(ctx context.Context, r settings.SMSRoute) error
+	DeleteSMSRoute(ctx context.Context, id string) error
 	CreateTrunk(ctx context.Context, t settings.Trunk) (settings.Trunk, error)
 	UpdateTrunk(ctx context.Context, t settings.Trunk) error
 	DeleteTrunk(ctx context.Context, id string) error
@@ -200,6 +205,12 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/call-records/{id}", PermReadCallRecords, GetCallRecord(cfg)},
 		{"GET /api/v1/ip-sm-gw", PermReadIPSMGW, GetIPSMGW(cfg)},
 		{"PUT /api/v1/ip-sm-gw", PermUpdateIPSMGW, UpdateIPSMGW(cfg)},
+		{"GET /api/v1/ip-sm-gw/routes", PermReadIPSMGW, ListSMSRoutes(cfg)},
+		{"POST /api/v1/ip-sm-gw/routes", PermUpdateIPSMGW, CreateSMSRoute(cfg)},
+		{"GET /api/v1/ip-sm-gw/routes/{id}", PermReadIPSMGW, GetSMSRoute(cfg)},
+		{"PUT /api/v1/ip-sm-gw/routes/{id}", PermUpdateIPSMGW, UpdateSMSRoute(cfg)},
+		{"DELETE /api/v1/ip-sm-gw/routes/{id}", PermUpdateIPSMGW, DeleteSMSRoute(cfg)},
+		{"GET /api/v1/backup", PermBackup, Backup(a)},
 		{"GET /api/v1/oidc", PermReadOIDC, a.needsLogin(GetOIDC(cfg))},
 		{"PUT /api/v1/oidc", PermUpdateOIDC, a.needsLogin(UpdateOIDC(a))},
 		{"POST /api/v1/oidc/discovery", PermUpdateOIDC, a.needsLogin(DiscoverOIDC(cfg))},

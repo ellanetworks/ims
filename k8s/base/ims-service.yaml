@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ella-ims
+  labels:
+    app.kubernetes.io/name: ella-ims
+    app.kubernetes.io/instance: ella-ims
+    app.kubernetes.io/part-of: ella
+spec:
+  selector:
+    app.kubernetes.io/name: ella-ims
+    app.kubernetes.io/instance: ella-ims
+  ports:
+  - name: http
+    protocol: TCP
+    port: 5020
+    targetPort: http

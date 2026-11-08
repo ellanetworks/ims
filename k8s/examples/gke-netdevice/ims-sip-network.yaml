@@ -1,0 +1,23 @@
+apiVersion: networking.gke.io/v1
+kind: GKENetworkParamSet
+metadata:
+  name: ims-sip
+spec:
+  vpc: ims-sip
+  vpcSubnet: ims-sip
+  deviceMode: NetDevice
+---
+apiVersion: networking.gke.io/v1
+kind: Network
+metadata:
+  name: ims-sip
+spec:
+  type: Device
+  parametersRef:
+    group: networking.gke.io
+    kind: GKENetworkParamSet
+    name: ims-sip
+  routes:
+  - to: 10.46.0.0/16
+  - to: 35.191.0.0/16
+  - to: 130.211.0.0/22

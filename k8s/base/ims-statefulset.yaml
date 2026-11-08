@@ -2,18 +2,25 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: ella-ims
+  labels:
+    app.kubernetes.io/name: ella-ims
+    app.kubernetes.io/instance: ella-ims
+    app.kubernetes.io/part-of: ella
 spec:
   replicas: 1
   serviceName: ella-ims
   selector:
     matchLabels:
-      app: ella-ims
+      app.kubernetes.io/name: ella-ims
+      app.kubernetes.io/instance: ella-ims
   template:
     metadata:
       labels:
-        app: ella-ims
+        app.kubernetes.io/name: ella-ims
+        app.kubernetes.io/instance: ella-ims
+        app.kubernetes.io/part-of: ella
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 37
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -23,8 +30,13 @@ spec:
         image: ghcr.io/ellanetworks/ella-ims:latest
         command: ["ims"]
         args: ["--config", "/config/ims.yaml"]
-        # The P-CSCF sets up IPsec with the phones in the kernel, which takes
-        # CAP_NET_ADMIN, and root, to which Kubernetes gives added capabilities.
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: IMS_DIAMETER_HOST_LABEL
+          value: $(POD_NAME)
         securityContext:
           runAsUser: 0
           runAsGroup: 0
@@ -33,8 +45,6 @@ spec:
           capabilities:
             drop: ["ALL"]
             add: ["NET_ADMIN"]
-        # SIP, Diameter and N5 are on the addresses of the configuration, not
-        # behind a Service: see the connectivity reference.
         ports:
         - name: http
           containerPort: 5020
@@ -58,6 +68,10 @@ spec:
           periodSeconds: 20
           timeoutSeconds: 5
           failureThreshold: 3
+        lifecycle:
+          preStop:
+            sleep:
+              seconds: 5
         resources:
           requests:
             cpu: 500m

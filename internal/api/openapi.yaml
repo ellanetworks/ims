@@ -29,6 +29,7 @@ tags:
   - name: Registrations
   - name: Call records
   - name: IP-SM-GW
+  - name: Backup
   - name: MCPTT service configuration
   - name: MCPTT users
   - name: MCPTT groups
@@ -983,6 +984,131 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/ip-sm-gw/routes:
+    get:
+      tags: [IP-SM-GW]
+      operationId: listSMSRoutes
+      summary: List the SMS routes
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The routes, ordered by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SMSRoute"
+    post:
+      tags: [IP-SM-GW]
+      operationId: createSMSRoute
+      summary: Create an SMS route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SMSRouteParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "201":
+          description: The SMS route created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SMSRouteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/ip-sm-gw/routes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [IP-SM-GW]
+      operationId: getSMSRoute
+      summary: Get an SMS route
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SMS route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SMSRouteResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [IP-SM-GW]
+      operationId: updateSMSRoute
+      summary: Update an SMS route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SMSRouteParams"
+              unevaluatedProperties: false
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          description: The SMS route as stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SMSRouteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [IP-SM-GW]
+      operationId: deleteSMSRoute
+      summary: Delete an SMS route
+      responses:
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "200":
+          $ref: "#/components/responses/Deleted"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/mcptt:
     get:
       tags: [MCPTT service configuration]
@@ -1567,16 +1693,31 @@ paths:
       security: []
       summary: Check readiness
       description: >-
-        Answers whether the IMS can serve requests: its database answers, and it is not shutting down.
+        Answers whether the IMS can serve requests, with the result of each check: `shutdown` passes when the IMS
+        is not stopping, and `database` when the database answers.
       responses:
-        "204":
-          description: Ready.
-        "503":
-          description: Not ready.
+        "200":
+          description: Every check passes.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/ReadinessResult"
+        "503":
+          description: A check fails.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResult"
 
   /api/v1/status:
     get:
@@ -2108,6 +2249,36 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/backup:
+    get:
+      tags: [Backup]
+      operationId: backup
+      summary: Back up the database
+      description: Returns a gzipped tar archive of the database.
+      responses:
+        "200":
+          description: OK
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="ims-backup-20261104T120000Z.tar.gz"
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Backups are not available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/oidc:
     get:
       tags: [Single sign-on]
@@ -2532,6 +2703,33 @@ components:
         examples: ["sip:fire@mcptt.example.com"]
 
   schemas:
+    ReadinessCheck:
+      type: object
+      required: [name, ok, detail]
+      properties:
+        name:
+          type: string
+          enum: [shutdown, database]
+        ok:
+          type: boolean
+        detail:
+          type: string
+          description: Why the check fails. Empty when it passes.
+    ReadinessResult:
+      type: object
+      required: [result]
+      properties:
+        result:
+          type: object
+          required: [ready, checks]
+          properties:
+            ready:
+              type: boolean
+              description: Whether every check passes.
+            checks:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReadinessCheck"
     LoginParams:
       type: object
       required: [email, password]
@@ -2796,7 +2994,7 @@ components:
             Absent or empty takes the Origin-Host the peer gives.
         address:
           type: string
-          description: An IPv4 or IPv6 address.
+          description: An IPv4 or IPv6 address, or a host name.
         port:
           type: integer
           minimum: 1
@@ -2825,17 +3023,6 @@ components:
             Requests try the peers serving their application by priority, lowest first, and share them between
             peers of the same priority. HSSs of the same priority must share their state, as the nodes of a
             replicated HSS do.
-        service_centres:
-          type: array
-          uniqueItems: true
-          description: >-
-            The service centre addresses of an SMSC, which needs sgd in applications: the IP-SM-GW sends a short
-            message from a phone to an SMSC of the service centre address the phone gives, by priority, at its host,
-            which is then required.
-          items:
-            type: string
-            pattern: "^[0-9]{1,15}$"
-            examples: ["15550000000"]
 
     DiameterPeer:
       allOf:
@@ -3472,6 +3659,47 @@ components:
       properties:
         result:
           $ref: "#/components/schemas/IPSMGW"
+
+    SMSRouteParams:
+      type: object
+      required: [peers]
+      properties:
+        service_centre:
+          type: string
+          pattern: "^[0-9]{0,15}$"
+          default: ""
+          description: >-
+            The E.164 service centre address of the route, digits only, unique; empty for the default route, of
+            the service centres of no other route. The IP-SM-GW sends a short message from a phone to the route of
+            the service centre address the phone gives.
+          examples: ["15550000000"]
+        peers:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: >-
+            The identifiers of the Diameter peers of the SMS-IWMSC of the route, which must serve sgd and have a
+            host. Short messages try them by priority, lowest first.
+          items:
+            type: string
+            format: uuid
+
+    SMSRoute:
+      allOf:
+        - $ref: "#/components/schemas/SMSRouteParams"
+        - type: object
+          required: [id, service_centre]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: A UUIDv7.
+
+    SMSRouteResult:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/SMSRoute"
 
     OIDCGroupRole:
       type: object

@@ -1,9 +1,17 @@
 package api
 
-import (
-	"log/slog"
-	"net/http"
-)
+import "net/http"
+
+type Check struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+type Readiness struct {
+	Ready  bool    `json:"ready"`
+	Checks []Check `json:"checks"`
+}
 
 func Livez() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -13,15 +21,22 @@ func Livez() http.Handler {
 
 func Readyz(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cfg.Ready != nil {
-			if err := cfg.Ready(r.Context()); err != nil {
-				cfg.Logger.WarnContext(r.Context(), "not ready", slog.Any("error", err))
-				writeJSON(r.Context(), w, ErrorResponse{Error: "Not ready"}, http.StatusServiceUnavailable, cfg.Logger)
+		res := Readiness{Ready: true, Checks: []Check{}}
 
-				return
-			}
+		if cfg.Ready != nil {
+			res.Checks = cfg.Ready(r.Context())
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		for _, c := range res.Checks {
+			res.Ready = res.Ready && c.OK
+		}
+
+		status := http.StatusOK
+		if !res.Ready {
+			status = http.StatusServiceUnavailable
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		writeResponse(r.Context(), w, res, status, cfg.Logger)
 	})
 }

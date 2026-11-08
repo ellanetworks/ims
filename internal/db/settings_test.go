@@ -2,7 +2,6 @@ package db
 
 import (
 	"errors"
-	"net/netip"
 	"reflect"
 	"testing"
 
@@ -65,19 +64,18 @@ func TestPeers(t *testing.T) {
 
 	hss := settings.Peer{
 		ID: "0192a000-0000-7000-8000-000000000001", Host: "hss.example.org",
-		Address: netip.MustParseAddr("2001:db8::10"), Port: 3868, Transport: settings.TransportTCP,
+		Address: "2001:db8::10", Port: 3868, Transport: settings.TransportTCP,
 		Applications: []settings.Application{settings.ApplicationCx}, Priority: 10,
 	}
 	pcrf := settings.Peer{
 		ID: "0192a000-0000-7000-8000-000000000002", Host: "pcrf.example.org",
-		Address: netip.MustParseAddr("10.0.0.11"), Port: 3869, Transport: settings.TransportSCTP,
+		Address: "10.0.0.11", Port: 3869, Transport: settings.TransportSCTP,
 		Applications: []settings.Application{settings.ApplicationCx, settings.ApplicationRx}, Priority: 0,
 	}
 	smsc := settings.Peer{
 		ID: "0192a000-0000-7000-8000-000000000003", Host: "smsc.example.org",
-		Address: netip.MustParseAddr("10.0.0.12"), Port: 3868, Transport: settings.TransportSCTP,
+		Address: "10.0.0.12", Port: 3868, Transport: settings.TransportSCTP,
 		Applications: []settings.Application{settings.ApplicationSGd}, Priority: 10,
-		ServiceCentres: []string{"15550000000", "15550000001"},
 	}
 
 	for _, p := range []settings.Peer{pcrf, hss, smsc} {
@@ -120,7 +118,7 @@ func TestPeersWithoutHost(t *testing.T) {
 
 	peer := func(id, host string) settings.Peer {
 		return settings.Peer{
-			ID: id, Host: host, Address: netip.MustParseAddr("10.0.0.10"), Port: 3868, Transport: settings.TransportTCP,
+			ID: id, Host: host, Address: "10.0.0.10", Port: 3868, Transport: settings.TransportTCP,
 			Applications: []settings.Application{settings.ApplicationCx}, Priority: 10,
 		}
 	}

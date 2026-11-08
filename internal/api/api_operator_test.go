@@ -44,6 +44,12 @@ func (m *memStore) UpdateSIPRoute(context.Context, settings.SIPRoute) error { re
 
 func (m *memStore) DeleteSIPRoute(context.Context, string) error { return m.err }
 
+func (m *memStore) CreateSMSRoute(context.Context, settings.SMSRoute) error { return m.err }
+
+func (m *memStore) UpdateSMSRoute(context.Context, settings.SMSRoute) error { return m.err }
+
+func (m *memStore) DeleteSMSRoute(context.Context, string) error { return m.err }
+
 func defaultSettings() settings.Settings {
 	return settings.Settings{
 		Operator: settings.Operator{

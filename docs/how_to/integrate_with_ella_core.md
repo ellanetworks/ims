@@ -52,7 +52,7 @@ In the Ella IMS UI, go to the **Operator** page:
 
 Go to the **Cores** page:
 
-- Under **Peers**, click **Add Peer**, enter `10.3.0.2`, check **HSS** and **PCRF**, and click **Add**.
+- Under **Peers**, click **Create Peer**, enter `10.3.0.2`, check **HSS** and **PCRF**, and click **Create**.
 - Under **HSS**, click the edit icon next to **HSS Realm**, enter `epc.mnc<MNC>.mcc<MCC>.3gppnetwork.org`, with the MNC padded to 3 digits, e.g. `epc.mnc001.mcc001.3gppnetwork.org`, and click **Update**.
 - Under **Voice QoS**, click the edit icon next to **Policy Function**, select **PCRF**, and click **Update**.
 - Click the edit icon next to **PCRF Realm**, enter the same realm, and click **Update**.

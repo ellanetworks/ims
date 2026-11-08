@@ -137,20 +137,24 @@ type fakeHSS struct {
 	fail    bool
 	reject  bool
 	calls   int
+	to      []db.HSS
 }
 
-func (h *fakeHSS) UpdateSMSRegistration(_ context.Context, u User, number string) error {
+var answeringHSS = db.HSS{Host: "hss1.example.org", Realm: "example.org"}
+
+func (h *fakeHSS) UpdateSMSRegistration(_ context.Context, u User, number string, to db.HSS) (db.HSS, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.calls++
+	h.to = append(h.to, to)
 
 	if h.fail {
-		return errors.New("HSS down")
+		return db.HSS{}, errors.New("HSS down")
 	}
 
 	if h.reject {
-		return fmt.Errorf("%w: user unknown", ErrRejected)
+		return db.HSS{}, fmt.Errorf("%w: user unknown", ErrRejected)
 	}
 
 	impu := ""
@@ -160,7 +164,14 @@ func (h *fakeHSS) UpdateSMSRegistration(_ context.Context, u User, number string
 
 	h.updates = append(h.updates, update{u.MSISDN, impu, number})
 
-	return nil
+	return answeringHSS, nil
+}
+
+func (h *fakeHSS) addressed() []db.HSS {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return slices.Clone(h.to)
 }
 
 func (h *fakeHSS) waitUpdates(t *testing.T, want ...update) {
@@ -448,6 +459,10 @@ func TestDeregistration(t *testing.T) {
 	})
 	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"}, update{msisdn: "15551230001"})
 
+	if got := w.hss.addressed(); !slices.Equal(got, []db.HSS{{}, answeringHSS}) {
+		t.Fatalf("Sh-Updates addressed %+v, want the realm, then the HSS that answered", got)
+	}
+
 	w.n.Quiesce()
 	w.store.waitEmpty(t)
 
@@ -674,4 +689,8 @@ func TestShutdownDeregisters(t *testing.T) {
 
 	w2 := newWorld(t, store)
 	w2.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
+
+	if got := w.hss.addressed(); got[len(got)-1] != answeringHSS {
+		t.Fatalf("the shutdown Sh-Update addressed %+v, want %+v", got[len(got)-1], answeringHSS)
+	}
 }
