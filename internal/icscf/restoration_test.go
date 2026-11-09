@@ -68,8 +68,8 @@ func TestRegisterReassignedWhenTheSCSCFCannotBeResolved(t *testing.T) {
 	wantCapabilitiesUAR(t, h)
 
 	req, f := h.scscf.recv()
-	if req.URI.String() != h.scscf.uri() {
-		t.Fatalf("Request-URI = %s, want %s", req.URI, h.scscf.uri())
+	if want := h.scscf.uri() + ";scscf-reselection"; req.URI.String() != want {
+		t.Fatalf("Request-URI = %s, want %s", req.URI, want)
 	}
 
 	h.scscf.respond(req, f, 401)
@@ -95,17 +95,66 @@ func TestRegisterReassignedWhenTheSCSCFDoesNotAnswer(t *testing.T) {
 	u.wantFinal(200)
 }
 
-func TestRegisterNotReassignedWithoutHSSSupport(t *testing.T) {
+func TestRegisterReassignedWithoutHSSSupport(t *testing.T) {
 	h, peer := peerHarness(t)
 	u := h.newUE(loopback)
 
-	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: peer.uri()})
+	h.hss.answerUAR(
+		&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: peer.uri()},
+		&hssAnswer{result: success(diameter.ResultSuccess)},
+	)
 	u.send(u.register())
 	h.hss.nextUAR(t)
 
 	peer.recv()
-	u.wantFinal(504)
-	h.hss.noCx(t)
+	wantCapabilitiesUAR(t, h)
+
+	req, f := h.scscf.recv()
+	h.scscf.respond(req, f, 200)
+	u.wantFinal(200)
+}
+
+func TestRegisterReassignedWhenTheSCSCFRefuses(t *testing.T) {
+	for _, code := range []int{302, 480} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			h, peer := peerHarness(t)
+			u := h.newUE(loopback)
+
+			h.hss.answerUAR(
+				&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: peer.uri(), features: cx.FeatureIMSRestoration},
+				&hssAnswer{result: success(diameter.ResultSuccess), features: cx.FeatureIMSRestoration},
+			)
+			u.send(u.register())
+			h.hss.nextUAR(t)
+
+			req, f := peer.recv()
+			peer.respond(req, f, code, func(r *sip.Response) {
+				if code == 302 {
+					r.Header.Set("Contact", "<sip:elsewhere."+homeDomain+">")
+				}
+			})
+			wantCapabilitiesUAR(t, h)
+
+			req, f = h.scscf.recv()
+			h.scscf.respond(req, f, 200)
+			u.wantFinal(200)
+		})
+	}
+}
+
+func TestRegisterNotReassignedWhenTheHSSKeepsTheFailedSCSCF(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	u := h.newUE(loopback)
+
+	h.hss.answerUAR(
+		&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: goneName},
+		&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: goneName},
+	)
+	u.send(u.register())
+	h.hss.nextUAR(t)
+	wantCapabilitiesUAR(t, h)
+
+	u.wantFinal(480)
 	h.scscf.sock.RecvNone(quiet)
 }
 
@@ -188,7 +237,7 @@ func TestInviteReassignedWhenTheSCSCFDoesNotAnswer(t *testing.T) {
 	wantCapabilitiesLIR(t, h)
 
 	req, f := h.scscf.recv()
-	if got := routes(t, req); len(got) == 0 || got[0] != h.scscf.uri()+";lr" {
+	if got := routes(t, req); len(got) == 0 || got[0] != h.scscf.uri()+";lr;scscf-reselection" {
 		t.Fatalf("routes = %v, want this node's S-CSCF first", got)
 	}
 
@@ -213,16 +262,19 @@ func TestInviteReassignedWhenTheSCSCFCannotBeResolved(t *testing.T) {
 	u.wantFinal(486)
 }
 
-func TestInviteNotReassignedWithoutHSSSupport(t *testing.T) {
+func TestInviteNotReassignedWhenTheHSSKeepsTheFailedSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	u := h.newUE(loopback)
 
-	h.hss.answerLIR(&hssAnswer{result: success(diameter.ResultSuccess), name: goneName})
+	h.hss.answerLIR(
+		&hssAnswer{result: success(diameter.ResultSuccess), name: goneName},
+		&hssAnswer{result: success(diameter.ResultSuccess), name: goneName},
+	)
 	u.send(terminatingInvite(h, u))
 	h.hss.nextLIR(t)
+	wantCapabilitiesLIR(t, h)
 
 	u.wantFinal(480)
-	h.hss.noCx(t)
 	h.scscf.sock.RecvNone(quiet)
 }
 

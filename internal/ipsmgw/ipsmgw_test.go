@@ -664,6 +664,26 @@ func TestHSSRefusalNotRetried(t *testing.T) {
 	}
 }
 
+func TestSuspendKeepsTheHSSRegistration(t *testing.T) {
+	store := newFakeStore()
+	w := newWorld(t, store)
+	impu := "sip:ken@" + home
+
+	w.register(impu, 600, "application/3gpp-ims+xml", serviceInfo)
+	sub := w.subscribed()
+	w.notify(sub, "active;expires=600", doc(0, impu, true))
+	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
+
+	w.n.Await(func() { _ = w.a.Suspend(t.Context()) }, 2*64*transaction.DefaultT1)
+
+	time.Sleep(50 * time.Millisecond)
+	w.hss.waitUpdates(t, update{msisdn: "15551230001", number: "15550000100"})
+
+	if got := store.reg(key(mustURI(t, impu))); !got.Available {
+		t.Fatalf("registration = %+v, want kept", got)
+	}
+}
+
 func TestShutdownDeregisters(t *testing.T) {
 	store := newFakeStore()
 	w := newWorld(t, store)

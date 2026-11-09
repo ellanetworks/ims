@@ -524,6 +524,10 @@ func (s *Server) finish(ctx context.Context) error {
 		callrecords.Prune(pruneCtx, callrecords.PruneConfig{
 			Store: database, Retention: func() time.Duration { return live.Get().CallRecords.Retention() },
 			Interval: s.PruneInterval, Logger: s.Logger,
+			Active: func() bool {
+				leading, _ := node.Leader()
+				return leading
+			},
 		})
 	}()
 
@@ -537,13 +541,13 @@ func (s *Server) finish(ctx context.Context) error {
 		s.drain.run(drainCtx)
 	}()
 
-	go s.fenceOnRemoval(base, node)
+	s.setHandler(api.NewHandler(apiCfg))
 
 	s.mu.Lock()
 	s.running = true
 	s.mu.Unlock()
 
-	s.setHandler(api.NewHandler(apiCfg))
+	go s.fenceOnRemoval(base, node)
 
 	v := version.Get()
 	attrs := []any{
@@ -903,9 +907,11 @@ func (s *Server) stopRunning(ctx context.Context) {
 
 	s.stopTrunks(ctx)
 
+	leaving := s.leaving(ctx)
+
 	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
 	s.stopMCPTT(mcpttCtx)
-	s.stopIPSMGW(mcpttCtx)
+	s.stopIPSMGWAs(mcpttCtx, leaving)
 	cancel()
 
 	if c := s.core.Swap(nil); c != nil {

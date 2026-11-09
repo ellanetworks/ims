@@ -81,7 +81,12 @@ func startNode(t *testing.T, cfg testIMS) *clusterNode {
 func (n *clusterNode) waitStarted(t *testing.T) {
 	t.Helper()
 
-	eventuallyFor(t, "SIP and Diameter to start", func() bool { return n.srv.core.Load() != nil })
+	eventuallyFor(t, "SIP, Diameter and the API to start", func() bool {
+		n.srv.mu.Lock()
+		defer n.srv.mu.Unlock()
+
+		return n.srv.running
+	})
 }
 
 func (n *clusterNode) stop() {

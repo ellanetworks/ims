@@ -165,19 +165,6 @@ func TestRegisterWithoutTheCapabilities(t *testing.T) {
 	}
 }
 
-func TestRegisterToAnUnknownSCSCF(t *testing.T) {
-	h := newHarness(t, harnessOptions{})
-	u := h.newUE(loopback)
-
-	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: "sip:old-scscf." + homeDomain + ":6060"})
-	u.send(u.register())
-	h.hss.nextUAR(t)
-
-	u.wantFinal(480)
-	h.hss.noCx(t)
-	h.scscf.sock.RecvNone(quiet)
-}
-
 func TestRegisterIdentities(t *testing.T) {
 	tests := []struct {
 		name string

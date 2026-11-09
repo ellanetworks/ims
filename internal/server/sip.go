@@ -112,7 +112,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	s := &sipServer{roles: roles, placeholder: ph, cx: cxh, rx: rxh}
 
 	if kernel == nil {
-		x, err := openXFRM(cfg.SIP.Addresses)
+		x, err := openXFRM(cfg.SIP.Addresses, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -519,11 +519,13 @@ func (s *sipServer) Close(ctx context.Context) error {
 	return err
 }
 
-func openXFRM(addrs []netip.Addr) (*ipsec.XFRM, error) {
+func openXFRM(addrs []netip.Addr, logger *slog.Logger) (*ipsec.XFRM, error) {
 	x, err := ipsec.Open()
 	if err != nil {
 		return nil, err
 	}
+
+	x.Own(addrs, logger)
 
 	for _, a := range addrs {
 		if err := x.Probe(a); err != nil {

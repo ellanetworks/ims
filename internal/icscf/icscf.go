@@ -23,6 +23,8 @@ const (
 	budgetMargin   = 4
 	contactTimeout = 8
 
+	reselectionParam = "scscf-reselection"
+
 	resolveTimeout = 4 * time.Second
 )
 

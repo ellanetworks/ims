@@ -182,7 +182,7 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 
 	switch {
 	case lia.ServerName != "" && !i.ours(lia.ServerName):
-		i.toServer(ctx, s, lia.ServerName, orig, lia.Features&cx.FeatureIMSRestoration != 0 && !lia.PSIDirectRouting)
+		i.toServer(ctx, s, lia.ServerName, orig, !lia.PSIDirectRouting)
 		return
 	case lia.ServerName != "":
 	case !i.capable(lia.Capabilities):
@@ -194,10 +194,11 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 		i.log.DebugContext(ctx, "no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 	}
 
-	i.toLocal(ctx, s, orig)
+	i.toLocal(ctx, s, orig, false)
 }
 
-func (i *ICSCF) toLocal(ctx context.Context, s *session, orig bool) {
+// TS 24.229 clause 7.2A.22.3
+func (i *ICSCF) toLocal(ctx context.Context, s *session, orig, reselected bool) {
 	name := i.cfg.SCSCF.Name
 
 	out := s.req.Clone()
@@ -207,6 +208,10 @@ func (i *ICSCF) toLocal(ctx context.Context, s *session, orig bool) {
 
 	if orig {
 		route.Params.Set("orig", "")
+	}
+
+	if reselected {
+		route.Params.Set(reselectionParam, "")
 	}
 
 	out.Header.Prepend("Route", "<"+route.String()+">")
@@ -282,6 +287,7 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig, res
 
 // TS 23.380 clause 4.3.3
 // TS 23.380 clause 4.5.3
+// TS 24.229 clause 5.3.2.2
 func (i *ICSCF) reassignSession(ctx context.Context, s *session) {
 	lia, err := i.locationInfo(ctx, cx.LocationInfoRequest{
 		PublicIdentity: s.identity, Originating: s.orig, AuthorizationType: cx.AuthorizationRegistrationAndCapabilities,
@@ -294,14 +300,21 @@ func (i *ICSCF) reassignSession(ctx context.Context, s *session) {
 		return
 	}
 
-	if !i.capable(lia.Capabilities) {
+	switch {
+	case lia.ServerName != "" && !i.ours(lia.ServerName):
+		i.log.WarnContext(ctx, "no other S-CSCF to select: the HSS keeps the failed one", slog.String("impu", s.identity),
+			slog.String("server-name", lia.ServerName))
+		i.answer(ctx, s.tx, 480)
+
+		return
+	case lia.ServerName == "" && !i.capable(lia.Capabilities):
 		i.answer(ctx, s.tx, 480)
 		return
 	}
 
 	i.log.InfoContext(ctx, "user reassigned to this S-CSCF", slog.String("impu", s.identity),
 		slog.String("scscf", i.cfg.SCSCF.Name.String()))
-	i.toLocal(ctx, s, s.orig)
+	i.toLocal(ctx, s, s.orig, true)
 }
 
 // TS 24.229 clause 5.3.2.1

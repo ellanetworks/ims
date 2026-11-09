@@ -439,27 +439,38 @@ func TestRecorderCloseOpen(t *testing.T) {
 	}
 }
 
-func TestRecorderSavesOpenCalls(t *testing.T) {
+func TestRecorderSavesAtStartAndStop(t *testing.T) {
 	store := &testStore{saved: make(chan []db.CallRecord, 10)}
 	r := newTestRecorder(t, store)
 
 	r.Attempt(attempt("ICID1"))
+	r.Routed("ICID1", Routing{RequestURI: "tel:5551230002"})
+	r.Alerted("ICID1")
 
-	if s := <-store.saved; len(s) != 1 || s[0].SIPStatus != 0 {
-		t.Fatalf("saved %+v, want the attempt", s)
+	select {
+	case s := <-store.saved:
+		t.Fatalf("saved %+v before the call was answered", s)
+	case <-time.After(50 * time.Millisecond):
 	}
 
-	r.Alerted("ICID1")
 	r.Answered("ICID1", 200)
 
-	for s := range store.saved {
-		if len(s) != 1 || !s[0].Alerted {
-			t.Fatalf("saved %+v, want the call alerted", s)
-		}
+	if s := <-store.saved; len(s) != 1 || !s[0].Alerted || s[0].Outcome != db.OutcomeAnswered {
+		t.Fatalf("saved %+v, want the answered call with what came before", s)
+	}
 
-		if s[0].Outcome == db.OutcomeAnswered {
-			break
-		}
+	r.Media("ICID1", []string{"audio"})
+
+	select {
+	case s := <-store.saved:
+		t.Fatalf("saved %+v on a media change", s)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	r.Ended("ICID1", End{Code: 200, By: proxy.Caller, Cause: proxy.EndBye})
+
+	if s := <-store.saved; len(s) != 1 || s[0].DeliveryEndAt.IsZero() || len(s[0].Media) != 1 {
+		t.Fatalf("saved %+v, want the ended call with its media", s)
 	}
 }
 
@@ -518,17 +529,16 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 
 	for _, icid := range icids {
 		r.Attempt(attempt(icid))
+		r.Answered(icid, 200)
 	}
 
 	eventually(t, func() bool { return len(records(t, d)) == len(icids) })
 	store.pause()
 
 	for _, icid := range []string{"ENDED1", "ENDED2", "DROPPED"} {
-		r.Ended(icid, End{Code: 486, By: proxy.Callee, Cause: proxy.EndFailed})
+		r.Ended(icid, End{Code: 200, By: proxy.Caller, Cause: proxy.EndBye})
 	}
 
-	r.Alerted("DROPPED")
-	r.Alerted("OPEN")
 	store.resume()
 
 	eventually(t, func() bool { return records(t, d)["DROPPED"].Incomplete })
@@ -536,16 +546,16 @@ func TestRecorderDropsWhatItCannotKeep(t *testing.T) {
 	got := records(t, d)
 
 	for _, icid := range []string{"ENDED1", "ENDED2"} {
-		if got[icid].Outcome != db.OutcomeBusy {
-			t.Fatalf("%s = %+v, want it busy", icid, got[icid])
+		if got[icid].DeliveryEndAt.IsZero() || got[icid].Incomplete {
+			t.Fatalf("%s = %+v, want it ended", icid, got[icid])
 		}
 	}
 
-	if rec := got["DROPPED"]; rec.EndedBy != "" || rec.Alerted {
+	if rec := got["DROPPED"]; rec.EndedBy != "" || !rec.DeliveryEndAt.IsZero() {
 		t.Fatalf("DROPPED = %+v, want it as first saved, closed as incomplete", rec)
 	}
 
-	if rec := got["OPEN"]; !rec.Alerted || rec.Incomplete {
+	if rec := got["OPEN"]; rec.Outcome != db.OutcomeAnswered || rec.Incomplete {
 		t.Fatalf("OPEN = %+v, want the call in progress kept, open", rec)
 	}
 }
@@ -691,6 +701,8 @@ func TestRecorderDropsWhatCannotBeSaved(t *testing.T) {
 
 	r.Attempt(attempt("TAKEN"))
 	r.Attempt(attempt("ICID1"))
+	r.Answered("TAKEN", 200)
+	r.Answered("ICID1", 200)
 
 	for tried := map[string]bool{}; !tried["TAKEN"] || !tried["ICID1"]; {
 		for _, rec := range <-store.saved {
@@ -713,8 +725,8 @@ func TestRecorderDropsWhatCannotBeSaved(t *testing.T) {
 	}
 
 	got := records(t, d)
-	if got["TAKEN"].SIPStatus != 0 || got["ICID1"].Outcome != db.OutcomeBusy {
-		t.Fatalf("records = %+v, want TAKEN as it was and ICID1 busy", got)
+	if got["TAKEN"].SIPStatus != 0 || got["ICID1"].Outcome != db.OutcomeAnswered || got["ICID1"].DeliveryEndAt.IsZero() {
+		t.Fatalf("records = %+v, want TAKEN as it was and ICID1 ended", got)
 	}
 }
 

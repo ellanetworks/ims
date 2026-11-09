@@ -31,7 +31,7 @@ Each node has two databases:
 | `ims.db` | Settings, users, API sessions and tokens, single sign-on, SIP trunks and routes, MCPTT settings, call records, and the cluster's members | Yes, through Raft |
 | `node.db` | The S-CSCF's registrations and subscriptions, the P-CSCF's registrations and IPsec security associations, MCPTT registrations and affiliations, and the IP-SM-GW's registrations | No |
 
-Per-node state stays out of Raft, so registering a phone never waits for the other nodes. The IPsec keys of a phone live in its node's kernel, and no other node could use them.
+Per-node state stays out of Raft, so registering a phone never waits for the other nodes. The IPsec keys of a phone live in its node's kernel, and no other node could use them. Each node therefore needs its own network namespace: a node leaves alone the IPsec security associations of addresses that are not its own.
 
 A backup holds `ims.db`. Restoring it keeps each node's `node.db`, so phones stay registered.
 
@@ -45,10 +45,10 @@ A call to a phone can arrive on any node: from a SIP trunk, from another phone, 
 
 The other nodes do not take over the lost node's registrations. Its phones move through IMS restoration (TS 23.380 clause 4):
 
-- A phone that registers again goes through another node's P-CSCF. That node's I-CSCF cannot reach the lost S-CSCF, and the HSS lets it assign its own.
-- A call to a phone that has not registered again reaches a node whose I-CSCF cannot reach the lost S-CSCF. The HSS lets that node's S-CSCF serve the phone, which it does as an unregistered user until the phone registers again.
+- A phone that registers again goes through another node's P-CSCF. That node's I-CSCF cannot reach the lost S-CSCF, or gets a redirection or `480` from it, and selects its own node's S-CSCF instead.
+- A call to a phone that has not registered again reaches a node whose I-CSCF cannot reach the lost S-CSCF. If the HSS supports IMS restoration, it lets that node's S-CSCF serve the phone, as an unregistered user until the phone registers again. Otherwise the call fails.
 
-An HA cluster therefore requires an HSS that supports IMS restoration. Without it, the phones of a lost node cannot register on another node until the lost node returns.
+An HA cluster therefore requires an HSS that supports IMS restoration, so that calls reach the phones of a lost node before they register again.
 
 A P-CSCF that does not answer the S-CSCF counts as lost, as one that has no binding for the phone does. If the HSS supports P-CSCF restoration, it then has the phone register again.
 
@@ -77,6 +77,14 @@ The UI and the API show the registrations, live calls, SIP trunk status and MCPT
 ## SIP trunks
 
 Each node has its own IBCF, with its own external address. Configure a carrier with every node's address, or with one host name that resolves to all of them, as RFC 3263 expects. When a node is lost, the carrier sends new calls to the other nodes.
+
+## Call records
+
+Call records are shared, and each node writes those of the calls it handles: once when a call is answered, and once when it ends or fails. Ringing and media changes stay in memory until then, so a busy node adds about two writes per call to the shared log. A node closes its unfinished records as incomplete when it starts again, and removing a node closes its records. The leader alone deletes records past their retention.
+
+## SMS over IP
+
+Each node's IP-SM-GW registers its own phones at the HSS, which then routes SMS to that node. A node that restarts keeps these registrations, as it keeps its phones. A node that is drained or removed releases them, so SMS go back to other routes until the phones register through another node.
 
 ## Draining
 

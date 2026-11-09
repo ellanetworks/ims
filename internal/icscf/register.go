@@ -145,32 +145,27 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 			return
 		}
 
-		i.registerAt(ctx, reg, i.cfg.SCSCF.Name, false)
+		i.registerAt(ctx, reg, i.cfg.SCSCF.Name, false, false)
 
 		return
 	}
 
-	restorable := uaa.Features&cx.FeatureIMSRestoration != 0 && !i.ours(uaa.ServerName)
+	restorable := !i.ours(uaa.ServerName)
 
 	name, err := sip.ParseURI(uaa.ServerName)
 	if err != nil {
 		i.log.WarnContext(ctx, "unusable S-CSCF name from the HSS", slog.String("impu", reg.uar.PublicIdentity),
 			slog.String("server-name", uaa.ServerName), slog.Any("error", err))
-
-		if restorable {
-			i.reassignRegistration(ctx, reg)
-			return
-		}
-
-		i.answer(ctx, reg.tx, 480)
+		i.reassignRegistration(ctx, reg)
 
 		return
 	}
 
-	i.registerAt(ctx, reg, name, restorable)
+	i.registerAt(ctx, reg, name, restorable, false)
 }
 
-func (i *ICSCF) registerAt(ctx context.Context, reg *registration, name sip.URI, restorable bool) {
+// TS 24.229 clause 7.2A.22.3
+func (i *ICSCF) registerAt(ctx context.Context, reg *registration, name sip.URI, restorable, reselected bool) {
 	to, err := i.scscfTarget(ctx, reg.req.Flow, name)
 	if err != nil {
 		i.log.WarnContext(ctx, "the S-CSCF cannot be reached", slog.String("impu", reg.uar.PublicIdentity),
@@ -189,6 +184,10 @@ func (i *ICSCF) registerAt(ctx context.Context, reg *registration, name sip.URI,
 	out := reg.req.Clone()
 	out.URI = name.Clone()
 
+	if reselected {
+		out.URI.Params.Set(reselectionParam, "")
+	}
+
 	timeout := i.branchTimeout(reg.deadline)
 	if restorable {
 		timeout = max(timeout/2, i.t1)
@@ -203,6 +202,7 @@ func (i *ICSCF) registerAt(ctx context.Context, reg *registration, name sip.URI,
 }
 
 // TS 23.380 clause 4.2.2
+// TS 24.229 clause 5.3.1.3
 func (i *ICSCF) reassignRegistration(ctx context.Context, reg *registration) {
 	uar := reg.uar
 	uar.AuthorizationType = cx.AuthorizationRegistrationAndCapabilities
@@ -216,30 +216,39 @@ func (i *ICSCF) reassignRegistration(ctx context.Context, reg *registration) {
 		return
 	}
 
-	if !i.capable(uaa.Capabilities) {
+	switch {
+	case uaa.ServerName != "" && !i.ours(uaa.ServerName):
+		i.log.WarnContext(ctx, "no other S-CSCF to select: the HSS keeps the failed one", slog.String("impu", uar.PublicIdentity),
+			slog.String("server-name", uaa.ServerName))
+		i.answer(ctx, reg.tx, 480)
+
+		return
+	case uaa.ServerName == "" && !i.capable(uaa.Capabilities):
 		i.answer(ctx, reg.tx, 600)
 		return
 	}
 
 	i.log.InfoContext(ctx, "user reassigned to this S-CSCF", slog.String("impu", uar.PublicIdentity),
 		slog.String("scscf", i.cfg.SCSCF.Name.String()))
-	i.registerAt(ctx, reg, i.cfg.SCSCF.Name, false)
+	i.registerAt(ctx, reg, i.cfg.SCSCF.Name, false, true)
 }
 
+// TS 24.229 clause 5.3.1.3
 func (i *ICSCF) registerReply(ctx context.Context, reg *registration, r proxy.Reply, restorable bool) proxy.Verdict {
-	if unresponsive(r, false) {
-		if restorable {
-			i.reassignRegistration(ctx, reg)
-			return proxy.Hold
-		}
+	res := r.Response
+	refused := r.Err == nil && res != nil && (res.StatusCode/100 == 3 || res.StatusCode == 480)
 
+	switch {
+	case restorable && (unresponsive(r, false) || refused):
+		i.reassignRegistration(ctx, reg)
+		return proxy.Hold
+	case unresponsive(r, false):
 		i.answer(ctx, reg.tx, 504)
-
 		return proxy.Hold
 	}
 
-	if r.Response != nil {
-		i.outgoing(reg.req, r.Response)
+	if res != nil {
+		i.outgoing(reg.req, res)
 	}
 
 	return proxy.Relay

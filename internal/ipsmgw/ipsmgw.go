@@ -194,6 +194,14 @@ func (a *AS) NumberChanged(ctx context.Context) {
 }
 
 func (a *AS) Shutdown(ctx context.Context) error {
+	return a.stop(ctx, true)
+}
+
+func (a *AS) Suspend(ctx context.Context) error {
+	return a.stop(ctx, false)
+}
+
+func (a *AS) stop(ctx context.Context, deregister bool) error {
 	defer a.kill()
 
 	stop := context.AfterFunc(ctx, a.kill)
@@ -201,7 +209,10 @@ func (a *AS) Shutdown(ctx context.Context) error {
 
 	a.reg.close()
 	a.hss.close()
-	a.hss.deregisterAll(ctx)
+
+	if deregister {
+		a.hss.deregisterAll(ctx)
+	}
 
 	submitted := make(chan struct{})
 
