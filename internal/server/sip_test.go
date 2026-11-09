@@ -403,8 +403,8 @@ func TestSIPAliasesByAddress(t *testing.T) {
 
 	got := sipAliases(cfg, op)
 
-	if !slices.Equal(got[internal], op.SIPAliases()) {
-		t.Errorf("aliases of %s = %v, want %v", internal, got[internal], op.SIPAliases())
+	if !slices.Equal(got[internal], op.SIPAliases(cfg.Diameter.HostLabel)) {
+		t.Errorf("aliases of %s = %v, want %v", internal, got[internal], op.SIPAliases(cfg.Diameter.HostLabel))
 	}
 
 	if !slices.Equal(got[external], []string{public.String()}) {

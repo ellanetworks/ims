@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -120,7 +121,7 @@ func (i *ICSCF) toPSISubdomain(ctx context.Context, s *session) {
 		return
 	}
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r, false) }}
 
 	if s.req.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
@@ -161,7 +162,9 @@ func (i *ICSCF) originating(ctx context.Context, tx *transaction.ServerTransacti
 // TS 29.228 clause 6.1.4.1
 // TS 29.229 clause 6.3.59
 func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
-	lia, err := i.locationInfo(ctx, s.identity, s.orig)
+	lia, err := i.locationInfo(ctx, cx.LocationInfoRequest{
+		PublicIdentity: s.identity, Originating: s.orig, Features: cx.FeatureIMSRestoration,
+	})
 
 	switch {
 	case err != nil && s.breakout && userUnknown(err):
@@ -175,14 +178,13 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 		return
 	}
 
-	name := i.cfg.SCSCF.Name
+	orig := s.orig && !lia.PSIDirectRouting
 
 	switch {
 	case lia.ServerName != "" && !i.ours(lia.ServerName):
-		i.toServer(ctx, s, lia.ServerName, s.orig && !lia.PSIDirectRouting)
+		i.toServer(ctx, s, lia.ServerName, orig, lia.Features&cx.FeatureIMSRestoration != 0 && !lia.PSIDirectRouting)
 		return
 	case lia.ServerName != "":
-		name, _ = sip.ParseURI(lia.ServerName)
 	case !i.capable(lia.Capabilities):
 		i.log.DebugContext(ctx, "no capable S-CSCF for the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 		i.answer(ctx, s.tx, 480)
@@ -192,12 +194,18 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 		i.log.DebugContext(ctx, "no S-CSCF assigned to the user", slog.String("impu", s.identity), slog.Any("result", lia.Result))
 	}
 
+	i.toLocal(ctx, s, orig)
+}
+
+func (i *ICSCF) toLocal(ctx context.Context, s *session, orig bool) {
+	name := i.cfg.SCSCF.Name
+
 	out := s.req.Clone()
 
 	route := name.Clone()
 	route.Params.Set("lr", "")
 
-	if s.orig && !lia.PSIDirectRouting {
+	if orig {
 		route.Params.Set("orig", "")
 	}
 
@@ -211,7 +219,7 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 		return
 	}
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r, false) }}
 
 	if out.Method != "INVITE" {
 		opts.Timeout = i.branchTimeout(s.deadline)
@@ -223,7 +231,7 @@ func (i *ICSCF) queryLocation(ctx context.Context, s *session) {
 // TS 24.229 clause 5.3.2.1
 // TS 24.229 clause 5.3.2.1A
 // TS 23.228 clause 5.4.12.2
-func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool) {
+func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig, restorable bool) {
 	u, err := sip.ParseURI(name)
 
 	var to proxy.Target
@@ -241,6 +249,12 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool
 	if err != nil {
 		i.log.WarnContext(ctx, "unusable server from the HSS", slog.String("impu", s.identity), slog.String("server-name", name),
 			slog.Any("error", err))
+
+		if restorable {
+			i.reassignSession(ctx, s)
+			return
+		}
+
 		i.answer(ctx, s.tx, 480)
 
 		return
@@ -249,14 +263,45 @@ func (i *ICSCF) toServer(ctx context.Context, s *session, name string, orig bool
 	out := s.req.Clone()
 	out.Header.Prepend("Route", "<"+u.String()+">")
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict {
+		return i.sessionReply(ctx, s, r, restorable)
+	}}
 
-	if out.Method != "INVITE" {
+	switch {
+	case out.Method != "INVITE" && restorable:
+		opts.Timeout = max(i.branchTimeout(s.deadline)/2, i.t1)
+	case out.Method != "INVITE":
 		opts.Timeout = i.branchTimeout(s.deadline)
+	case restorable:
+		opts.Timeout = contactTimeout * i.t1
 	}
 
 	i.log.DebugContext(ctx, "request routed to the server the HSS names", slog.String("impu", s.identity), slog.String("server-name", name))
 	i.forward(ctx, s.tx, out, to, opts)
+}
+
+// TS 23.380 clause 4.3.3
+// TS 23.380 clause 4.5.3
+func (i *ICSCF) reassignSession(ctx context.Context, s *session) {
+	lia, err := i.locationInfo(ctx, cx.LocationInfoRequest{
+		PublicIdentity: s.identity, Originating: s.orig, AuthorizationType: cx.AuthorizationRegistrationAndCapabilities,
+		Features: cx.FeatureIMSRestoration,
+	})
+	if err != nil {
+		i.log.InfoContext(ctx, "S-CSCF capabilities query failed", slog.String("impu", s.identity), slog.Any("error", err))
+		i.answer(ctx, s.tx, locationFailure(err))
+
+		return
+	}
+
+	if !i.capable(lia.Capabilities) {
+		i.answer(ctx, s.tx, 480)
+		return
+	}
+
+	i.log.InfoContext(ctx, "user reassigned to this S-CSCF", slog.String("impu", s.identity),
+		slog.String("scscf", i.cfg.SCSCF.Name.String()))
+	i.toLocal(ctx, s, s.orig)
 }
 
 // TS 24.229 clause 5.3.2.1
@@ -280,7 +325,7 @@ func (i *ICSCF) toIBCF(ctx context.Context, s *session) {
 	out := s.req.Clone()
 	out.Header.Prepend("Route", "<"+route.String()+">")
 
-	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r) }}
+	opts := proxy.Options{OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.sessionReply(ctx, s, r, false) }}
 
 	i.log.DebugContext(ctx, "number not in the home network routed to the IBCF", slog.String("request-uri", s.req.URI.String()))
 	i.forward(ctx, s.tx, out, to, opts)
@@ -306,10 +351,14 @@ func (i *ICSCF) ibcf(in sip.Flow) (proxy.Target, bool) {
 	return proxy.Target{Flow: sip.Flow{Transport: tr, Local: netip.AddrPortFrom(in.Local.Addr(), i.cfg.Port), Remote: remote}}, true
 }
 
-func (i *ICSCF) sessionReply(ctx context.Context, s *session, r proxy.Reply) proxy.Verdict {
+func (i *ICSCF) sessionReply(ctx context.Context, s *session, r proxy.Reply, restorable bool) proxy.Verdict {
 	res := r.Response
 
-	if unresponsive(r, s.req.Method == "INVITE") && (res == nil || res.StatusCode == 500) {
+	switch {
+	case unresponsive(r, s.req.Method == "INVITE") && restorable:
+		i.reassignSession(ctx, s)
+		return proxy.Hold
+	case unresponsive(r, s.req.Method == "INVITE") && (res == nil || res.StatusCode == 500):
 		i.answer(ctx, s.tx, 480)
 		return proxy.Hold
 	}
@@ -357,14 +406,16 @@ func (i *ICSCF) subsequent(ctx context.Context, tx *transaction.ServerTransactio
 
 func (i *ICSCF) forwardOnRoute(ctx context.Context, tx *transaction.ServerTransaction, out *sip.Request) {
 	route, err := out.Header.TopRoute()
-	if err != nil || !i.cfg.SCSCF.Name.Equivalent(route.URI) {
+	if err != nil {
 		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
 		return
 	}
 
-	to, ok := i.target(out.Flow, route.URI)
-	if !ok {
+	to, err := i.scscfTarget(ctx, out.Flow, route.URI)
+	if err != nil {
+		i.log.DebugContext(ctx, "no next hop for the route", slog.String("route", route.URI.String()), slog.Any("error", err))
 		i.respond(tx, sip.NewResponse(tx.Request(), 480, ""))
+
 		return
 	}
 

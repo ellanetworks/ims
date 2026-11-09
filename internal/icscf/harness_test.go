@@ -50,7 +50,8 @@ type hssAnswer struct {
 	caps   *cx.ServerCapabilities
 	gate   chan struct{}
 
-	direct bool
+	direct   bool
+	features cx.Features
 }
 
 func success(code uint32) tgpp.Result {
@@ -161,7 +162,7 @@ func (h *fakeHSS) userAuthorization(ctx context.Context, req *diameter.Message) 
 	}
 
 	ans, err := cx.NewUserAuthorizationAnswer(req, h.id, cx.UserAuthorization{
-		Result: a.result, ServerName: a.name, Capabilities: a.caps,
+		Result: a.result, ServerName: a.name, Capabilities: a.caps, Features: a.features,
 	})
 	if err != nil {
 		panic(err)
@@ -193,7 +194,7 @@ func (h *fakeHSS) locationInfo(ctx context.Context, req *diameter.Message) *diam
 	}
 
 	ans, err := cx.NewLocationInfoAnswer(req, h.id, cx.LocationInfo{
-		Result: a.result, ServerName: a.name, Capabilities: a.caps, PSIDirectRouting: a.direct,
+		Result: a.result, ServerName: a.name, Capabilities: a.caps, PSIDirectRouting: a.direct, Features: a.features,
 	})
 	if err != nil {
 		panic(err)

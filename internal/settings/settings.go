@@ -178,16 +178,16 @@ func (o Operator) PCSCFHost() string {
 	return "pcscf." + o.DerivedDomain()
 }
 
-func (o Operator) SCSCFHost() string {
-	return "scscf." + o.DerivedDomain()
+func (o Operator) SCSCFHost(label string) string {
+	return "scscf-" + label + "." + o.DerivedDomain()
 }
 
-func (o Operator) SCSCFName(port int) string {
-	return "sip:" + o.SCSCFHost() + ":" + strconv.Itoa(port)
+func (o Operator) SCSCFName(label string, port int) string {
+	return "sip:" + o.SCSCFHost(label) + ":" + strconv.Itoa(port)
 }
 
-func (o Operator) SIPAliases() []string {
-	return append(slices.Clone(o.HomeDomains()), o.PCSCFHost(), o.SCSCFHost())
+func (o Operator) SIPAliases(label string) []string {
+	return append(slices.Clone(o.HomeDomains()), o.PCSCFHost(), o.SCSCFHost(label))
 }
 
 func (o Operator) SameIdentity(p Operator) bool {

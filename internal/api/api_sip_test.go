@@ -43,13 +43,14 @@ func TestGetSIPStatus(t *testing.T) {
 			{Role: "icscf", Address: netip.MustParseAddrPort("[2001:db8::5]:5070")},
 			{Role: "ibcf-external-tls", Address: netip.MustParseAddrPort("192.0.2.5:5061"), TLS: true},
 		},
-		Settings: newFakeSettings(),
+		Settings:      newFakeSettings(),
+		DiameterLabel: "ims-a",
 	})
 
 	want := SIPStatus{
 		HomeDomain: "ims.mnc001.mcc001.3gppnetwork.org",
 		Aliases: []string{
-			"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org", "scscf.ims.mnc001.mcc001.3gppnetwork.org",
+			"ims.mnc001.mcc001.3gppnetwork.org", "pcscf.ims.mnc001.mcc001.3gppnetwork.org", "scscf-ims-a.ims.mnc001.mcc001.3gppnetwork.org",
 		},
 		Listeners: []SIPListener{
 			{Role: "pcscf", Address: "10.0.0.5:5060", Transports: []string{"udp", "tcp"}},

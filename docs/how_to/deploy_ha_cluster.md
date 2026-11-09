@@ -11,6 +11,7 @@ This guide deploys Ella IMS as a cluster of three nodes. See [High Availability]
     ## Prerequisites
 
     - Three hosts meeting the [system requirements](../reference/system_reqs.md), with Ella IMS installed as in [Install](install.md), not started.
+    - An HSS that supports IMS restoration.
 
     The examples use these addresses:
 
@@ -123,6 +124,7 @@ This guide deploys Ella IMS as a cluster of three nodes. See [High Availability]
 
     - A Kubernetes cluster with three nodes meeting the [system requirements](../reference/system_reqs.md).
     - A second interface, `eth1`, on the network phones reach Ella IMS on, for each pod, as in [Install](install.md).
+    - An HSS that supports IMS restoration.
 
     ## 1. Deploy
 

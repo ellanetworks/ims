@@ -744,21 +744,39 @@ func (s *Sessions) aliasReply(reg db.Registration, token, method string) func(co
 // TS 24.229 clause 5.2.6.4.1
 // TS 24.229 clause 5.4.3.3
 // TS 23.380 clause 5.4.1
+// TS 23.380 clause 5.4.2.2.2
 // RFC 5626 section 7
 // RFC 5626 section 11.5
 func (s *Sessions) pcscfFailure(t target, next func(context.Context, proxy.Reply) proxy.Verdict) func(context.Context, proxy.Reply) proxy.Verdict {
 	return func(ctx context.Context, r proxy.Reply) proxy.Verdict {
-		if res := r.Response; res != nil && res.StatusCode == 404 && pcscfNotFound(t.binding.Contact.Path, res) {
+		switch res := r.Response; {
+		case res != nil && res.StatusCode == 404 && pcscfNotFound(t.binding.Contact.Path, res):
 			s.log.InfoContext(ctx, "the P-CSCF has no binding for the contact", slog.String("impi", t.reg.IMPI),
 				slog.String("contact", t.binding.Contact.URI))
 
 			res.StatusCode, res.Reason = 430, sip.ReasonPhrase(430)
 
 			s.r.pcscfLost(ctx, t.reg.IMPI, t.reg.ID, t.binding.ID)
+		case pcscfUnreachable(t.binding.Contact.Path, r):
+			s.log.InfoContext(ctx, "the P-CSCF does not answer", slog.String("impi", t.reg.IMPI),
+				slog.String("contact", t.binding.Contact.URI), slog.String("path", t.binding.Contact.Path),
+				slog.Any("error", r.Err))
+
+			s.r.pcscfLost(ctx, t.reg.IMPI, t.reg.ID, t.binding.ID)
 		}
 
 		return next(ctx, r)
 	}
+}
+
+// TS 23.380 clause 5.4.2.2.2
+func pcscfUnreachable(path string, r proxy.Reply) bool {
+	if path == "" || r.Responded || r.Err == nil {
+		return false
+	}
+
+	return errors.Is(r.Err, transaction.ErrTimeout) || errors.Is(r.Err, transaction.ErrTransport) ||
+		errors.Is(r.Err, transaction.ErrRefused)
 }
 
 // TS 24.229 clause 5.2.6.4.1

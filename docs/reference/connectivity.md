@@ -16,6 +16,8 @@ description: Reference of the network interfaces and ports of Ella IMS.
 
 Defaults are in parentheses. The cluster port listens only when the configuration file has a `cluster` block.
 
+In a cluster, the I-CSCF of each node sends requests to the S-CSCF of the other nodes, on their SIP addresses, over TCP or UDP `scscf.port`. Each node trusts the SIP addresses of the other members.
+
 On Kubernetes, the cluster address of node `<n>` is `ella-ims-<n>.ella-ims-internal.<namespace>.svc.cluster.local`.
 
 ## Diameter identity

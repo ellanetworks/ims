@@ -33,7 +33,7 @@ func GetSIPStatus(cfg Config) http.Handler {
 
 		resp := SIPStatus{
 			HomeDomain: op.HomeDomain(),
-			Aliases:    op.SIPAliases(),
+			Aliases:    op.SIPAliases(cfg.DiameterLabel),
 			Listeners:  []SIPListener{},
 		}
 

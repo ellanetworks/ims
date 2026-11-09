@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"strconv"
 	"sync"
@@ -480,9 +481,9 @@ func (n *Node) maintain() {
 			cancel()
 		}
 
-		leading, _ := n.Leader()
-		if !leading {
-			n.updateSelf()
+		n.updateSelf()
+
+		if leading, _ := n.Leader(); !leading {
 			continue
 		}
 
@@ -526,7 +527,7 @@ func (n *Node) updateSelf() {
 	}
 
 	want := n.certs.member(n.cfg.Advertise, n.cfg.Version, n.label, n.generated)
-	want.APIAddress = n.cfg.APIAddress
+	want.APIAddress, want.SCSCFAddresses = n.cfg.APIAddress, n.scscfAddresses()
 	commit := max(r.CommitIndex(), n.leaderCommit.Load())
 	want.CaughtUp = have.CaughtUp || (commit > 0 && n.db.AppliedIndex() >= commit)
 
@@ -596,7 +597,7 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 	}
 
 	want := n.certs.member(address, n.cfg.Version, n.label, n.generated)
-	want.APIAddress, want.CaughtUp = n.cfg.APIAddress, true
+	want.APIAddress, want.CaughtUp, want.SCSCFAddresses = n.cfg.APIAddress, true, n.scscfAddresses()
 
 	have, err := n.db.Member(ctx, n.id)
 	if err == nil && sameMember(have, want) {
@@ -613,7 +614,24 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 func sameMember(a, b db.Member) bool {
 	return a.Address == b.Address && a.Fingerprint == b.Fingerprint && a.SchemaVersion == b.SchemaVersion &&
 		a.Version == b.Version && a.DiameterLabel == b.DiameterLabel && a.LabelGenerated == b.LabelGenerated &&
-		a.APIAddress == b.APIAddress && a.CaughtUp == b.CaughtUp
+		a.APIAddress == b.APIAddress && a.CaughtUp == b.CaughtUp && slices.Equal(a.SCSCFAddresses, b.SCSCFAddresses)
+}
+
+func (n *Node) SetSCSCFAddresses(addrs []netip.AddrPort) {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.String()
+	}
+
+	n.scscf.Store(&out)
+}
+
+func (n *Node) scscfAddresses() []string {
+	if p := n.scscf.Load(); p != nil {
+		return *p
+	}
+
+	return nil
 }
 
 var ErrNotDrained = errors.New("drain the member before removing it, or force the removal")

@@ -20,7 +20,8 @@ import (
 const (
 	defaultCxTimeout = 10 * time.Second
 
-	budgetMargin = 4
+	budgetMargin   = 4
+	contactTimeout = 8
 
 	resolveTimeout = 4 * time.Second
 )

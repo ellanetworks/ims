@@ -115,6 +115,7 @@ type Server struct {
 
 	mcptt           atomic.Pointer[mcptt.AS]
 	ases            builtinASs
+	peers           *peerDirectory
 	mcpttHomeDomain string
 	mcpttHosts      []string
 
@@ -426,6 +427,11 @@ func (s *Server) finish(ctx context.Context) error {
 	s.settings = live
 	s.sipFailed = make(chan struct{}, 1)
 	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
+	s.peers = &peerDirectory{
+		self: node.ID(), database: database, operator: func() settings.Operator { return live.Get().Operator },
+		fallback: s.ases.resolver, logger: s.Logger,
+	}
+	s.peers.refresh(ctx)
 
 	s.guardTrunks(ctx, live)
 
@@ -596,7 +602,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	sipServer, err := startSIP(ctx, cfg, st, s.settings.Runtime, s.settings.Changed, s.trunkStates(), s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
-		s.metrics, s.IPsec, s.refusing.Load, sipFailed, s.ases, s.tracerProvider, s.Logger)
+		s.metrics, s.IPsec, s.refusing.Load, sipFailed, s.ases, s.peers, s.tracerProvider, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -605,6 +611,8 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	pf.serve(s.Logger)
+
+	s.node.SetSCSCFAddresses(sipServer.bound(roleSCSCF))
 
 	return &core{settings: st, node: node, diameterLns: diameterLns, realms: rlm, policy: pf, sip: sipServer, failed: failed}, nil
 }

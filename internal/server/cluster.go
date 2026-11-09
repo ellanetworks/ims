@@ -6,6 +6,9 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/netip"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -13,6 +16,10 @@ import (
 	"github.com/ellanetworks/ims/internal/cluster"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/icscf"
+	"github.com/ellanetworks/ims/internal/settings"
+	"github.com/ellanetworks/ims/internal/trust"
+	"github.com/ellanetworks/ims/sip"
 )
 
 type secrets struct {
@@ -131,4 +138,91 @@ func apiAddress(cfg config.Config, listening net.Addr) string {
 	}
 
 	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+type peerDirectory struct {
+	self     string
+	database *db.DB
+	operator func() settings.Operator
+	fallback icscf.Resolver
+	logger   *slog.Logger
+
+	hosts  atomic.Pointer[map[string][]sip.Server]
+	addrs  atomic.Pointer[[]netip.Addr]
+	domain atomic.Pointer[trust.Domain]
+}
+
+func (p *peerDirectory) refresh(ctx context.Context) {
+	members, err := p.database.Members(ctx)
+	if err != nil {
+		p.logger.ErrorContext(ctx, "failed to read the cluster members", slog.Any("error", err))
+		return
+	}
+
+	op := p.operator()
+	hosts := map[string][]sip.Server{}
+
+	var addrs []netip.Addr
+
+	for _, m := range members {
+		if m.NodeID == p.self {
+			continue
+		}
+
+		var servers []sip.Server
+
+		for _, s := range m.SCSCFAddresses {
+			a, err := netip.ParseAddrPort(s)
+			if err != nil {
+				continue
+			}
+
+			servers = append(servers, sip.Server{Transport: sip.TCP, Addr: a}, sip.Server{Transport: sip.UDP, Addr: a})
+
+			if !slices.Contains(addrs, a.Addr().Unmap()) {
+				addrs = append(addrs, a.Addr().Unmap())
+			}
+		}
+
+		if len(servers) > 0 {
+			hosts[canonicalHost(op.SCSCFHost(m.DiameterLabel))] = servers
+		}
+	}
+
+	p.hosts.Store(&hosts)
+	p.addrs.Store(&addrs)
+
+	if d := p.domain.Load(); d != nil {
+		d.SetPeers(addrs)
+	}
+}
+
+func (p *peerDirectory) bind(d *trust.Domain) {
+	p.domain.Store(d)
+
+	if addrs := p.addrs.Load(); addrs != nil {
+		d.SetPeers(*addrs)
+	}
+}
+
+// RFC 3263 section 4
+func (p *peerDirectory) Resolve(ctx context.Context, u sip.URI) ([]sip.Server, error) {
+	if hosts := p.hosts.Load(); hosts != nil && u.IsSIP() && !u.IsSIPS() {
+		if servers := (*hosts)[canonicalHost(u.Host)]; len(servers) > 0 {
+			v, ok := u.Params.Get("transport")
+			if !ok {
+				return servers, nil
+			}
+
+			return slices.DeleteFunc(slices.Clone(servers), func(s sip.Server) bool {
+				return !strings.EqualFold(string(s.Transport), v)
+			}), nil
+		}
+	}
+
+	return p.fallback.Resolve(ctx, u)
+}
+
+func canonicalHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
 }

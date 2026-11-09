@@ -97,15 +97,18 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	tm timers, node *diameter.Node, rlm *realms, cxh *cxHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
 	kernel pcscf.Kernel, refusing func() bool, failed func(local netip.AddrPort, err error), ases builtinASs,
-	tp trace.TracerProvider, logger *slog.Logger,
+	peers *peerDirectory, tp trace.TracerProvider, logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
-	ph := newPlaceholderHandler(logger, op.SIPAliases())
+	ph := newPlaceholderHandler(logger, op.SIPAliases(cfg.Diameter.HostLabel))
 	pcscfDomain := trust.New(cfg.SIP.Addresses, nil)
 	domain := trust.New(cfg.SIP.Addresses, cfg.SIP.TrustedNetworks)
 	resolver := ases.resolver
 	observed := observedDiameter{node, m}
 	roles := newDispatcher(logger)
+
+	peers.bind(domain)
+
 	s := &sipServer{roles: roles, placeholder: ph, cx: cxh, rx: rxh}
 
 	if kernel == nil {
@@ -179,7 +182,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		}
 	}
 
-	scscfName, err := sip.ParseURI(op.SCSCFName(int(scscfPort)))
+	scscfName, err := sip.ParseURI(op.SCSCFName(cfg.Diameter.HostLabel, int(scscfPort)))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("S-CSCF name: %w", err), s.Close(ctx))
 	}
@@ -272,7 +275,7 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 		Proxy:     proxy.New(proxy.Config{Layer: layer, Logger: logger, Listeners: s.bound(roleICSCF)}),
 		Port:      icscfPort,
 		Trust:     domain,
-		Resolver:  resolver,
+		Resolver:  peers,
 		SCSCF: icscf.SCSCF{
 			Name:      scscfName,
 			Listeners: s.bound(roleSCSCF),
@@ -401,7 +404,7 @@ func sipAliases(cfg config.Config, op settings.Operator) map[netip.Addr][]string
 	out := make(map[netip.Addr][]string)
 
 	for _, a := range cfg.SIP.Addresses {
-		out[a.Unmap()] = op.SIPAliases()
+		out[a.Unmap()] = op.SIPAliases(cfg.Diameter.HostLabel)
 	}
 
 	if cfg.IBCF != nil {

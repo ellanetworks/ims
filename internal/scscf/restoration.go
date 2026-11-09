@@ -62,7 +62,7 @@ func (r *Registrar) restore(ctx context.Context, impi string, regID, bindingID i
 		r.keepUnregistered(ctx, reg, hss)
 	}
 
-	r.log.InfoContext(ctx, "contact deregistered: the P-CSCF has no binding for it", slog.String("impi", impi),
+	r.log.InfoContext(ctx, "contact deregistered: its P-CSCF is lost", slog.String("impi", impi),
 		slog.String("impu", reg.IMPU), slog.String("contact", live[j].Contact.URI), slog.Bool("restoration", restoring))
 
 	r.releaseCalls(ctx, st, []removal{rm})

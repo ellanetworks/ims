@@ -364,7 +364,8 @@ var migrations = []string{
 		diameter_label TEXT NOT NULL UNIQUE CHECK (length(diameter_label) BETWEEN 1 AND 63),
 		label_generated INTEGER NOT NULL CHECK (label_generated IN (0, 1)),
 		api_address TEXT NOT NULL DEFAULT '',
-		caught_up INTEGER NOT NULL DEFAULT 0 CHECK (caught_up IN (0, 1))
+		caught_up INTEGER NOT NULL DEFAULT 0 CHECK (caught_up IN (0, 1)),
+		scscf_addresses TEXT NOT NULL DEFAULT ''
 	);
 	CREATE UNIQUE INDEX cluster_members_address ON cluster_members (address) WHERE address != '';
 	CREATE TABLE cluster_removed_members (

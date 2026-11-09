@@ -77,6 +77,7 @@ func (c Config) clustered() bool {
 type Node struct {
 	cfg          Config
 	leaderCommit atomic.Uint64
+	scscf        atomic.Pointer[[]string]
 	id           string
 	label        string
 	generated    bool

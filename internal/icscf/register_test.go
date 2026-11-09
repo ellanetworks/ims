@@ -30,6 +30,7 @@ func TestRegisterToAssignedSCSCF(t *testing.T) {
 		PublicIdentity:    testIMPU,
 		VisitedNetwork:    "visited.example.org",
 		AuthorizationType: cx.AuthorizationRegistration,
+		Features:          cx.FeatureIMSRestoration,
 	}
 	if !reflect.DeepEqual(uar, want) {
 		t.Fatalf("UAR = %+v, want %+v", uar, want)
@@ -164,22 +165,17 @@ func TestRegisterWithoutTheCapabilities(t *testing.T) {
 	}
 }
 
-func TestRegisterToAnotherAssignedSCSCF(t *testing.T) {
+func TestRegisterToAnUnknownSCSCF(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
-	s := h.scscf
 	u := h.newUE(loopback)
 
 	h.hss.answerUAR(&hssAnswer{result: success(tgpp.ResultSubsequentRegistration), name: "sip:old-scscf." + homeDomain + ":6060"})
 	u.send(u.register())
 	h.hss.nextUAR(t)
 
-	req, f := s.recv()
-	if req.URI.String() != s.uri() {
-		t.Fatalf("Request-URI = %s, want %s", req.URI, s.uri())
-	}
-
-	s.respond(req, f, 401)
-	u.wantFinal(401)
+	u.wantFinal(480)
+	h.hss.noCx(t)
+	h.scscf.sock.RecvNone(quiet)
 }
 
 func TestRegisterIdentities(t *testing.T) {

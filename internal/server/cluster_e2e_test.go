@@ -200,12 +200,12 @@ func (n *clusterNode) as(t *testing.T, token, method, path string, body, out any
 	return n.do(t, http.DefaultClient, token, method, path, body, out)
 }
 
-func (n *clusterNode) login(t *testing.T, email, password string) (string, int) {
+func (n *clusterNode) login(t *testing.T, email string) (string, int) {
 	t.Helper()
 
 	var res api.LoginResponse
 
-	code := n.public(t, http.MethodPost, "/api/v1/auth/login", api.LoginParams{Email: email, Password: password}, &res)
+	code := n.public(t, http.MethodPost, "/api/v1/auth/login", api.LoginParams{Email: email, Password: apitest.Password}, &res)
 
 	return res.Token, code
 }
@@ -308,7 +308,7 @@ func joinedPair(t *testing.T, aLabel string) (*clusterNode, *clusterNode) {
 	}
 
 	eventuallyFor(t, "a login on the joined node", func() bool {
-		_, code := b.login(t, apitest.Email, apitest.Password)
+		_, code := b.login(t, apitest.Email)
 		return code == http.StatusOK
 	})
 
@@ -353,7 +353,7 @@ func TestClusterJoinThroughTheAPI(t *testing.T) {
 		return a.api(t, http.MethodGet, "/api/v1/users/ops@example.com", nil, nil) == http.StatusOK
 	})
 
-	if _, code := a.login(t, "ops@example.com", "correct horse"); code != http.StatusOK {
+	if _, code := a.login(t, "ops@example.com"); code != http.StatusOK {
 		t.Fatalf("login on the leader as a user created on the follower = %d", code)
 	}
 
@@ -491,7 +491,7 @@ func TestDrainingTheLeaderHandsItOver(t *testing.T) {
 		t.Fatal("the new leader refuses registrations")
 	}
 
-	token, code := a.login(t, apitest.Email, apitest.Password)
+	token, code := a.login(t, apitest.Email)
 	if code != http.StatusOK {
 		t.Fatalf("login on the drained node = %d", code)
 	}

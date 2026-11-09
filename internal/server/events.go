@@ -81,6 +81,10 @@ func (s *Server) applyEvents(ctx context.Context, ev db.Events, database *db.DB,
 		}
 	}
 
+	if (ev.Members || ev.Replaced || ev.Settings) && s.peers != nil {
+		s.peers.refresh(ctx)
+	}
+
 	if ev.OIDC {
 		current, err := database.GetOIDC(ctx)
 		if err != nil {

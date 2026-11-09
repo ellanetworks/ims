@@ -11,6 +11,7 @@ import (
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/reginfo"
 	"github.com/ellanetworks/ims/sip/siptest"
+	"github.com/ellanetworks/ims/sip/transaction"
 )
 
 func newRestorationHarness(t *testing.T, features cx.Features) *sessionHarness {
@@ -80,6 +81,41 @@ func TestPCSCFRestoration(t *testing.T) {
 	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("INVITE", testTel))
 	wantStatus(t, final(t, sh.icscf), 480)
 	sh.hss.noCx(t)
+}
+
+func TestPCSCFRestorationWhenThePCSCFDoesNotAnswer(t *testing.T) {
+	sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("MESSAGE", testTel))
+	sh.term.RecvRequest()
+	sh.sipClock.Advance(64 * transaction.DefaultT1)
+
+	if sar := sh.hss.wantSAR(t, cx.AssignmentUnregisteredUser); !sar.PCSCFRestoration {
+		t.Fatalf("SAR = %+v, want the restoration indication", sar)
+	}
+
+	eventually(t, "the registration removed", func() bool { return len(sh.registrations(testIMPI)) == 0 })
+}
+
+func TestNoPCSCFRestorationWhenThePCSCFAnswersLate(t *testing.T) {
+	sh := newRestorationHarness(t, cx.FeaturePCSCFRestoration)
+
+	sh.icscf.Send(sip.UDP, sh.scscf, sh.terminating("INVITE", testTel))
+
+	got, f := sh.term.RecvRequest()
+	reply(t, sh.term, got, f, 180, "")
+	reply(t, sh.term, got, f, 486, "")
+
+	if res := final(t, sh.icscf); res.StatusCode != 180 {
+		t.Fatalf("got %q, want 180", res.StartLine())
+	}
+
+	wantStatus(t, final(t, sh.icscf), 486)
+	sh.hss.noCx(t)
+
+	if regs := sh.registrations(testIMPI); len(regs) != 1 {
+		t.Fatalf("registrations = %+v, want the registration kept", regs)
+	}
 }
 
 // TS 29.229 clause 7.1.1 table 7.1.1

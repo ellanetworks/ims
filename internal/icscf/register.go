@@ -128,6 +128,8 @@ func authorizationType(h sip.Header) (cx.AuthorizationType, string) {
 }
 
 func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
+	reg.uar.Features = cx.FeatureIMSRestoration
+
 	uaa, err := i.userAuthorization(ctx, reg.uar)
 	if err != nil {
 		i.log.InfoContext(ctx, "user registration status query failed", slog.String("impu", reg.uar.PublicIdentity),
@@ -137,36 +139,102 @@ func (i *ICSCF) queryRegistration(ctx context.Context, reg *registration) {
 		return
 	}
 
-	name := i.cfg.SCSCF.Name
+	if uaa.ServerName == "" {
+		if !i.capable(uaa.Capabilities) {
+			i.answer(ctx, reg.tx, 600)
+			return
+		}
 
-	switch {
-	case uaa.ServerName != "":
-		name = i.assigned(uaa.ServerName, reg.uar.PublicIdentity)
-	case !i.capable(uaa.Capabilities):
-		i.answer(ctx, reg.tx, 600)
+		i.registerAt(ctx, reg, i.cfg.SCSCF.Name, false)
+
+		return
+	}
+
+	restorable := uaa.Features&cx.FeatureIMSRestoration != 0 && !i.ours(uaa.ServerName)
+
+	name, err := sip.ParseURI(uaa.ServerName)
+	if err != nil {
+		i.log.WarnContext(ctx, "unusable S-CSCF name from the HSS", slog.String("impu", reg.uar.PublicIdentity),
+			slog.String("server-name", uaa.ServerName), slog.Any("error", err))
+
+		if restorable {
+			i.reassignRegistration(ctx, reg)
+			return
+		}
+
+		i.answer(ctx, reg.tx, 480)
+
+		return
+	}
+
+	i.registerAt(ctx, reg, name, restorable)
+}
+
+func (i *ICSCF) registerAt(ctx context.Context, reg *registration, name sip.URI, restorable bool) {
+	to, err := i.scscfTarget(ctx, reg.req.Flow, name)
+	if err != nil {
+		i.log.WarnContext(ctx, "the S-CSCF cannot be reached", slog.String("impu", reg.uar.PublicIdentity),
+			slog.String("scscf", name.String()), slog.Any("error", err))
+
+		if restorable {
+			i.reassignRegistration(ctx, reg)
+			return
+		}
+
+		i.answer(ctx, reg.tx, 480)
+
 		return
 	}
 
 	out := reg.req.Clone()
 	out.URI = name.Clone()
 
-	to, ok := i.target(reg.req.Flow, name)
-	if !ok {
-		i.log.WarnContext(ctx, "no listener for the S-CSCF", slog.String("scscf", name.String()))
-		i.answer(ctx, reg.tx, 480)
+	timeout := i.branchTimeout(reg.deadline)
+	if restorable {
+		timeout = max(timeout/2, i.t1)
+	}
+
+	i.forward(ctx, reg.tx, out, to, proxy.Options{
+		Timeout: timeout,
+		OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict {
+			return i.registerReply(ctx, reg, r, restorable)
+		},
+	})
+}
+
+// TS 23.380 clause 4.2.2
+func (i *ICSCF) reassignRegistration(ctx context.Context, reg *registration) {
+	uar := reg.uar
+	uar.AuthorizationType = cx.AuthorizationRegistrationAndCapabilities
+
+	uaa, err := i.userAuthorization(ctx, uar)
+	if err != nil {
+		i.log.InfoContext(ctx, "S-CSCF capabilities query failed", slog.String("impu", uar.PublicIdentity),
+			slog.Any("error", err))
+		i.answer(ctx, reg.tx, registrationFailure(err))
 
 		return
 	}
 
-	i.forward(ctx, reg.tx, out, to, proxy.Options{
-		Timeout: i.branchTimeout(reg.deadline),
-		OnReply: func(ctx context.Context, r proxy.Reply) proxy.Verdict { return i.registerReply(ctx, reg, r) },
-	})
+	if !i.capable(uaa.Capabilities) {
+		i.answer(ctx, reg.tx, 600)
+		return
+	}
+
+	i.log.InfoContext(ctx, "user reassigned to this S-CSCF", slog.String("impu", uar.PublicIdentity),
+		slog.String("scscf", i.cfg.SCSCF.Name.String()))
+	i.registerAt(ctx, reg, i.cfg.SCSCF.Name, false)
 }
 
-func (i *ICSCF) registerReply(ctx context.Context, reg *registration, r proxy.Reply) proxy.Verdict {
+func (i *ICSCF) registerReply(ctx context.Context, reg *registration, r proxy.Reply, restorable bool) proxy.Verdict {
 	if unresponsive(r, false) {
+		if restorable {
+			i.reassignRegistration(ctx, reg)
+			return proxy.Hold
+		}
+
 		i.answer(ctx, reg.tx, 504)
+
 		return proxy.Hold
 	}
 

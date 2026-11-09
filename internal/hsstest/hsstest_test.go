@@ -347,8 +347,48 @@ func TestRegistration(t *testing.T) {
 	wantExperimental(t, err, tgpp.ResultErrorIdentityNotRegistered)
 }
 
+func TestRegistrationAndCapabilitiesWithoutRestoration(t *testing.T) {
+	c := newClient(t)
+	c.register()
+
+	uaa, err := c.uar(tempIMPU, cx.AuthorizationRegistrationAndCapabilities)
+	if err != nil || uaa.ServerName != "" || uaa.Features != 0 || c.state().ReassignPending {
+		t.Fatalf("UAA = %+v, %v, state %+v, want no reassignment", uaa, err, c.state())
+	}
+
+	lia, err := c.lirWith(cx.LocationInfoRequest{
+		PublicIdentity: msisdn, AuthorizationType: cx.AuthorizationRegistrationAndCapabilities, Features: cx.FeatureIMSRestoration,
+	})
+	if err != nil || lia.ServerName != scscfName || lia.Features != 0 || c.state().ReassignPending {
+		t.Fatalf("LIA = %+v, %v, want the stored S-CSCF and no reassignment", lia, err)
+	}
+}
+
+func TestLocationAndCapabilities(t *testing.T) {
+	c := newClient(t)
+	c.hss.SupportRestoration(true)
+	c.register()
+
+	lia, err := c.lirWith(cx.LocationInfoRequest{
+		PublicIdentity: msisdn, AuthorizationType: cx.AuthorizationRegistrationAndCapabilities, Features: cx.FeatureIMSRestoration,
+	})
+	if err != nil || lia.ServerName != "" || lia.Features != cx.FeatureIMSRestoration || !c.state().ReassignPending {
+		t.Fatalf("LIA = %+v, %v, want capabilities and a pending reassignment", lia, err)
+	}
+
+	saa, err := c.sarWith(cx.ServerAssignmentRequest{Type: cx.AssignmentUnregisteredUser, ServerName: otherName})
+	if err != nil || saa.UserData == nil {
+		t.Fatalf("SAA = %+v, %v, want the profile at the new S-CSCF", saa, err)
+	}
+
+	if s := c.state(); s.ServerName != otherName || s.ReassignPending {
+		t.Fatalf("subscriber = %+v, want reassigned to %s", s, otherName)
+	}
+}
+
 func TestRegistrationAndCapabilities(t *testing.T) {
 	c := newClient(t)
+	c.hss.SupportRestoration(true)
 	c.register()
 
 	uaa, err := c.uar(tempIMPU, cx.AuthorizationRegistrationAndCapabilities)

@@ -229,6 +229,14 @@ func (h *HSS) SupportRestoration(on bool) {
 	h.db.restoration = on
 }
 
+func (h *HSS) restorationLocked(requested cx.Features) cx.Features {
+	if h.db.restoration {
+		return requested & cx.FeatureIMSRestoration
+	}
+
+	return 0
+}
+
 func New(t testing.TB, cfg Config) *HSS {
 	t.Helper()
 
@@ -240,6 +248,15 @@ func (h *HSS) Replica(t testing.TB, host string, addr netip.Addr) *HSS {
 
 	cfg := h.cfg
 	cfg.Host, cfg.Address = host, addr
+
+	return newHSS(t, cfg, h.db)
+}
+
+func (h *HSS) ReplicaFor(t testing.TB, host, imsHost string) *HSS {
+	t.Helper()
+
+	cfg := h.cfg
+	cfg.Host, cfg.IMSHost = host, imsHost
 
 	return newHSS(t, cfg, h.db)
 }
@@ -500,11 +517,11 @@ func (h *HSS) userAuthorization(_ context.Context, c *diameter.Conn, req *diamet
 		return base(req, id, diameter.ResultAuthorizationRejected)
 	}
 
-	var a cx.UserAuthorization
+	a := cx.UserAuthorization{Features: h.restorationLocked(uar.Features)}
 
 	switch {
 	case uar.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities:
-		s.ReassignPending = s.ServerName != ""
+		s.ReassignPending = s.ServerName != "" && h.db.restoration
 	case uar.AuthorizationType == cx.AuthorizationDeregistration && s.State == NotRegistered && !s.AuthPending:
 		return experimental(req, id, tgpp.ResultErrorIdentityNotRegistered)
 	case uar.AuthorizationType == cx.AuthorizationDeregistration:
@@ -609,7 +626,7 @@ func (h *HSS) serverAssignment(_ context.Context, c *diameter.Conn, req *diamete
 
 	var features cx.Features
 	if h.db.restoration {
-		features = cx.FeaturePCSCFRestoration
+		features = cx.FeaturePCSCFRestoration | h.restorationLocked(sar.Features)
 	}
 
 	restoring := sar.PCSCFRestoration && features != 0 &&
@@ -704,6 +721,8 @@ func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Me
 
 	s := h.db.subscribers[h.db.order[i]]
 
+	features := h.restorationLocked(lir.Features)
+
 	var wildcard string
 	if p, _ := s.identity(lir.PublicIdentity); p.Type == cx.IdentityWildcardedPSI || p.Type == cx.IdentityWildcardedIMPU {
 		wildcard = p.Identity
@@ -714,19 +733,23 @@ func (h *HSS) locationInfo(_ context.Context, c *diameter.Conn, req *diameter.Me
 		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
 			ServerName: s.AS, WildcardedPublicIdentity: wildcard, PSIDirectRouting: s.PSIDirectRouting,
 		}))
-	case lir.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities:
+	case lir.AuthorizationType == cx.AuthorizationRegistrationAndCapabilities && h.db.restoration:
 		s.ReassignPending = s.ServerName != ""
-		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{}))
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{Features: features}))
 	case s.State != NotRegistered:
-		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName, WildcardedPublicIdentity: wildcard}))
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
+			ServerName: s.ServerName, WildcardedPublicIdentity: wildcard, Features: features,
+		}))
 	case !s.UnregisteredServices && !lir.Originating:
 		return experimental(req, id, tgpp.ResultErrorIdentityNotRegistered)
 	case s.ServerName != "":
-		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{ServerName: s.ServerName, WildcardedPublicIdentity: wildcard}))
+		return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
+			ServerName: s.ServerName, WildcardedPublicIdentity: wildcard, Features: features,
+		}))
 	}
 
 	return must(cx.NewLocationInfoAnswer(req, id, cx.LocationInfo{
-		Result: tgpp.Experimental(tgpp.ResultUnregisteredService), WildcardedPublicIdentity: wildcard,
+		Result: tgpp.Experimental(tgpp.ResultUnregisteredService), WildcardedPublicIdentity: wildcard, Features: features,
 	}))
 }
 
