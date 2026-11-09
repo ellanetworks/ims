@@ -8,8 +8,6 @@ import (
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/mattn/go-sqlite3"
 )
 
 var callT0 = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
@@ -181,7 +179,7 @@ func TestCallRecordConstraints(t *testing.T) {
 			corrupt(r)
 
 			errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{r}, nil)
-			if err != nil || len(errs) != 1 || !isConstraint(errs[0], sqlite3.ErrConstraintCheck) {
+			if err != nil || len(errs) != 1 || !errors.Is(errs[0], ErrConstraintCheck) {
 				t.Fatalf("SaveCallRecords = %v, %v; want a CHECK constraint failure", errs, err)
 			}
 		})

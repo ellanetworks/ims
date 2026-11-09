@@ -17,8 +17,8 @@ import (
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/as"
-	"github.com/ellanetworks/ims/internal/backup"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/cluster"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ibcf"
@@ -86,6 +86,7 @@ type Server struct {
 	detached        tracing.Detached
 
 	database    *db.DB
+	node        *cluster.Node
 	draining    atomic.Bool
 	records     *callrecords.Recorder
 	metrics     *metrics
@@ -93,6 +94,7 @@ type Server struct {
 	pruneDone   chan struct{}
 	readiness   *readiness
 	stopReady   context.CancelFunc
+	stopEvents  func()
 	readyDone   chan struct{}
 	settings    *settings.Live
 	apiServer   *http.Server
@@ -156,9 +158,30 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	initial, err := database.GetSettings(ctx)
+	node, err := cluster.Open(ctx, cluster.Config{
+		Dir: filepath.Join(filepath.Dir(cfg.DB.Path), "raft"), Version: version.Get().Version, Now: time.Now,
+		Logger: s.Logger, DiameterLabel: cfg.Diameter.HostLabel,
+	}, database)
 	if err != nil {
 		_ = database.Close()
+
+		s.stopTracing(ctx)
+
+		return err
+	}
+
+	s.Config.Diameter.HostLabel = node.DiameterLabel()
+	cfg.Diameter.HostLabel = node.DiameterLabel()
+
+	closeStore := func() {
+		if err := errors.Join(node.Close(), database.Close()); err != nil {
+			s.Logger.ErrorContext(ctx, "failed to close the database", slog.Any("error", err))
+		}
+	}
+
+	initial, err := database.GetSettings(ctx)
+	if err != nil {
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -167,7 +190,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	jwtSecret, err := database.JWTSecret(ctx)
 	if err != nil {
-		_ = database.Close()
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -176,7 +199,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	oidcSettings, err := database.GetOIDC(ctx)
 	if err != nil {
-		_ = database.Close()
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -185,7 +208,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	oidcCookieKey, err := database.OIDCCookieKey(ctx)
 	if err != nil {
-		_ = database.Close()
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -198,7 +221,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	closed, err := database.CloseOpenCallRecords(ctx, nil)
 	if err != nil {
-		_ = database.Close()
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -213,14 +236,14 @@ func (s *Server) Start(ctx context.Context) error {
 
 	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
 	if err != nil {
-		_ = database.Close()
+		closeStore()
 
 		s.stopTracing(ctx)
 
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
-	s.database = database
+	s.database, s.node = database, node
 	s.settings = live
 	s.sipFailed = make(chan struct{}, 1)
 	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
@@ -247,7 +270,8 @@ func (s *Server) Start(ctx context.Context) error {
 		}); err != nil {
 			_ = s.records.Close(ctx)
 			_ = apiLn.Close()
-			_ = database.Close()
+
+			closeStore()
 
 			s.stopTracing(ctx)
 
@@ -259,7 +283,8 @@ func (s *Server) Start(ctx context.Context) error {
 		if err := s.startMCPTT(ctx, initial.Operator.HomeDomains()); err != nil {
 			_ = s.records.Close(ctx)
 			_ = apiLn.Close()
-			_ = database.Close()
+
+			closeStore()
 
 			s.stopTracing(ctx)
 
@@ -272,7 +297,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 		_ = s.records.Close(ctx)
 		_ = apiLn.Close()
-		_ = database.Close()
+
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -286,7 +312,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 		_ = s.records.Close(ctx)
 		_ = apiLn.Close()
-		_ = database.Close()
+
+		closeStore()
 
 		s.stopTracing(ctx)
 
@@ -299,6 +326,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.reprobeTrunks()
 
 	view := coreView{s}
+	oidcLive := oidc.NewLive(database, oidcSettings)
+	s.stopEvents = s.followEvents(context.WithoutCancel(ctx), database, oidcLive)
 
 	apiCfg := api.Config{
 		Settings:       live,
@@ -308,14 +337,14 @@ func (s *Server) Start(ctx context.Context) error {
 		Registrations:  view,
 		Policy:         view,
 		CallRecords:    database,
-		Backups:        &backup.Backups{DB: database, Dir: filepath.Dir(cfg.DB.Path), Now: time.Now},
+		Backups:        node,
 		SIPTrunks:      s.trunkStates(),
 		Frontend:       ui.FS(),
 		Ready:          s.readiness.checks,
 		Metrics:        s.metrics.registry,
 		Requests:       s.metrics.requests,
 		Auth:           database,
-		OIDC:           oidc.NewLive(database, oidcSettings),
+		OIDC:           oidcLive,
 		JWTSecret:      jwtSecret,
 		OIDCCookieKey:  oidcCookieKey,
 		BcryptCost:     s.BcryptCost,
@@ -687,6 +716,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.stopFollow()
 	<-s.followDone
 
+	s.stopEvents()
+
 	if s.trunks != nil {
 		if err := s.trunks.Shutdown(ctx); err != nil {
 			s.Logger.WarnContext(ctx, "failed to stop the SIP trunk monitor cleanly", slog.Any("error", err))
@@ -717,7 +748,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.stopReady()
 	<-s.readyDone
 
-	if err := s.database.Close(); err != nil {
+	if err := errors.Join(s.node.Close(), s.database.Close()); err != nil {
 		s.Logger.WarnContext(ctx, "failed to close the database", slog.Any("error", err))
 	}
 

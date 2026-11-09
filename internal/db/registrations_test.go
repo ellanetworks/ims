@@ -486,7 +486,7 @@ func TestDeleteRegistrationCascades(t *testing.T) {
 
 	for _, table := range []string{"implicit_sets", "set_identities", "bindings"} {
 		var n int
-		if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
+		if err := d.local.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 

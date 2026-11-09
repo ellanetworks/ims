@@ -15,9 +15,9 @@ import (
 )
 
 func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Record, deleted []string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	return d.inTx(ctx, "save MCPTT registrations", func(tx *sql.Tx) error {
+	return d.localTx(ctx, "save MCPTT registrations", func(tx *sql.Tx) error {
 		for _, client := range deleted {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_registrations WHERE client_id = ?`, client); err != nil {
 				return err
@@ -50,7 +50,7 @@ func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Rec
 }
 
 func (d *DB) MCPTTRegistrations(ctx context.Context) (_ []registrar.Record, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	out, bad, err := d.mcpttRegistrations(ctx)
 	if err != nil || len(bad) == 0 {
@@ -61,7 +61,7 @@ func (d *DB) MCPTTRegistrations(ctx context.Context) (_ []registrar.Record, err 
 }
 
 func (d *DB) mcpttRegistrations(ctx context.Context) ([]registrar.Record, []string, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT client_id, mcptt_id, impu, impus, expires_at, since, scscf, as_uri, token,
+	rows, err := d.local.QueryContext(ctx, `SELECT client_id, mcptt_id, impu, impus, expires_at, since, scscf, as_uri, token,
 		instance, reg_id, contact, call_id, cseq, icid, orig_ioi, charging_function_addresses FROM mcptt_registrations
 		ORDER BY client_id`)
 	if err != nil {
@@ -131,9 +131,9 @@ func parseMCPTTRecord(r *registrar.Record, uris []string, set string) bool {
 }
 
 func (d *DB) ClearMCPTTState(ctx context.Context) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	return d.inTx(ctx, "clear MCPTT state", func(tx *sql.Tx) error {
+	return d.localTx(ctx, "clear MCPTT state", func(tx *sql.Tx) error {
 		for _, q := range []string{`DELETE FROM mcptt_registrations`, `DELETE FROM mcptt_affiliation_clients`} {
 			if _, err := tx.ExecContext(ctx, q); err != nil {
 				return err
@@ -145,9 +145,9 @@ func (d *DB) ClearMCPTTState(ctx context.Context) (err error) {
 }
 
 func (d *DB) SaveMCPTTAffiliations(ctx context.Context, records []affiliation.Record) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	return d.inTx(ctx, "save MCPTT affiliations", func(tx *sql.Tx) error {
+	return d.localTx(ctx, "save MCPTT affiliations", func(tx *sql.Tx) error {
 		for _, r := range records {
 			uk := settings.Key(r.MCPTTID)
 
@@ -184,14 +184,14 @@ func (d *DB) SaveMCPTTAffiliations(ctx context.Context, records []affiliation.Re
 }
 
 func (d *DB) MCPTTAffiliations(ctx context.Context) (_ []affiliation.Record, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	out, bad, err := d.mcpttAffiliations(ctx)
 	if err != nil || len(bad) == 0 {
 		return out, err
 	}
 
-	return out, d.inTx(ctx, "remove MCPTT affiliations", func(tx *sql.Tx) error {
+	return out, d.localTx(ctx, "remove MCPTT affiliations", func(tx *sql.Tx) error {
 		for _, k := range bad {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_affiliation_clients WHERE user_key = ? AND client_id = ?`,
 				k[0], k[1]); err != nil {
@@ -204,7 +204,7 @@ func (d *DB) MCPTTAffiliations(ctx context.Context) (_ []affiliation.Record, err
 }
 
 func (d *DB) mcpttAffiliations(ctx context.Context) ([]affiliation.Record, [][2]string, error) {
-	tx, err := d.conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := d.local.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, nil, fmt.Errorf("get MCPTT affiliations: %w", err)
 	}

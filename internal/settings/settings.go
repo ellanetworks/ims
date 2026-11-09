@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/deepequal"
 	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -79,6 +80,24 @@ func (o Operator) mnc3() string {
 }
 
 const DefaultDiameterLabel = "ims"
+
+func NodeLabel(nodeID string) string {
+	id := strings.ToLower(nodeID)
+
+	return "ims-" + id[max(len(id)-12, 0):]
+}
+
+func (o Operator) HostConflict(peers []Peer, label string) error {
+	host := o.DiameterHost(label)
+
+	for _, p := range peers {
+		if strings.EqualFold(p.Host, host) {
+			return conflictf("the Diameter host %s is peer %s's", host, p.name())
+		}
+	}
+
+	return nil
+}
 
 func (o Operator) DiameterHost(label string) string {
 	if label == "" {
@@ -285,6 +304,7 @@ type Live struct {
 	runtime atomic.Pointer[Settings]
 
 	mu         sync.Mutex
+	stateMu    sync.Mutex
 	trunkGuard func(Trunk) error
 	changed    chan struct{}
 	causes     []trace.SpanContext
@@ -504,6 +524,9 @@ func (l *Live) SetTrunkGuard(guard func(Trunk) error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
+
 	l.trunkGuard = guard
 	l.publish(l.current.Load())
 }
@@ -614,21 +637,39 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) error, save
 		return fmt.Errorf("save settings: %w", err)
 	}
 
-	l.publish(&next)
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
 
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		l.causes = append(l.causes[max(0, len(l.causes)+1-maxCauses):], sc)
 	}
 
-	close(l.changed)
-	l.changed = make(chan struct{})
+	l.swapLocked(&next)
 
 	return nil
 }
 
+func (l *Live) Reload(next Settings) {
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
+
+	l.swapLocked(&next)
+}
+
+func (l *Live) swapLocked(next *Settings) {
+	if deepequal.IgnoringEmpty(*l.current.Load(), *next) {
+		return
+	}
+
+	l.publish(next)
+
+	close(l.changed)
+	l.changed = make(chan struct{})
+}
+
 func (l *Live) Changed() <-chan struct{} {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
 
 	return l.changed
 }
@@ -636,8 +677,8 @@ func (l *Live) Changed() <-chan struct{} {
 const maxCauses = 32
 
 func (l *Live) Take() (Settings, []trace.SpanContext) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
 
 	causes := l.causes
 	l.causes = nil

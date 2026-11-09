@@ -22,32 +22,34 @@ func BenchmarkLoadRegistration(b *testing.B) {
 					b.Fatal(err)
 				}
 
-				_, err = d.conn.ExecContext(ctx, `
+				_, err = d.local.ExecContext(ctx, `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
 INSERT INTO implicit_sets (id,user_data,hss_host,hss_realm) SELECT i, randomblob(2000),'hss','realm' FROM n;`, n)
 				must(b, err)
-				_, err = d.conn.ExecContext(ctx, `
+				_, err = d.local.ExecContext(ctx, `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
 INSERT INTO set_identities SELECT i, p, 'sip:'||i||'-'||p||'@x', i||'-'||p, NULL, 0 FROM n, (SELECT 0 p UNION SELECT 1 UNION SELECT 2)`, n)
 				must(b, err)
-				_, err = d.conn.ExecContext(ctx, `
+				_, err = d.local.ExecContext(ctx, `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
 INSERT INTO registrations SELECT i, 'impi'||i, 'sip:'||i, i FROM n`, n)
 				must(b, err)
-				_, err = d.conn.ExecContext(ctx, `
+				_, err = d.local.ExecContext(ctx, `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
 INSERT INTO bindings (registration_id, uri, instance_id, reg_id, params, path, call_id, cseq, expires_at, event, impu, registered_at)
 SELECT i, 'sip:ue'||i||'@10.0.0.1:5060', '<urn:gsma:imei:'||i||'>', 1, ';+sip.instance="<urn:gsma:imei:x>";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";video', '<sip:pcscf;lr>', 'callid'||i, 1, 9000000000000000000, 'registered','sip:'||i, 1 FROM n`, n)
 				must(b, err)
 
 				if !index {
-					_, err = d.conn.ExecContext(ctx, `DROP INDEX bindings_registration`)
+					_, err = d.local.ExecContext(ctx, `DROP INDEX bindings_registration`)
 					must(b, err)
 				}
 
+				local := d.localPath
+
 				_ = d.Close()
 
-				conn, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_stmt_cache_size=%d", path, cache))
+				conn, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_stmt_cache_size=%d", local, cache))
 				must(b, err)
 
 				conn.SetMaxOpenConns(1)

@@ -48,9 +48,11 @@ func System(homeDomain string) settings.System {
 }
 
 type AS struct {
-	srv      *server.Server
-	kill     context.CancelFunc
-	settings *settings.Live
+	srv        *server.Server
+	kill       context.CancelFunc
+	settings   *settings.Live
+	db         *db.DB
+	homeDomain string
 
 	mu     sync.Mutex
 	status Status
@@ -137,7 +139,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		return nil, errors.Join(err, relay.Close())
 	}
 
-	as := &AS{srv: srv, kill: kill, settings: live}
+	as := &AS{srv: srv, kill: kill, settings: live, db: cfg.DB, homeDomain: cfg.HomeDomain}
 
 	defer func() {
 		if err != nil {
@@ -247,15 +249,9 @@ func (a *AS) Shutdown(ctx context.Context) error {
 }
 
 func NewSettings(ctx context.Context, d *db.DB, homeDomain string) (*settings.Live, error) {
-	initial, err := d.GetMCPTTSettings(ctx)
+	initial, err := storedSettings(ctx, d, homeDomain)
 	if err != nil {
 		return nil, err
-	}
-
-	initial.System = System(homeDomain)
-
-	if initial.ServiceConfiguration.Domain == "" {
-		initial.ServiceConfiguration.Domain = homeDomain
 	}
 
 	live, err := settings.NewLive(store{d: d, home: homeDomain}, initial)
@@ -264,4 +260,28 @@ func NewSettings(ctx context.Context, d *db.DB, homeDomain string) (*settings.Li
 	}
 
 	return live, nil
+}
+
+func storedSettings(ctx context.Context, d *db.DB, homeDomain string) (settings.Settings, error) {
+	s, err := d.GetMCPTTSettings(ctx)
+	if err != nil {
+		return settings.Settings{}, err
+	}
+
+	s.System = System(homeDomain)
+
+	if s.ServiceConfiguration.Domain == "" {
+		s.ServiceConfiguration.Domain = homeDomain
+	}
+
+	return s, nil
+}
+
+func (a *AS) Reload(ctx context.Context) error {
+	s, err := storedSettings(ctx, a.db, a.homeDomain)
+	if err != nil {
+		return err
+	}
+
+	return a.settings.Reload(ctx, s)
 }

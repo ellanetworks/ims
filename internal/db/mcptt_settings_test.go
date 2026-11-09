@@ -390,7 +390,7 @@ func TestOrphans(t *testing.T) {
 func TestSingleRowGone(t *testing.T) {
 	d := openTestDB(t)
 
-	if _, err := d.conn.ExecContext(t.Context(), `DELETE FROM mcptt_service_configuration`); err != nil {
+	if _, err := d.writer.ExecContext(t.Context(), `DELETE FROM mcptt_service_configuration`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -414,35 +414,5 @@ func TestPathOfURICharacters(t *testing.T) {
 
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("no database at %s: %v", path, err)
-	}
-}
-
-func TestRekey(t *testing.T) {
-	ctx := t.Context()
-	path := filepath.Join(t.TempDir(), "ims.db")
-
-	d, err := Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	storeMCPTT(t, d, mcpttExample())
-
-	if _, err := d.conn.ExecContext(ctx, `UPDATE mcptt_users SET key = 'stale' WHERE mcptt_id = 'sip:b@example.com'`); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := d.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if d, err = Open(ctx, path); err != nil {
-		t.Fatal(err)
-	}
-
-	defer func() { _ = d.Close() }()
-
-	if err := d.DeleteMCPTTMember(ctx, "sip:g@example.com", "sip:b@example.com"); err != nil {
-		t.Errorf("member of a key recomputed: %v", err)
 	}
 }

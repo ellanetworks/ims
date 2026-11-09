@@ -22,4 +22,4 @@ Defaults are in parentheses.
 | Host | `<label>.ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org` |
 | Realm | `ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org` |
 
-`<MCC>` and `<MNC>` are the operator's, with a 2-digit MNC padded to 3. `<label>` is `diameter.host_label`, by default `ims`.
+`<MCC>` and `<MNC>` are the operator's, with a 2-digit MNC padded to 3. `<label>` is the node's `diameter.host_label`, by default `ims-` and the last 12 hex characters of the node ID.

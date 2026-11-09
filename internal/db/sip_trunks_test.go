@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/settings"
-	"github.com/mattn/go-sqlite3"
 )
 
 func testCertificate(t *testing.T, cn string, ca bool) []byte {
@@ -119,7 +118,7 @@ func TestSIPTrunks(t *testing.T) {
 	}
 
 	var n int
-	if err := d.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_addresses WHERE trunk_id = ?) +
+	if err := d.writer.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_addresses WHERE trunk_id = ?) +
 		(SELECT count(*) FROM sip_trunk_inbound_cidrs WHERE trunk_id = ?) +
 		(SELECT count(*) FROM sip_trunk_tls_ca_certificates WHERE trunk_id = ?) +
 		(SELECT count(*) FROM sip_trunk_tls_pins WHERE trunk_id = ?) +
@@ -182,20 +181,20 @@ func TestSIPTrunkTLS(t *testing.T) {
 	}
 
 	var n int
-	if err := d.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_tls_ca_certificates) +
+	if err := d.writer.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM sip_trunk_tls_ca_certificates) +
 		(SELECT count(*) FROM sip_trunk_tls_pins) + (SELECT count(*) FROM sip_trunk_tls_identities)`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("%d TLS rows remain (%v)", n, err)
 	}
 
 	telnyx.TLS.CACertificates = [][]byte{make([]byte, settings.MaxTrunkCertificateDER+1)}
 
-	if err := d.UpdateTrunk(t.Context(), telnyx); !isConstraint(err, sqlite3.ErrConstraintCheck) {
+	if err := d.UpdateTrunk(t.Context(), telnyx); !errors.Is(err, ErrConstraintCheck) {
 		t.Fatalf("UpdateTrunk with an oversized certificate = %v, want a CHECK failure", err)
 	}
 
 	telnyx.TLS = settings.TrunkTLS{Pins: [][sha256.Size]byte{{1}, {1}}}
 
-	if err := d.UpdateTrunk(t.Context(), telnyx); !isConstraint(err, sqlite3.ErrConstraintUnique) {
+	if err := d.UpdateTrunk(t.Context(), telnyx); !errors.Is(err, ErrConstraintUnique) {
 		t.Fatalf("UpdateTrunk with a pin twice = %v, want a UNIQUE failure", err)
 	}
 }
@@ -320,7 +319,7 @@ func TestSIPTrunkWithoutKeepalive(t *testing.T) {
 	for _, keepalive := range []time.Duration{time.Second, 3601 * time.Second} {
 		sbc.KeepaliveInterval = keepalive
 
-		if err := d.UpdateTrunk(t.Context(), sbc); !isConstraint(err, sqlite3.ErrConstraintCheck) {
+		if err := d.UpdateTrunk(t.Context(), sbc); !errors.Is(err, ErrConstraintCheck) {
 			t.Errorf("UpdateTrunk with keepalive %v = %v, want a CHECK failure", keepalive, err)
 		}
 	}
@@ -336,7 +335,7 @@ func TestSIPTrunkAddressChecks(t *testing.T) {
 	} {
 		telnyx.Addresses = []settings.TrunkAddress{a}
 
-		if err := d.CreateTrunk(t.Context(), telnyx); !isConstraint(err, sqlite3.ErrConstraintCheck) {
+		if err := d.CreateTrunk(t.Context(), telnyx); !errors.Is(err, ErrConstraintCheck) {
 			t.Errorf("CreateTrunk with %+v = %v, want a CHECK failure", a, err)
 		}
 	}
@@ -355,7 +354,7 @@ func TestSIPRouteTrunkForeignKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := d.DeleteTrunk(t.Context(), telnyx.ID); !isConstraint(err, sqlite3.ErrConstraintForeignKey) {
+	if err := d.DeleteTrunk(t.Context(), telnyx.ID); !errors.Is(err, ErrConstraintForeignKey) {
 		t.Fatalf("DeleteTrunk in use = %v, want a foreign key failure", err)
 	}
 

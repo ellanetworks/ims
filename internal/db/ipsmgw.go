@@ -31,9 +31,9 @@ type IPSMGWHSSRegistration struct {
 }
 
 func (d *DB) IPSMGWRegistrations(ctx context.Context) (_ []IPSMGWRegistration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT impu_key, impu, impus, msisdn, imsi, scscf, as_uri, expires_at,
+	rows, err := d.local.QueryContext(ctx, `SELECT impu_key, impu, impus, msisdn, imsi, scscf, as_uri, expires_at,
 		available FROM ip_sm_gw_registrations ORDER BY impu_key`)
 	if err != nil {
 		return nil, fmt.Errorf("get IP-SM-GW registrations: %w", err)
@@ -72,9 +72,9 @@ func (d *DB) IPSMGWRegistrations(ctx context.Context) (_ []IPSMGWRegistration, e
 }
 
 func (d *DB) PutIPSMGWRegistration(ctx context.Context, r IPSMGWRegistration) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	if _, err := d.conn.ExecContext(ctx, `INSERT OR REPLACE INTO ip_sm_gw_registrations (impu_key, impu, impus, msisdn,
+	if _, err := d.local.ExecContext(ctx, `INSERT OR REPLACE INTO ip_sm_gw_registrations (impu_key, impu, impus, msisdn,
 		imsi, scscf, as_uri, expires_at, available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.IMPUKey, r.IMPU,
 		strings.Join(r.IMPUs, "\n"), r.MSISDN, r.IMSI, r.SCSCF, r.AS, r.ExpiresAt.UTC().UnixNano(), r.Available); err != nil {
 		return fmt.Errorf("put IP-SM-GW registration: %w", err)
@@ -84,9 +84,9 @@ func (d *DB) PutIPSMGWRegistration(ctx context.Context, r IPSMGWRegistration) (e
 }
 
 func (d *DB) DeleteIPSMGWRegistration(ctx context.Context, impuKey string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	if _, err := d.conn.ExecContext(ctx, `DELETE FROM ip_sm_gw_registrations WHERE impu_key = ?`, impuKey); err != nil {
+	if _, err := d.local.ExecContext(ctx, `DELETE FROM ip_sm_gw_registrations WHERE impu_key = ?`, impuKey); err != nil {
 		return fmt.Errorf("delete IP-SM-GW registration: %w", err)
 	}
 
@@ -94,9 +94,9 @@ func (d *DB) DeleteIPSMGWRegistration(ctx context.Context, impuKey string) (err 
 }
 
 func (d *DB) IPSMGWHSSRegistrations(ctx context.Context) (_ []IPSMGWHSSRegistration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT user_key, msisdn, impu, number, hss_host, hss_realm
+	rows, err := d.local.QueryContext(ctx, `SELECT user_key, msisdn, impu, number, hss_host, hss_realm
 		FROM ip_sm_gw_hss_registrations ORDER BY user_key`)
 	if err != nil {
 		return nil, fmt.Errorf("get IP-SM-GW HSS registrations: %w", err)
@@ -124,9 +124,9 @@ func (d *DB) IPSMGWHSSRegistrations(ctx context.Context) (_ []IPSMGWHSSRegistrat
 }
 
 func (d *DB) PutIPSMGWHSSRegistration(ctx context.Context, r IPSMGWHSSRegistration) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	if _, err := d.conn.ExecContext(ctx, `INSERT OR REPLACE INTO ip_sm_gw_hss_registrations (user_key, msisdn, impu,
+	if _, err := d.local.ExecContext(ctx, `INSERT OR REPLACE INTO ip_sm_gw_hss_registrations (user_key, msisdn, impu,
 		number, hss_host, hss_realm) VALUES (?, ?, ?, ?, ?, ?)`, r.UserKey, r.MSISDN, r.IMPU, r.Number, r.HSS.Host,
 		r.HSS.Realm); err != nil {
 		return fmt.Errorf("put IP-SM-GW HSS registration: %w", err)
@@ -136,9 +136,9 @@ func (d *DB) PutIPSMGWHSSRegistration(ctx context.Context, r IPSMGWHSSRegistrati
 }
 
 func (d *DB) DeleteIPSMGWHSSRegistration(ctx context.Context, userKey string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	if _, err := d.conn.ExecContext(ctx, `DELETE FROM ip_sm_gw_hss_registrations WHERE user_key = ?`, userKey); err != nil {
+	if _, err := d.local.ExecContext(ctx, `DELETE FROM ip_sm_gw_hss_registrations WHERE user_key = ?`, userKey); err != nil {
 		return fmt.Errorf("delete IP-SM-GW HSS registration: %w", err)
 	}
 

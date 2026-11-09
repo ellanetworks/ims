@@ -11,13 +11,13 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 )
 
-func (d *DB) trunks(ctx context.Context) ([]settings.Trunk, error) {
+func trunks(ctx context.Context, q querier) ([]settings.Trunk, error) {
 	var (
 		trunks []settings.Trunk
 		index  = map[string]int{}
 	)
 
-	err := d.queryEach(ctx, "get SIP trunks", `SELECT id, name, domain, trusted, keepalive_interval_s, enabled,
+	err := queryEach(ctx, q, "get SIP trunks", `SELECT id, name, domain, trusted, keepalive_interval_s, enabled,
 		tls_required FROM sip_trunks ORDER BY id`, func(rows *sql.Rows) error {
 		var (
 			t         settings.Trunk
@@ -38,7 +38,7 @@ func (d *DB) trunks(ctx context.Context) ([]settings.Trunk, error) {
 		return nil, err
 	}
 
-	err = d.queryEach(ctx, "get SIP trunk addresses", `SELECT trunk_id, host, port, transport FROM sip_trunk_addresses
+	err = queryEach(ctx, q, "get SIP trunk addresses", `SELECT trunk_id, host, port, transport FROM sip_trunk_addresses
 		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var (
 			id        string
@@ -66,7 +66,7 @@ func (d *DB) trunks(ctx context.Context) ([]settings.Trunk, error) {
 		return nil, err
 	}
 
-	err = d.queryEach(ctx, "get SIP trunk inbound CIDRs", `SELECT trunk_id, cidr FROM sip_trunk_inbound_cidrs
+	err = queryEach(ctx, q, "get SIP trunk inbound CIDRs", `SELECT trunk_id, cidr FROM sip_trunk_inbound_cidrs
 		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var id, cidr string
 
@@ -92,15 +92,15 @@ func (d *DB) trunks(ctx context.Context) ([]settings.Trunk, error) {
 		return nil, err
 	}
 
-	if err := d.trunkTLS(ctx, trunks, index); err != nil {
+	if err := trunkTLS(ctx, q, trunks, index); err != nil {
 		return nil, err
 	}
 
 	return trunks, nil
 }
 
-func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[string]int) error {
-	err := d.queryEach(ctx, "get SIP trunk TLS CA certificates", `SELECT trunk_id, der FROM sip_trunk_tls_ca_certificates
+func trunkTLS(ctx context.Context, q querier, trunks []settings.Trunk, index map[string]int) error {
+	err := queryEach(ctx, q, "get SIP trunk TLS CA certificates", `SELECT trunk_id, der FROM sip_trunk_tls_ca_certificates
 		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var (
 			id  string
@@ -124,7 +124,7 @@ func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[st
 		return err
 	}
 
-	err = d.queryEach(ctx, "get SIP trunk TLS pins", `SELECT trunk_id, sha256 FROM sip_trunk_tls_pins
+	err = queryEach(ctx, q, "get SIP trunk TLS pins", `SELECT trunk_id, sha256 FROM sip_trunk_tls_pins
 		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var (
 			id string
@@ -154,7 +154,7 @@ func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[st
 		return err
 	}
 
-	return d.queryEach(ctx, "get SIP trunk TLS identities", `SELECT trunk_id, identity FROM sip_trunk_tls_identities
+	return queryEach(ctx, q, "get SIP trunk TLS identities", `SELECT trunk_id, identity FROM sip_trunk_tls_identities
 		ORDER BY trunk_id, position`, func(rows *sql.Rows) error {
 		var id, identity string
 
@@ -173,13 +173,13 @@ func (d *DB) trunkTLS(ctx context.Context, trunks []settings.Trunk, index map[st
 	})
 }
 
-func (d *DB) sipRoutes(ctx context.Context) ([]settings.SIPRoute, error) {
+func sipRoutes(ctx context.Context, q querier) ([]settings.SIPRoute, error) {
 	var (
 		routes []settings.SIPRoute
 		index  = map[string]int{}
 	)
 
-	err := d.queryEach(ctx, "get SIP routes", `SELECT id, prefix FROM sip_routes ORDER BY id`, func(rows *sql.Rows) error {
+	err := queryEach(ctx, q, "get SIP routes", `SELECT id, prefix FROM sip_routes ORDER BY id`, func(rows *sql.Rows) error {
 		var r settings.SIPRoute
 
 		if err := rows.Scan(&r.ID, &r.Prefix); err != nil {
@@ -195,7 +195,7 @@ func (d *DB) sipRoutes(ctx context.Context) ([]settings.SIPRoute, error) {
 		return nil, err
 	}
 
-	err = d.queryEach(ctx, "get SIP route trunks", `SELECT route_id, trunk_id FROM sip_route_trunks
+	err = queryEach(ctx, q, "get SIP route trunks", `SELECT route_id, trunk_id FROM sip_route_trunks
 		ORDER BY route_id, position`, func(rows *sql.Rows) error {
 		var routeID, trunkID string
 
@@ -219,8 +219,8 @@ func (d *DB) sipRoutes(ctx context.Context) ([]settings.SIPRoute, error) {
 	return routes, nil
 }
 
-func (d *DB) queryEach(ctx context.Context, what, query string, scan func(*sql.Rows) error) error {
-	rows, err := d.conn.QueryContext(ctx, query)
+func queryEach(ctx context.Context, q querier, what, query string, scan func(*sql.Rows) error) error {
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("%s: %w", what, err)
 	}
@@ -243,40 +243,44 @@ func (d *DB) queryEach(ctx context.Context, what, query string, scan func(*sql.R
 func (d *DB) CreateTrunk(ctx context.Context, t settings.Trunk) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "create SIP trunk", func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sip_trunks (id, name, domain, trusted, keepalive_interval_s, enabled,
-			tls_required) VALUES (?, ?, ?, ?, ?, ?, ?)`, t.ID, t.Name, t.Domain, t.Trusted,
-			int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required); err != nil {
-			return err
-		}
+	return submitSettings(ctx, d, cmdCreateTrunk, t, "create SIP trunk")
+}
 
-		return putTrunkLists(ctx, tx, t)
-	})
+func applyCreateTrunk(a *applyCtx, t settings.Trunk) (struct{}, error) {
+	if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO sip_trunks (id, name, domain, trusted, keepalive_interval_s,
+		enabled, tls_required) VALUES (?, ?, ?, ?, ?, ?, ?)`, t.ID, t.Name, t.Domain, t.Trusted,
+		int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required); err != nil {
+		return struct{}{}, err
+	}
+
+	return settingsChanged(a, putTrunkLists(a.ctx, a.tx, t))
 }
 
 func (d *DB) UpdateTrunk(ctx context.Context, t settings.Trunk) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "update SIP trunk", func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE sip_trunks SET name = ?, domain = ?, trusted = ?, keepalive_interval_s = ?,
-			enabled = ?, tls_required = ? WHERE id = ?`, t.Name, t.Domain, t.Trusted,
-			int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required, t.ID)
-		if err != nil {
-			return err
-		}
+	return submitSettings(ctx, d, cmdUpdateTrunk, t, "update SIP trunk")
+}
 
-		if err := checkAffected(res); err != nil {
-			return err
-		}
+func applyUpdateTrunk(a *applyCtx, t settings.Trunk) (struct{}, error) {
+	res, err := a.tx.ExecContext(a.ctx, `UPDATE sip_trunks SET name = ?, domain = ?, trusted = ?,
+		keepalive_interval_s = ?, enabled = ?, tls_required = ? WHERE id = ?`, t.Name, t.Domain, t.Trusted,
+		int64(t.KeepaliveInterval/time.Second), t.Enabled, t.TLS.Required, t.ID)
+	if err != nil {
+		return struct{}{}, err
+	}
 
-		for _, table := range trunkListTables {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE trunk_id = ?`, t.ID); err != nil {
-				return err
-			}
-		}
+	if err := checkAffected(res); err != nil {
+		return struct{}{}, err
+	}
 
-		return putTrunkLists(ctx, tx, t)
-	})
+	for _, table := range trunkListTables {
+		if _, err := a.tx.ExecContext(a.ctx, `DELETE FROM `+table+` WHERE trunk_id = ?`, t.ID); err != nil {
+			return struct{}{}, err
+		}
+	}
+
+	return settingsChanged(a, putTrunkLists(a.ctx, a.tx, t))
 }
 
 var trunkListTables = []string{
@@ -326,49 +330,49 @@ func putTrunkLists(ctx context.Context, tx *sql.Tx, t settings.Trunk) error {
 func (d *DB) DeleteTrunk(ctx context.Context, id string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM sip_trunks WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("delete SIP trunk: %w", err)
-	}
+	return submitSettings(ctx, d, cmdDeleteTrunk, id, "delete SIP trunk")
+}
 
-	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("delete SIP trunk: %w", err)
-	}
-
-	return nil
+func applyDeleteTrunk(a *applyCtx, id string) (struct{}, error) {
+	return settingsChanged(a, affected(a.tx.ExecContext(a.ctx, `DELETE FROM sip_trunks WHERE id = ?`, id)))
 }
 
 func (d *DB) CreateSIPRoute(ctx context.Context, r settings.SIPRoute) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "create SIP route", func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sip_routes (id, prefix) VALUES (?, ?)`, r.ID, r.Prefix); err != nil {
-			return err
-		}
+	return submitSettings(ctx, d, cmdCreateSIPRoute, r, "create SIP route")
+}
 
-		return putRouteTrunks(ctx, tx, r)
-	})
+func applyCreateSIPRoute(a *applyCtx, r settings.SIPRoute) (struct{}, error) {
+	if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO sip_routes (id, prefix) VALUES (?, ?)`, r.ID,
+		r.Prefix); err != nil {
+		return struct{}{}, err
+	}
+
+	return settingsChanged(a, putRouteTrunks(a.ctx, a.tx, r))
 }
 
 func (d *DB) UpdateSIPRoute(ctx context.Context, r settings.SIPRoute) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "update SIP route", func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE sip_routes SET prefix = ? WHERE id = ?`, r.Prefix, r.ID)
-		if err != nil {
-			return err
-		}
+	return submitSettings(ctx, d, cmdUpdateSIPRoute, r, "update SIP route")
+}
 
-		if err := checkAffected(res); err != nil {
-			return err
-		}
+func applyUpdateSIPRoute(a *applyCtx, r settings.SIPRoute) (struct{}, error) {
+	res, err := a.tx.ExecContext(a.ctx, `UPDATE sip_routes SET prefix = ? WHERE id = ?`, r.Prefix, r.ID)
+	if err != nil {
+		return struct{}{}, err
+	}
 
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sip_route_trunks WHERE route_id = ?`, r.ID); err != nil {
-			return err
-		}
+	if err := checkAffected(res); err != nil {
+		return struct{}{}, err
+	}
 
-		return putRouteTrunks(ctx, tx, r)
-	})
+	if _, err := a.tx.ExecContext(a.ctx, `DELETE FROM sip_route_trunks WHERE route_id = ?`, r.ID); err != nil {
+		return struct{}{}, err
+	}
+
+	return settingsChanged(a, putRouteTrunks(a.ctx, a.tx, r))
 }
 
 func putRouteTrunks(ctx context.Context, tx *sql.Tx, r settings.SIPRoute) error {
@@ -385,14 +389,18 @@ func putRouteTrunks(ctx context.Context, tx *sql.Tx, r settings.SIPRoute) error 
 func (d *DB) DeleteSIPRoute(ctx context.Context, id string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM sip_routes WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("delete SIP route: %w", err)
-	}
+	return submitSettings(ctx, d, cmdDeleteSIPRoute, id, "delete SIP route")
+}
 
-	if err := checkAffected(res); err != nil {
-		return fmt.Errorf("delete SIP route: %w", err)
-	}
+func applyDeleteSIPRoute(a *applyCtx, id string) (struct{}, error) {
+	return settingsChanged(a, affected(a.tx.ExecContext(a.ctx, `DELETE FROM sip_routes WHERE id = ?`, id)))
+}
 
-	return nil
+func init() {
+	register(cmdCreateTrunk, handle(applyCreateTrunk))
+	register(cmdUpdateTrunk, handle(applyUpdateTrunk))
+	register(cmdDeleteTrunk, handle(applyDeleteTrunk))
+	register(cmdCreateSIPRoute, handle(applyCreateSIPRoute))
+	register(cmdUpdateSIPRoute, handle(applyUpdateSIPRoute))
+	register(cmdDeleteSIPRoute, handle(applyDeleteSIPRoute))
 }

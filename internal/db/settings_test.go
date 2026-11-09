@@ -118,7 +118,7 @@ func TestPeersWithoutHost(t *testing.T) {
 
 	peer := func(id, host string) settings.Peer {
 		return settings.Peer{
-			ID: id, Host: host, Address: "10.0.0.10", Port: 3868, Transport: settings.TransportTCP,
+			ID: id, Host: host, Address: "10.0.0.1" + id[len(id)-1:], Port: 3868, Transport: settings.TransportTCP,
 			Applications: []settings.Application{settings.ApplicationCx}, Priority: 10,
 		}
 	}
@@ -203,5 +203,32 @@ func TestUpdateCallRecords(t *testing.T) {
 
 	if got.CallRecords != c {
 		t.Fatalf("call records = %+v, want %+v", got.CallRecords, c)
+	}
+}
+
+func TestPeerCannotTakeAMemberHost(t *testing.T) {
+	d := openTestDB(t)
+	ctx := t.Context()
+
+	if err := d.RegisterMember(ctx, Member{
+		NodeID: "0192a000-0000-7000-8000-0000000000aa", Address: "10.0.0.1:7000", Version: "test", SchemaVersion: 1,
+		DiameterLabel: "ims-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := d.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := settings.Peer{
+		ID: "0192a000-0000-7000-8000-000000000001", Host: s.Operator.DiameterHost("ims-a"), Address: "10.0.0.10",
+		Port: 3868, Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
+		Priority: 10,
+	}
+
+	if err := d.CreatePeer(ctx, p); !errors.Is(err, settings.ErrConflict) {
+		t.Fatalf("CreatePeer with a member's host = %v, want a conflict", err)
 	}
 }

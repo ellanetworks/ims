@@ -29,10 +29,13 @@ ellaims_calls_total{outcome="rejected"} 0
 ellaims_calls_total{outcome="unavailable"} 0
 # HELP ellaims_database_query_errors_total Database calls that failed, by connection pool. A record not found or in conflict is a result, not a failure.
 # TYPE ellaims_database_query_errors_total counter
+ellaims_database_query_errors_total{pool="local"} 0
 ellaims_database_query_errors_total{pool="read"} 0
 ellaims_database_query_errors_total{pool="write"} 0
-# HELP ellaims_database_storage_bytes Size of the database on disk, by file: the main file and its write-ahead log.
+# HELP ellaims_database_storage_bytes Size of the databases on disk, by file: the shared and node databases and their write-ahead logs.
 # TYPE ellaims_database_storage_bytes gauge
 ellaims_database_storage_bytes{file="main"} 4096
+ellaims_database_storage_bytes{file="node"} 4096
+ellaims_database_storage_bytes{file="node_wal"} 32992
 ellaims_database_storage_bytes{file="wal"} 646872
 ```

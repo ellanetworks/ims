@@ -34,9 +34,9 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_trunk_media_packets_lost_total` | Counter | RTP packets lost before reaching the media relay of SIP trunks, from gaps in sequence numbers, by trunk ID and leg. |
 | `ellaims_api_request_duration_seconds` | Histogram | Duration of API requests, by method, route (`/api/v1/users/{email}`) and status code. Requests to `/api/v1/pprof/` and to no route are left out. |
 | `ellaims_oidc_logins_total` | Counter | Logins through the identity provider, by outcome: `success`, or a [login error](api/auth.md#errors). |
-| `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`. |
+| `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`, `local`. |
 | `ellaims_database_query_errors_total` | Counter | Failed database calls, by connection pool. |
-| `ellaims_database_storage_bytes` | Gauge | Size of the database on disk, by file: `main`, `wal`. |
+| `ellaims_database_storage_bytes` | Gauge | Size of the databases on disk, by file: `main`, `wal`, `node`, `node_wal`. |
 | `ellaims_ready_check` | Gauge | 1 when the readiness check passes, 0 when it fails, by check (`shutdown`, `database`). |
 | `go_*` | Gauge, Counter, Summary | Go runtime: goroutines, heap, garbage-collection pauses. |
 | `process_*` | Gauge, Counter | Process: memory, CPU, open file descriptors, start time. |

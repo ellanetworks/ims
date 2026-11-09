@@ -28,17 +28,17 @@ func TestMetricsCountFailuresOnly(t *testing.T) {
 		t.Fatal("GetCallRecord of a missing record succeeded")
 	}
 
-	if n := testutil.CollectAndCount(d.metrics.duration); n != 2 {
-		t.Fatalf("duration has %d series, want 2", n)
+	if n := testutil.CollectAndCount(d.metrics.duration); n != 3 {
+		t.Fatalf("duration has %d series, want 3", n)
 	}
 
-	for pool, want := range map[string]float64{poolWrite: 0, poolRead: 0} {
+	for pool, want := range map[string]float64{poolWrite: 0, poolRead: 0, poolLocal: 0} {
 		if got := testutil.ToFloat64(d.metrics.errors.WithLabelValues(pool)); got != want {
 			t.Errorf("errors{pool=%q} = %v, want %v", pool, got, want)
 		}
 	}
 
-	if err := d.conn.Close(); err != nil {
+	if err := d.reader().Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,8 +46,8 @@ func TestMetricsCountFailuresOnly(t *testing.T) {
 		t.Fatal("GetSettings on a closed database succeeded")
 	}
 
-	if got := testutil.ToFloat64(d.metrics.errors.WithLabelValues(poolWrite)); got != 1 {
-		t.Errorf("errors{pool=%q} = %v, want 1", poolWrite, got)
+	if got := testutil.ToFloat64(d.metrics.errors.WithLabelValues(poolRead)); got != 1 {
+		t.Errorf("errors{pool=%q} = %v, want 1", poolRead, got)
 	}
 }
 
@@ -67,7 +67,12 @@ func TestMetricsLint(t *testing.T) {
 }
 
 func TestEveryCallIsObserved(t *testing.T) {
-	unobserved := map[string]bool{"Close": true, "Collectors": true, "Ping": true}
+	unobserved := map[string]bool{
+		"Close": true, "Collectors": true, "Ping": true, "Apply": true, "ApplyEntries": true, "AppliedIndex": true,
+		"WaitApplied": true, "OnEvents": true, "SetProposer": true, "RecordConfiguration": true, "MakeDurable": true,
+		"ResetPosition": true, "JWTSecret": true, "OIDCCookieKey": true, "HashAt": true, "LeaderTime": true,
+		"Schema": true, "RegisterMember": true, "Secrets": true,
+	}
 
 	files, err := filepath.Glob("*.go")
 	if err != nil {

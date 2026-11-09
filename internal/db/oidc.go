@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -37,7 +36,7 @@ func (d *DB) GetOIDC(ctx context.Context) (_ OIDC, err error) {
 		lifetime int64
 	)
 
-	if err := d.read.QueryRowContext(ctx, `SELECT enabled, external_url, issuer, client_id, client_secret,
+	if err := d.reader().QueryRowContext(ctx, `SELECT enabled, external_url, issuer, client_id, client_secret,
 		display_name, scopes, session_lifetime, trust_unverified_email, ca_certificate, groups_claim
 		FROM oidc WHERE id = 1`).Scan(&o.Enabled, &o.ExternalURL, &o.Issuer, &o.ClientID, &o.ClientSecret,
 		&o.DisplayName, &scopes, &lifetime, &o.TrustUnverifiedEmail, &o.CACertificate, &o.GroupsClaim); err != nil {
@@ -55,7 +54,7 @@ func (d *DB) GetOIDC(ctx context.Context) (_ OIDC, err error) {
 }
 
 func (d *DB) groupRoles(ctx context.Context) ([]GroupRole, error) {
-	rows, err := d.read.QueryContext(ctx, `SELECT group_name, role_id FROM oidc_group_roles ORDER BY position`)
+	rows, err := d.reader().QueryContext(ctx, `SELECT group_name, role_id FROM oidc_group_roles ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("get OIDC group roles: %w", err)
 	}
@@ -83,45 +82,47 @@ func (d *DB) groupRoles(ctx context.Context) ([]GroupRole, error) {
 func (d *DB) UpdateOIDC(ctx context.Context, o OIDC) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "update OIDC", func(tx *sql.Tx) error {
-		var issuer string
-		if err := tx.QueryRowContext(ctx, `SELECT issuer FROM oidc WHERE id = 1`).Scan(&issuer); err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdUpdateOIDC, "update OIDC", o)
 
-		if _, err := tx.ExecContext(ctx, `UPDATE oidc SET enabled = ?, external_url = ?, issuer = ?, client_id = ?,
-			client_secret = ?, display_name = ?, scopes = ?, session_lifetime = ?, trust_unverified_email = ?,
-			ca_certificate = ?, groups_claim = ? WHERE id = 1`, o.Enabled, o.ExternalURL, o.Issuer, o.ClientID,
-			o.ClientSecret, o.DisplayName, strings.Join(o.Scopes, " "), int64(o.SessionLifetime),
-			o.TrustUnverifiedEmail, o.CACertificate, o.GroupsClaim); err != nil {
-			return err
-		}
-
-		if _, err := tx.ExecContext(ctx, `DELETE FROM oidc_group_roles`); err != nil {
-			return err
-		}
-
-		for i, g := range o.GroupRoles {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO oidc_group_roles (position, group_name, role_id)
-				VALUES (?, ?, ?)`, i+1, g.Group, g.Role); err != nil {
-				return err
-			}
-		}
-
-		if !o.Enabled || o.Issuer != issuer {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE method = ?`, SessionOIDC); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
+	return err
 }
 
-const oidcCookieKeyLength = 32
+func applyUpdateOIDC(a *applyCtx, o OIDC) (struct{}, error) {
+	var issuer string
+	if err := a.tx.QueryRowContext(a.ctx, `SELECT issuer FROM oidc WHERE id = 1`).Scan(&issuer); err != nil {
+		return struct{}{}, err
+	}
 
-func (d *DB) OIDCCookieKey(ctx context.Context) (_ []byte, err error) {
-	defer d.observe(poolWrite, &err)()
+	if _, err := a.tx.ExecContext(a.ctx, `UPDATE oidc SET enabled = ?, external_url = ?, issuer = ?, client_id = ?,
+		client_secret = ?, display_name = ?, scopes = ?, session_lifetime = ?, trust_unverified_email = ?,
+		ca_certificate = ?, groups_claim = ? WHERE id = 1`, o.Enabled, o.ExternalURL, o.Issuer, o.ClientID,
+		o.ClientSecret, o.DisplayName, strings.Join(o.Scopes, " "), int64(o.SessionLifetime),
+		o.TrustUnverifiedEmail, o.CACertificate, o.GroupsClaim); err != nil {
+		return struct{}{}, err
+	}
 
-	return d.singletonSecret(ctx, "get OIDC cookie key", "oidc_cookie_key", "key", oidcCookieKeyLength)
+	if _, err := a.tx.ExecContext(a.ctx, `DELETE FROM oidc_group_roles`); err != nil {
+		return struct{}{}, err
+	}
+
+	for i, g := range o.GroupRoles {
+		if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO oidc_group_roles (position, group_name, role_id)
+			VALUES (?, ?, ?)`, i+1, g.Group, g.Role); err != nil {
+			return struct{}{}, err
+		}
+	}
+
+	if !o.Enabled || o.Issuer != issuer {
+		if _, err := a.tx.ExecContext(a.ctx, `DELETE FROM sessions WHERE method = ?`, SessionOIDC); err != nil {
+			return struct{}{}, err
+		}
+	}
+
+	a.events.OIDC = true
+
+	return struct{}{}, nil
+}
+
+func init() {
+	register(cmdUpdateOIDC, handle(applyUpdateOIDC))
 }

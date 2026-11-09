@@ -99,9 +99,9 @@ const (
 )
 
 func (d *DB) SaveSet(ctx context.Context, s ImplicitSet) (_ ImplicitSet, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	tx, err := d.conn.BeginTx(ctx, nil)
+	tx, err := d.local.BeginTx(ctx, nil)
 	if err != nil {
 		return ImplicitSet{}, fmt.Errorf("save implicit set: %w", err)
 	}
@@ -195,9 +195,9 @@ func saveSet(ctx context.Context, tx *sql.Tx, s ImplicitSet) (ImplicitSet, error
 }
 
 func (d *DB) GetSet(ctx context.Context, id int64) (_ ImplicitSet, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	sets, err := querySets(ctx, d.read, `SELECT `+setColumns+` FROM implicit_sets WHERE id = ?`, id)
+	sets, err := querySets(ctx, d.localRead, `SELECT `+setColumns+` FROM implicit_sets WHERE id = ?`, id)
 	if err != nil {
 		return ImplicitSet{}, fmt.Errorf("get implicit set %d: %w", id, err)
 	}
@@ -210,7 +210,7 @@ func (d *DB) GetSet(ctx context.Context, id int64) (_ ImplicitSet, err error) {
 }
 
 func (d *DB) FindSets(ctx context.Context, keys []string) (_ []ImplicitSet, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	if len(keys) == 0 {
 		return []ImplicitSet{}, nil
@@ -221,7 +221,7 @@ func (d *DB) FindSets(ctx context.Context, keys []string) (_ []ImplicitSet, err 
 		args[i] = k
 	}
 
-	sets, err := querySets(ctx, d.read, `SELECT `+setColumns+` FROM implicit_sets
+	sets, err := querySets(ctx, d.localRead, `SELECT `+setColumns+` FROM implicit_sets
 		WHERE id IN (SELECT set_id FROM set_identities WHERE key IN (`+placeholders(len(keys))+`)) ORDER BY id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("find implicit sets of %d identities: %w", len(keys), err)
@@ -231,9 +231,9 @@ func (d *DB) FindSets(ctx context.Context, keys []string) (_ []ImplicitSet, err 
 }
 
 func (d *DB) ListUnregisteredSets(ctx context.Context) (_ []ImplicitSet, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	sets, err := querySets(ctx, d.read,
+	sets, err := querySets(ctx, d.localRead,
 		`SELECT `+setColumns+` FROM implicit_sets WHERE expires_at IS NOT NULL ORDER BY expires_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list unregistered implicit sets: %w", err)
@@ -243,7 +243,7 @@ func (d *DB) ListUnregisteredSets(ctx context.Context) (_ []ImplicitSet, err err
 }
 
 func (d *DB) FindUnregisteredSets(ctx context.Context, keys []string) (_ []ImplicitSet, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	if len(keys) == 0 {
 		return []ImplicitSet{}, nil
@@ -256,7 +256,7 @@ func (d *DB) FindUnregisteredSets(ctx context.Context, keys []string) (_ []Impli
 
 	args = append(args, args...)
 
-	sets, err := querySets(ctx, d.read, `SELECT `+setColumns+` FROM implicit_sets WHERE expires_at IS NOT NULL AND (
+	sets, err := querySets(ctx, d.localRead, `SELECT `+setColumns+` FROM implicit_sets WHERE expires_at IS NOT NULL AND (
 		id IN (SELECT set_id FROM set_identities WHERE key IN (`+placeholders(len(keys))+`))
 		OR unregistered_identity IN (`+placeholders(len(keys))+`) OR wildcard IS NOT NULL) ORDER BY expires_at, id`, args...)
 	if err != nil {
@@ -267,9 +267,9 @@ func (d *DB) FindUnregisteredSets(ctx context.Context, keys []string) (_ []Impli
 }
 
 func (d *DB) DeleteSet(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx,
+	res, err := d.local.ExecContext(ctx,
 		`DELETE FROM implicit_sets WHERE id = ? AND NOT EXISTS (SELECT 1 FROM registrations WHERE set_id = ?)`, id, id)
 	if err != nil {
 		return fmt.Errorf("delete implicit set %d: %w", id, err)
@@ -346,9 +346,9 @@ func querySets(ctx context.Context, q *sql.DB, query string, args ...any) ([]Imp
 }
 
 func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	tx, err := d.conn.BeginTx(ctx, nil)
+	tx, err := d.local.BeginTx(ctx, nil)
 	if err != nil {
 		return Registration{}, fmt.Errorf("save registration: %w", err)
 	}
@@ -374,9 +374,9 @@ func (d *DB) SaveRegistration(ctx context.Context, r Registration) (_ Registrati
 
 func (d *DB) SaveAssignment(ctx context.Context, s ImplicitSet, r Registration, replaced []int64, losing []ImplicitSet,
 ) (_ ImplicitSet, _ Registration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	tx, err := d.conn.BeginTx(ctx, nil)
+	tx, err := d.local.BeginTx(ctx, nil)
 	if err != nil {
 		return ImplicitSet{}, Registration{}, fmt.Errorf("save assignment: %w", err)
 	}
@@ -534,9 +534,9 @@ func saveBinding(ctx context.Context, tx *sql.Tx, registrationID int64, b Bindin
 }
 
 func (d *DB) DeleteRegistration(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	tx, err := d.conn.BeginTx(ctx, nil)
+	tx, err := d.local.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("delete registration %d: %w", id, err)
 	}
@@ -567,9 +567,9 @@ func (d *DB) DeleteRegistration(ctx context.Context, id int64) (err error) {
 }
 
 func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) (_ []Registration, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	regs, err := queryRegistrations(ctx, d.read,
+	regs, err := queryRegistrations(ctx, d.localRead,
 		`SELECT `+registrationColumns+registrationFrom+` WHERE r.impi = ? ORDER BY r.id`, impi)
 	if err != nil {
 		return nil, fmt.Errorf("list registrations of %s: %w", impi, err)
@@ -579,9 +579,9 @@ func (d *DB) ListRegistrationsByIMPI(ctx context.Context, impi string) (_ []Regi
 }
 
 func (d *DB) ListRegistrationsBySet(ctx context.Context, setID int64) (_ []Registration, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	regs, err := queryRegistrations(ctx, d.read,
+	regs, err := queryRegistrations(ctx, d.localRead,
 		`SELECT `+registrationColumns+registrationFrom+` WHERE r.set_id = ? ORDER BY r.id`, setID)
 	if err != nil {
 		return nil, fmt.Errorf("list registrations of set %d: %w", setID, err)
@@ -591,9 +591,9 @@ func (d *DB) ListRegistrationsBySet(ctx context.Context, setID int64) (_ []Regis
 }
 
 func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) (_ []Registration, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	regs, err := queryRegistrations(ctx, d.read,
+	regs, err := queryRegistrations(ctx, d.localRead,
 		`SELECT `+registrationColumns+registrationFrom+`
 		WHERE r.set_id IN (SELECT set_id FROM set_identities WHERE key = ?) ORDER BY r.id`, key)
 	if err != nil {
@@ -604,7 +604,7 @@ func (d *DB) ListRegistrationsByIdentity(ctx context.Context, key string) (_ []R
 }
 
 func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (_ []Registration, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	if len(keys) == 0 {
 		return []Registration{}, nil
@@ -615,7 +615,7 @@ func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (
 		args[i] = k
 	}
 
-	regs, err := queryRegistrations(ctx, d.read,
+	regs, err := queryRegistrations(ctx, d.localRead,
 		`SELECT `+registrationColumns+registrationFrom+`
 		WHERE r.set_id IN (SELECT set_id FROM set_identities WHERE key IN (`+placeholders(len(keys))+`)) ORDER BY r.id`,
 		args...)
@@ -627,14 +627,14 @@ func (d *DB) ListRegistrationsByIdentities(ctx context.Context, keys []string) (
 }
 
 func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) (_ []Registration, _ int, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	var total int
-	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM registrations`).Scan(&total); err != nil {
+	if err := d.localRead.QueryRowContext(ctx, `SELECT COUNT(*) FROM registrations`).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("list registrations: %w", err)
 	}
 
-	regs, err := queryRegistrations(ctx, d.read,
+	regs, err := queryRegistrations(ctx, d.localRead,
 		`SELECT `+registrationColumns+registrationFrom+` ORDER BY r.id LIMIT ? OFFSET ?`, perPage, (page-1)*perPage)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list registrations: %w", err)
@@ -644,9 +644,9 @@ func (d *DB) ListRegistrations(ctx context.Context, page, perPage int) (_ []Regi
 }
 
 func (d *DB) ListExpiredIMPIs(ctx context.Context, now time.Time) (_ []string, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.read.QueryContext(ctx,
+	rows, err := d.localRead.QueryContext(ctx,
 		`SELECT r.impi FROM bindings b JOIN registrations r ON r.id = b.registration_id WHERE b.expires_at <= ?
 		UNION SELECT impi FROM reg_subscriptions WHERE expires_at <= ?
 		ORDER BY 1`, now.UTC().UnixNano(), now.UTC().UnixNano())
@@ -811,7 +811,7 @@ func scanRegistration(row scanner) (Registration, error) {
 }
 
 func (d *DB) GetBinding(ctx context.Context, id int64) (_ Binding, _ string, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	var (
 		b                       Binding
@@ -822,7 +822,7 @@ func (d *DB) GetBinding(ctx context.Context, id int64) (_ Binding, _ string, err
 		regID                   sql.NullInt64
 	)
 
-	err = d.read.QueryRowContext(ctx,
+	err = d.localRead.QueryRowContext(ctx,
 		`SELECT b.id, b.registration_id, b.uri, b.instance_id, b.reg_id, b.params, b.path, b.call_id, b.cseq, b.expires_at,
 			b.event, b.impu, b.registered_at, r.impi
 		FROM bindings b JOIN registrations r ON r.id = b.registration_id WHERE b.id = ?`, id).Scan(

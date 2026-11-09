@@ -945,3 +945,28 @@ func TestLiveChangeContext(t *testing.T) {
 		t.Fatalf("second Take causes %v, want none", causes)
 	}
 }
+
+func TestReloadOfTheSameSettingsSignalsNoChange(t *testing.T) {
+	live := NewLive(&fakeStore{}, Settings{Operator: Operator{MCC: "001", MNC: "01"}}, nil)
+	changed := live.Changed()
+
+	live.Reload(Settings{Operator: Operator{MCC: "001", MNC: "01"}, Peers: []Peer{}, Trunks: []Trunk{}})
+
+	select {
+	case <-changed:
+		t.Fatal("reloading the same settings signalled a change")
+	default:
+	}
+
+	live.Reload(Settings{Operator: Operator{MCC: "001", MNC: "02"}})
+
+	select {
+	case <-changed:
+	default:
+		t.Fatal("reloading other settings signalled no change")
+	}
+
+	if got := live.Get().Operator.MNC; got != "02" {
+		t.Fatalf("MNC after a reload = %s, want 02", got)
+	}
+}

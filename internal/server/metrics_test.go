@@ -80,8 +80,8 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 
-	if n := len(families["ellaims_database_storage_bytes"].GetMetric()); n != 2 {
-		t.Errorf("ellaims_database_storage_bytes has %d series, want 2", n)
+	if n := len(families["ellaims_database_storage_bytes"].GetMetric()); n != 4 {
+		t.Errorf("ellaims_database_storage_bytes has %d series, want 4", n)
 	}
 }
 

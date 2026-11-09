@@ -116,7 +116,7 @@ func TestLogInWithOIDCRefusals(t *testing.T) {
 			}
 
 			var sessions int
-			if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil || sessions != 0 {
+			if err := d.writer.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil || sessions != 0 {
 				t.Fatalf("sessions = %d, %v, want 0", sessions, err)
 			}
 		})
@@ -251,7 +251,7 @@ func TestUseOIDCState(t *testing.T) {
 	}
 
 	var n int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM oidc_used_states`).Scan(&n); err != nil || n != 1 {
+	if err := d.writer.QueryRowContext(ctx, `SELECT COUNT(*) FROM oidc_used_states`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("used states after expiry = %d, %v, want 1", n, err)
 	}
 }

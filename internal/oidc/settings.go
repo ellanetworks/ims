@@ -290,3 +290,8 @@ func validateText(name, s string, maxLength int, required bool) error {
 
 	return nil
 }
+
+func (l *Live) Reload(o db.OIDC) {
+	o = clone(o)
+	l.current.Store(&o)
+}

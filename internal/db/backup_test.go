@@ -14,9 +14,10 @@ var keptTables = []string{
 	"mcptt_service_configuration", "mcptt_users", "mcptt_user_impus", "mcptt_groups", "mcptt_group_members",
 	"mcptt_user_implicit_affiliations", "ip_sm_gw", "sms_routes", "sms_route_peers",
 	"users", "user_identities", "api_tokens", "oidc", "oidc_group_roles",
+	"fsm_state", "applied_requests", "cluster_members", "cluster_removed_members",
 }
 
-func TestEveryTableIsKeptOrExcludedFromBackups(t *testing.T) {
+func TestEveryTableIsKeptOrStrippedFromBackups(t *testing.T) {
 	ctx := context.Background()
 
 	d, err := Open(ctx, filepath.Join(t.TempDir(), "ims.db"))
@@ -26,7 +27,7 @@ func TestEveryTableIsKeptOrExcludedFromBackups(t *testing.T) {
 
 	t.Cleanup(func() { _ = d.Close() })
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+	rows, err := d.writer.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +40,7 @@ func TestEveryTableIsKeptOrExcludedFromBackups(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		kept, excluded := slices.Contains(keptTables, name), slices.Contains(excludedTables, name)
+		kept, excluded := slices.Contains(keptTables, name), slices.Contains(strippedTables, name)
 		if kept == excluded {
 			t.Errorf("table %s: kept %t, excluded %t; want exactly one", name, kept, excluded)
 		}
