@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/mcptt/affiliation"
@@ -31,6 +32,7 @@ type Config struct {
 	Tokens          registrar.TokenCheck
 	Media           *media.Relay
 	State           State
+	Cluster         Cluster
 }
 
 type State interface {
@@ -52,6 +54,9 @@ type Server struct {
 
 	seed    maphash.Seed
 	strands [strands]*ua.Strand
+
+	claimsMu sync.Mutex
+	claims   map[string]string
 }
 
 func New(cfg Config) (*Server, error) {
@@ -64,7 +69,11 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 
-	s := &Server{cfg: cfg, seed: maphash.MakeSeed(), log: cfg.UA.Logger}
+	if cfg.Mode != registrar.ThroughIMS {
+		cfg.Cluster = nil
+	}
+
+	s := &Server{cfg: cfg, seed: maphash.MakeSeed(), log: cfg.UA.Logger, claims: map[string]string{}}
 	if s.log == nil {
 		s.log = slog.Default()
 	}
@@ -99,7 +108,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	if u.SessionTimer.Interval == 0 {
-		u.SessionTimer.Interval = defaultSessionInterval
+		u.SessionTimer.Interval = DefaultSessionInterval
 	}
 
 	u.StrandFor = s.strandFor
@@ -118,6 +127,10 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	s.controlling = affiliation.NewControlling(cfg.Source)
+	if cfg.Cluster != nil {
+		s.controlling = affiliation.NewSharedControlling(cfg.Source, cfg.Cluster)
+	}
+
 	s.part = affiliation.NewParticipating(s.controlling, s.log)
 
 	var store registrar.Store
@@ -141,22 +154,30 @@ func New(cfg Config) (*Server, error) {
 		Source: cfg.Source, Bindings: s.reg, Affiliations: s.part, Router: router, Controlling: hop{s},
 		Clock: a.Layer().Clock(), Logger: s.log,
 	})
-	s.ctrlCalls = controlling.New(controlling.Config{
+	ccfg := controlling.Config{
 		Agent: a, Source: cfg.Source, Affiliations: s.controlling, Media: cfg.Media, Participating: s.partCalls,
 		Logger: s.log,
-	})
+	}
+
+	if cfg.Cluster != nil {
+		ccfg.Peers, ccfg.Released = cfg.Cluster, s.released
+
+		go s.saveAffiliations(a.Layer().Lifetime())
+	}
+
+	s.ctrlCalls = controlling.New(ccfg)
 
 	return s, nil
 }
 
 type hop struct{ s *Server }
 
-func (h hop) Group(ctx context.Context, o *participating.Origination) { h.s.ctrlCalls.Group(ctx, o) }
+func (h hop) Group(ctx context.Context, o *participating.Origination) { h.s.control(ctx, o, false) }
 
 func (h hop) GroupCalls(user sip.URI) []sip.URI { return h.s.ctrlCalls.GroupCalls(user) }
 
 // RFC 4028 section 4
-const defaultSessionInterval = 1800 * time.Second
+const DefaultSessionInterval = 1800 * time.Second
 
 type bindings struct{ *registrar.Registrar }
 
@@ -181,11 +202,32 @@ func (s *Server) Restore(ctx context.Context, registrations []registrar.Record, 
 		return bound[[2]string{settings.Key(id), client}]
 	})
 
+	if s.cfg.Cluster != nil {
+		if err := s.controlling.Retain(ctx, now, s.part.Snapshot(now)); err != nil {
+			s.log.WarnContext(ctx, "stale group affiliations of this node not removed", slog.Any("error", err))
+		}
+	}
+
 	s.log.InfoContext(ctx, "registrations restored", slog.Int("bindings", len(bound)))
 }
 
+// TS 24.379 clause 9.2.2.2.6
+func (s *Server) Republish(ctx context.Context) {
+	if s.cfg.Cluster == nil {
+		return
+	}
+
+	now := s.agent.Layer().Clock().Now()
+
+	s.part.Republish(ctx, now)
+
+	if err := s.controlling.Retain(ctx, now, s.part.Snapshot(now)); err != nil {
+		s.log.WarnContext(ctx, "stale group affiliations of this node not removed", slog.Any("error", err))
+	}
+}
+
 func (s *Server) Revoke(ctx context.Context, before, after *settings.Snapshot) {
-	s.controlling.Revoke()
+	s.controlling.Revoke(ctx)
 	s.part.Revoke(ctx, s.agent.Layer().Clock().Now(), s.controlling.Eligible)
 	s.reg.Revoke(ctx, before, after)
 	s.ctrlCalls.Revoke(ctx)
@@ -251,7 +293,7 @@ func (s *Server) callStrand(req *sip.Request) *ua.Strand {
 		return st
 	}
 
-	if s.target(req.URI) != targetParticipating {
+	if t := s.target(req.URI); t != targetParticipating && (t != targetControlling || !s.peer(req.Flow.Remote.Addr())) {
 		return nil
 	}
 
@@ -322,7 +364,19 @@ func (s *Server) onInvite(ctx context.Context, r *ua.Request) ua.Handler {
 
 	switch s.target(req.URI) {
 	case targetParticipating:
+		if s.terminating(req) {
+			s.terminate(ctx, r)
+			break
+		}
+
 		s.partCalls.Originate(ctx, r, s.originator(req))
+	case targetControlling:
+		if !s.peer(req.Flow.Remote.Addr()) {
+			_ = r.Reject(403)
+			break
+		}
+
+		s.control(ctx, participating.Relayed(s.cfg.Source.Current(), r), true)
 	case targetNone:
 		_ = r.Reject(404)
 	default:
@@ -389,7 +443,7 @@ func (s *Server) onRequest(ctx context.Context, r *ua.Request) {
 func (s *Server) trusted(a netip.Addr) bool {
 	a = a.Unmap()
 
-	return slices.ContainsFunc(s.cfg.TrustedNetworks, func(p netip.Prefix) bool { return p.Contains(a) })
+	return slices.ContainsFunc(s.cfg.TrustedNetworks, func(p netip.Prefix) bool { return p.Contains(a) }) || s.peer(a)
 }
 
 // TS 24.229 clause 4.4.1

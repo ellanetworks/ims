@@ -3,6 +3,7 @@ package participating
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -137,8 +138,28 @@ type Origination struct {
 	Invite   *sip.Request
 	Charging identity.Charging
 
-	psi sip.URI
-	ioi string
+	psi   sip.URI
+	ioi   string
+	local netip.AddrPort
+}
+
+// TS 24.379 clause 6.3.1.1
+func Relayed(snap *settings.Snapshot, r *ua.Request) *Origination {
+	req := r.Message()
+
+	return &Origination{
+		Request: r, Invite: req, Charging: identity.ChargingOf(req.Header), psi: snap.ParticipatingPSI(),
+		ioi: snap.ServiceConfiguration().Domain, local: req.Flow.Local,
+	}
+}
+
+func (o *Origination) Group() (sip.URI, bool) {
+	info, _, ok := infoOf(o.Invite)
+	if !ok {
+		return sip.URI{}, false
+	}
+
+	return uriOf(info.Params.RequestURI)
 }
 
 // TS 24.379 clause 6.3.2.1.5
@@ -149,7 +170,27 @@ func (o *Origination) Reply(rp ua.Reply) ua.Reply {
 	rp.Header.Add("P-Asserted-Identity", sip.Address{URI: o.psi}.String())
 	Charged(&rp.Header, o.Charging, o.ioi, true)
 
+	if o.local.IsValid() {
+		if cs, err := rp.Header.Contacts(); err == nil && len(cs) == 1 {
+			rp.Header.Set("Contact", At(cs[0], o.local).String())
+		}
+	}
+
 	return rp
+}
+
+func At(a sip.Address, at netip.AddrPort) sip.Address {
+	a.URI = a.URI.Clone()
+	a.URI.Host, a.URI.Port = sip.FormatHost(at.Addr()), at.Port()
+
+	return a
+}
+
+func Named(a sip.Address, psi sip.URI) sip.Address {
+	a.URI = a.URI.Clone()
+	a.URI.Host, a.URI.Port = psi.Host, psi.Port
+
+	return a
 }
 
 // TS 24.229 clause 5.7.2
@@ -310,7 +351,7 @@ func (p *Participating) Terminate(req *sip.Request) Termination {
 	snap := p.cfg.Source.Current()
 	host := snap.ParticipatingPSI().Host
 
-	if !focus(req) {
+	if !Focus(req) {
 		return refused(403, identity.Warning(host, identity.WarnFocusNotAssigned))
 	}
 
@@ -378,7 +419,8 @@ func refused(code int, header ...sip.Field) Termination {
 	return Termination{Code: code, Header: sip.Header(header)}
 }
 
-func focus(req *sip.Request) bool {
+// RFC 3840 section 9
+func Focus(req *sip.Request) bool {
 	cs, err := req.Header.Contacts()
 	if err != nil || len(cs) != 1 {
 		return false

@@ -78,12 +78,3 @@ Upgrade one node at a time.
         ```shell
         kubectl rollout status statefulset/ella-ims -n ella
         ```
-
-Check every node's version:
-
-```shell
-curl -s http://<node>:5020/api/v1/cluster \
-  -H "Authorization: Bearer $TOKEN" | jq '.result.members[] | {address, version}'
-```
-
-`TOKEN` is an admin access token, from `POST /api/v1/auth/login`.

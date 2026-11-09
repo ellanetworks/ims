@@ -78,6 +78,7 @@ type Node struct {
 	cfg          Config
 	leaderCommit atomic.Uint64
 	scscf        atomic.Pointer[[]string]
+	mcptt        atomic.Pointer[[]string]
 	id           string
 	label        string
 	generated    bool

@@ -527,7 +527,7 @@ func (n *Node) updateSelf() {
 	}
 
 	want := n.certs.member(n.cfg.Advertise, n.cfg.Version, n.label, n.generated)
-	want.APIAddress, want.SCSCFAddresses = n.cfg.APIAddress, n.scscfAddresses()
+	want.APIAddress, want.SCSCFAddresses, want.MCPTTAddresses = n.cfg.APIAddress, n.scscfAddresses(), n.mcpttAddresses()
 	commit := max(r.CommitIndex(), n.leaderCommit.Load())
 	want.CaughtUp = have.CaughtUp || (commit > 0 && n.db.AppliedIndex() >= commit)
 
@@ -598,6 +598,7 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 
 	want := n.certs.member(address, n.cfg.Version, n.label, n.generated)
 	want.APIAddress, want.CaughtUp, want.SCSCFAddresses = n.cfg.APIAddress, true, n.scscfAddresses()
+	want.MCPTTAddresses = n.mcpttAddresses()
 
 	have, err := n.db.Member(ctx, n.id)
 	if err == nil && sameMember(have, want) {
@@ -614,7 +615,8 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 func sameMember(a, b db.Member) bool {
 	return a.Address == b.Address && a.Fingerprint == b.Fingerprint && a.SchemaVersion == b.SchemaVersion &&
 		a.Version == b.Version && a.DiameterLabel == b.DiameterLabel && a.LabelGenerated == b.LabelGenerated &&
-		a.APIAddress == b.APIAddress && a.CaughtUp == b.CaughtUp && slices.Equal(a.SCSCFAddresses, b.SCSCFAddresses)
+		a.APIAddress == b.APIAddress && a.CaughtUp == b.CaughtUp && slices.Equal(a.SCSCFAddresses, b.SCSCFAddresses) &&
+		slices.Equal(a.MCPTTAddresses, b.MCPTTAddresses)
 }
 
 func (n *Node) SetSCSCFAddresses(addrs []netip.AddrPort) {
@@ -628,6 +630,23 @@ func (n *Node) SetSCSCFAddresses(addrs []netip.AddrPort) {
 
 func (n *Node) scscfAddresses() []string {
 	if p := n.scscf.Load(); p != nil {
+		return *p
+	}
+
+	return nil
+}
+
+func (n *Node) SetMCPTTAddresses(addrs []netip.AddrPort) {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.String()
+	}
+
+	n.mcptt.Store(&out)
+}
+
+func (n *Node) mcpttAddresses() []string {
+	if p := n.mcptt.Load(); p != nil {
 		return *p
 	}
 

@@ -101,4 +101,10 @@ func (s *Server) applyEvents(ctx context.Context, ev db.Events, database *db.DB,
 			}
 		}
 	}
+
+	if ev.Replaced {
+		if a := s.mcptt.Load(); a != nil {
+			a.Republish(ctx)
+		}
+	}
 }

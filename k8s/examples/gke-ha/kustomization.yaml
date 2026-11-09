@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ella
+resources:
+  - ../../ha
+  - ims-sip-network.yaml
+patches:
+  - patch: |
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: ella-ims
+      spec:
+        template:
+          metadata:
+            annotations:
+              networking.gke.io/default-interface: eth0
+              networking.gke.io/interfaces: |
+                [
+                  {"interfaceName": "eth0", "network": "default"},
+                  {"interfaceName": "eth1", "network": "ims-sip"}
+                ]
+          spec:
+            nodeSelector:
+              cloud.google.com/gke-nodepool: ims-sip

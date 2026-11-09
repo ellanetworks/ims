@@ -149,6 +149,7 @@ type peerDirectory struct {
 
 	hosts  atomic.Pointer[map[string][]sip.Server]
 	addrs  atomic.Pointer[[]netip.Addr]
+	mcptt  atomic.Pointer[map[string][]netip.AddrPort]
 	domain atomic.Pointer[trust.Domain]
 }
 
@@ -161,6 +162,7 @@ func (p *peerDirectory) refresh(ctx context.Context) {
 
 	op := p.operator()
 	hosts := map[string][]sip.Server{}
+	mcptt := map[string][]netip.AddrPort{}
 
 	var addrs []netip.Addr
 
@@ -187,10 +189,25 @@ func (p *peerDirectory) refresh(ctx context.Context) {
 		if len(servers) > 0 {
 			hosts[canonicalHost(op.SCSCFHost(m.DiameterLabel))] = servers
 		}
+
+		for _, s := range m.MCPTTAddresses {
+			a, err := netip.ParseAddrPort(s)
+			if err != nil {
+				continue
+			}
+
+			a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
+			mcptt[m.NodeID] = append(mcptt[m.NodeID], a)
+
+			if !slices.Contains(addrs, a.Addr()) {
+				addrs = append(addrs, a.Addr())
+			}
+		}
 	}
 
 	p.hosts.Store(&hosts)
 	p.addrs.Store(&addrs)
+	p.mcptt.Store(&mcptt)
 
 	if d := p.domain.Load(); d != nil {
 		d.SetPeers(addrs)
@@ -203,6 +220,20 @@ func (p *peerDirectory) bind(d *trust.Domain) {
 	if addrs := p.addrs.Load(); addrs != nil {
 		d.SetPeers(*addrs)
 	}
+}
+
+func (p *peerDirectory) peer(a netip.Addr) bool {
+	addrs := p.addrs.Load()
+
+	return addrs != nil && slices.Contains(*addrs, a.Unmap())
+}
+
+func (p *peerDirectory) mcpttOf(node string) []netip.AddrPort {
+	if m := p.mcptt.Load(); m != nil {
+		return (*m)[node]
+	}
+
+	return nil
 }
 
 // RFC 3263 section 4

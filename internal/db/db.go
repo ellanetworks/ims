@@ -233,6 +233,25 @@ var migrations = []string{
 		FOREIGN KEY (group_id, user_id) REFERENCES mcptt_group_members (group_id, user_id) ON DELETE CASCADE
 	);
 	CREATE INDEX mcptt_user_implicit_affiliations_group_id ON mcptt_user_implicit_affiliations (group_id);
+	CREATE TABLE mcptt_group_affiliations (
+		group_key TEXT NOT NULL,
+		user_key TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		group_uri TEXT NOT NULL,
+		mcptt_id TEXT NOT NULL,
+		clients TEXT NOT NULL,
+		expires_at INTEGER NOT NULL,
+		PRIMARY KEY (group_key, user_key, node_id)
+	) WITHOUT ROWID;
+	CREATE INDEX mcptt_group_affiliations_node_id ON mcptt_group_affiliations (node_id);
+	CREATE TABLE mcptt_group_calls (
+		group_key TEXT PRIMARY KEY,
+		group_uri TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		claim TEXT NOT NULL,
+		started_at INTEGER NOT NULL
+	) WITHOUT ROWID;
+	CREATE INDEX mcptt_group_calls_node_id ON mcptt_group_calls (node_id);
 	-- The IP-SM-GW (ipsmgw.go). Its number, empty until set; and its SMS routes, each of a service centre, empty for
 	-- the default route, to the Diameter peers of its SMS-IWMSC.
 	CREATE TABLE ip_sm_gw (
@@ -365,7 +384,8 @@ var migrations = []string{
 		label_generated INTEGER NOT NULL CHECK (label_generated IN (0, 1)),
 		api_address TEXT NOT NULL DEFAULT '',
 		caught_up INTEGER NOT NULL DEFAULT 0 CHECK (caught_up IN (0, 1)),
-		scscf_addresses TEXT NOT NULL DEFAULT ''
+		scscf_addresses TEXT NOT NULL DEFAULT '',
+		mcptt_addresses TEXT NOT NULL DEFAULT ''
 	);
 	CREATE UNIQUE INDEX cluster_members_address ON cluster_members (address) WHERE address != '';
 	CREATE TABLE cluster_removed_members (

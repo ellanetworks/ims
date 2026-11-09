@@ -4,126 +4,48 @@ description: Step-by-step instructions to deploy Ella IMS as a high-availability
 
 # Deploy a High Availability Cluster
 
-This guide deploys Ella IMS as a cluster of three nodes. See [High Availability](../explanation/high_availability.md) for how the cluster works.
+Ella IMS can be deployed as a high-availability cluster to provide redundancy and failover capabilities. See [High Availability](../explanation/high_availability.md) for more information.
 
 === "Snap"
 
     ## Prerequisites
 
-    - Three hosts meeting the [system requirements](../reference/system_reqs.md), with Ella IMS installed as in [Install](install.md), not started.
+    - Three hosts meeting the standard [system requirements](../reference/system_reqs.md).
+    - Ella IMS installed on each host via the [Install](install.md) guide, with `cluster.address` set in the configuration file.
     - An HSS that supports IMS restoration.
 
-    The examples use these addresses:
+    ## 1. Start node 1
 
-    | Node | Cluster and API address | SIP address | Diameter address |
-    | ---- | ----------------------- | ----------- | ---------------- |
-    | 1    | `10.0.0.1`              | `10.6.0.5`  | `10.3.0.5`       |
-    | 2    | `10.0.0.2`              | `10.6.0.6`  | `10.3.0.6`       |
-    | 3    | `10.0.0.3`              | `10.6.0.7`  | `10.3.0.7`       |
+    Start node 1, open a browser at the API address and initialize it normally.
 
-    ## 1. Configure the nodes
+    ## 2. Create a join token for node 2
 
-    On each host, add a `cluster` block with the host's address to `/var/snap/ella-ims/common/ims.yaml`, and set its own SIP and Diameter addresses. On node 1:
+    Still in node 1, open the **Cluster** page, click **Add Node**, click **Create Token**, then copy the token.
 
-    ```yaml
-    sip:
-      addresses: [10.6.0.5]
-    diameter:
-      address: 10.3.0.5
-    cluster:
-      address: 10.0.0.1
-      port: 7000
-    ```
+    ## 3. Start node 2
 
-    ## 2. Start node 1
+    Start node 2, open a browser at the API address and click **Join an existing cluster instead**. Paste the token and click **Join**.
 
-    Start Ella IMS on node 1:
+    ## 4. Add node 3
 
-    ```shell
-    sudo snap start --enable ella-ims.imsd
-    ```
+    Repeat steps 2 and 3 for node 3.
 
-    Open `http://10.0.0.1:5020`, create the first user, and connect it to the HSS and the PCRF, as in [Integrate with Ella Core](integrate_with_ella_core.md), steps 3 and 4.
+    ## 5. Connect the network
 
-    ## 3. Create a join token for node 2
+    - On the HSS and the PCRF, accept every node's Diameter host, shown on the **Cluster** page.
+    - In the core network, set the P-CSCF addresses to every node's SIP address.
+    - On each carrier, add every node's IBCF address.
 
-    Log in to node 1 as an admin, and keep the token:
+    ## 6. Verify
 
-    ```shell
-    TOKEN=$(curl -s http://10.0.0.1:5020/api/v1/auth/login \
-      -H "Content-Type: application/json" \
-      -d '{"email": "admin@example.com", "password": "..."}' | jq -r .result.token)
-    ```
-
-    Create a join token:
-
-    ```shell
-    JOIN=$(curl -s -X POST http://10.0.0.1:5020/api/v1/cluster/tokens \
-      -H "Authorization: Bearer $TOKEN" | jq -r .result.token)
-    ```
-
-    ## 4. Join node 2
-
-    Start Ella IMS on node 2:
-
-    ```shell
-    sudo snap start --enable ella-ims.imsd
-    ```
-
-    Join it to the cluster:
-
-    ```shell
-    curl http://10.0.0.2:5020/api/v1/cluster/join \
-      -H "Content-Type: application/json" \
-      -d "{\"token\": \"$JOIN\"}"
-    ```
-
-    ## 5. Join node 3
-
-    Repeat steps 3 and 4 for node 3, at `10.0.0.3`.
-
-    ## 6. Connect the Diameter peers
-
-    List each node's Diameter host:
-
-    ```shell
-    curl -s http://10.0.0.1:5020/api/v1/cluster \
-      -H "Authorization: Bearer $TOKEN" | jq '.result.members[] | {address, diameter_host}'
-    ```
-
-    On the HSS and the PCRF, accept every node's Diameter host, from its Diameter address.
-
-    ## 7. Give the phones every P-CSCF
-
-    In the core network, set the P-CSCF addresses to every node's SIP address. In Ella Core, set **Operator → IMS → P-CSCF Addresses** to `10.6.0.5`, `10.6.0.6` and `10.6.0.7`.
-
-    ## 8. Connect the SIP trunks
-
-    If Ella IMS has SIP trunks, configure each carrier with every node's `ibcf.external` address, or with one host name that resolves to all of them.
-
-    ## 9. Verify
-
-    Find the leader:
-
-    ```shell
-    curl -s http://10.0.0.1:5020/api/v1/cluster \
-      -H "Authorization: Bearer $TOKEN" | jq -r '.result.members[] | select(.leader) | .api_address'
-    ```
-
-    Check the cluster on the leader, at that address:
-
-    ```shell
-    curl "<leader-api-address>/api/v1/readyz?cluster=true"
-    ```
-
-    It answers `200`, with every check `ok`.
+    On the **Cluster** page, all three nodes appear as **Healthy**.
 
 === "Kubernetes"
 
     ## Prerequisites
 
     - A Kubernetes cluster with three nodes meeting the [system requirements](../reference/system_reqs.md).
-    - A second interface, `eth1`, on the network phones reach Ella IMS on, for each pod, as in [Install](install.md).
+    - A second interface, `eth1`, for each pod, as in [Install](install.md).
     - An HSS that supports IMS restoration.
 
     ## 1. Deploy
@@ -142,37 +64,13 @@ This guide deploys Ella IMS as a cluster of three nodes. See [High Availability]
     kubectl port-forward -n ella pod/ella-ims-0 5020:5020
     ```
 
-    Open `http://localhost:5020`, create the first user, and connect it to the HSS and the PCRF, as in [Integrate with Ella Core](integrate_with_ella_core.md), steps 3 and 4.
+    Open `http://localhost:5020` and initialize it normally.
 
-    ## 3. Connect the Diameter peers
+    ## 3. Connect the network
 
-    On the HSS and the PCRF, accept the Diameter host of every pod, `ella-ims-<n>.ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org`, from its address.
+    - On the HSS and the PCRF, accept every pod's Diameter host, shown on the **Cluster** page.
+    - In the core network, set the P-CSCF addresses to every pod's SIP address.
 
-    ## 4. Give the phones every P-CSCF
+    ## 4. Verify
 
-    Find each pod's P-CSCF address, the `pcscf` entry of `sip`:
-
-    ```shell
-    kubectl logs -n ella ella-ims-<n> | grep '"ims started"'
-    ```
-
-    In the core network, set the P-CSCF addresses to those of every pod.
-
-    ## 5. Verify
-
-    Log in as an admin, and keep the token:
-
-    ```shell
-    TOKEN=$(curl -s http://localhost:5020/api/v1/auth/login \
-      -H "Content-Type: application/json" \
-      -d '{"email": "admin@example.com", "password": "..."}' | jq -r .result.token)
-    ```
-
-    List the members:
-
-    ```shell
-    curl -s http://localhost:5020/api/v1/cluster \
-      -H "Authorization: Bearer $TOKEN" | jq '.result.members[] | {display_name, diameter_label, suffrage, leader}'
-    ```
-
-    Three members appear, each with `suffrage` `voter`.
+    On the **Cluster** page, all three nodes appear as **Healthy**.

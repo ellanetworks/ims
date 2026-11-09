@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -27,12 +28,20 @@ type Participating interface {
 	Terminate(req *sip.Request) participating.Termination
 }
 
+// TS 24.379 clause 10.1.1.4.1.1
+type Peers interface {
+	Self() string
+	Route(node string) (sip.URI, netip.AddrPort, bool)
+}
+
 type Config struct {
 	Agent         *ua.Agent
 	Source        settings.Source
 	Affiliations  Affiliations
 	Media         *media.Relay
 	Participating Participating
+	Peers         Peers
+	Released      func(group sip.URI)
 	Logger        *slog.Logger
 }
 
@@ -69,6 +78,16 @@ func (c *Controlling) Strand(id sip.URI) *ua.Strand {
 	}
 
 	return c.group(id).st
+}
+
+func (c *Controlling) Active(id sip.URI) bool {
+	if c.cfg.Source.Current().Group(id) == nil {
+		return false
+	}
+
+	g := c.group(id)
+
+	return g.st.Confined() && g.sess != nil
 }
 
 func (c *Controlling) group(id sip.URI) *group {

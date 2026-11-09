@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/config"
@@ -21,17 +22,36 @@ func (s *Server) startMCPTT(ctx context.Context, domains homedomain.Domains) err
 	cfg := s.Config.MCPTT
 	homeDomain := domains.Primary()
 
-	a, err := mcptt.Start(ctx, mcptt.Config{
+	mc := mcptt.Config{
 		MCPTT: *cfg, Addresses: s.Config.SIP.Addresses, Network: s.ases.network, HomeDomain: homeDomain,
 		DB: s.database, Logger: s.Logger, TracerProvider: s.tracerProvider,
-	})
+	}
+
+	var shared *mcpttCluster
+
+	if s.Config.Cluster != nil && cfg.Mode == config.MCPTTModeIMS {
+		shared = &mcpttCluster{Shared: &mcptt.Shared{DB: s.database, Node: s.node.ID(), Logger: s.Logger}, peers: s.peers}
+
+		for _, a := range s.Config.SIP.Addresses {
+			shared.locals = append(shared.locals, netip.AddrPortFrom(a.Unmap(), uint16(cfg.Port)))
+		}
+
+		mc.Cluster = shared
+	}
+
+	a, err := mcptt.Start(ctx, mc)
 	if err != nil {
 		return err
 	}
 
 	s.mcpttHomeDomain = homeDomain
+	s.mcpttCluster = shared
 	s.mcptt.Store(a)
 	s.routeMCPTT(domains)
+
+	if shared != nil {
+		s.node.SetMCPTTAddresses(a.Listeners())
+	}
 
 	return nil
 }
@@ -46,6 +66,10 @@ func (s *Server) stopMCPTT(ctx context.Context) {
 
 	if err := a.Shutdown(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to stop MCPTT cleanly", slog.Any("error", err))
+	}
+
+	if c := s.mcpttCluster; c != nil {
+		c.Wait()
 	}
 }
 

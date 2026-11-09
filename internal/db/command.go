@@ -71,6 +71,10 @@ const (
 	cmdSaveCallRecords
 	cmdPruneCallRecords
 	cmdCloseOpenCallRecords
+	cmdPutMCPTTAffiliation
+	cmdClaimMCPTTGroupCall
+	cmdReleaseMCPTTGroupCall
+	cmdReleaseMCPTTGroupCallsOf
 )
 
 const entryBatch uint16 = 1

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/ellanetworks/ims/internal/as"
@@ -30,6 +31,7 @@ type Config struct {
 	config.MCPTT
 
 	Addresses      []netip.Addr
+	Cluster        server.Cluster
 	Network        *transaction.Network
 	HomeDomain     string
 	DB             *db.DB
@@ -56,6 +58,7 @@ type AS struct {
 
 	mu     sync.Mutex
 	status Status
+	locals []netip.AddrPort
 }
 
 type Status struct {
@@ -133,6 +136,7 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 		HomeDomain:      cfg.HomeDomain,
 		Media:           relay,
 		State:           store{d: cfg.DB, home: cfg.HomeDomain},
+		Cluster:         cfg.Cluster,
 	})
 	if err != nil {
 		kill()
@@ -174,15 +178,20 @@ func Start(ctx context.Context, cfg Config) (_ *AS, err error) {
 	as.named(cfg.HomeDomain)
 
 	for _, l := range locals {
-		if mode == registrar.Direct {
+		if mode == registrar.Direct || cfg.Cluster != nil {
 			if l, err = srv.Agent().Layer().Listen(ctx, l); err != nil {
 				return nil, fmt.Errorf("listen for MCPTT: %w", err)
 			}
-		} else if err := srv.Agent().Layer().Serve(l); err != nil {
-			return nil, fmt.Errorf("serve MCPTT in memory: %w", err)
+		}
+
+		if mode == registrar.ThroughIMS {
+			if err := srv.Agent().Layer().Serve(l); err != nil {
+				return nil, fmt.Errorf("serve MCPTT in memory: %w", err)
+			}
 		}
 
 		as.status.SIP = append(as.status.SIP, l.String())
+		as.locals = append(as.locals, l)
 	}
 
 	logger.InfoContext(ctx, "MCPTT started", slog.String("mode", as.status.Mode), slog.Any("sip", as.status.SIP),
@@ -228,6 +237,15 @@ func (a *AS) Servers() []sip.Server {
 }
 
 func (a *AS) Resubscribe(ctx context.Context) { a.srv.Resubscribe(ctx) }
+
+func (a *AS) Republish(ctx context.Context) { a.srv.Republish(ctx) }
+
+func (a *AS) Listeners() []netip.AddrPort {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return slices.Clone(a.locals)
+}
 
 func (a *AS) named(homeDomain string) {
 	sys := System(homeDomain)

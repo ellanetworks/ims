@@ -7,7 +7,7 @@ description: Reference of the network interfaces and ports of Ella IMS.
 | Interface | Address | Peers | Ports |
 | --------- | ------- | ----- | ----- |
 | API | `api.address` | Operators, Prometheus | TCP `api.port` (`5020`) |
-| SIP | `sip.name` or `sip.addresses` | Phones, Application Servers | P-CSCF: UDP and TCP `pcscf.port` (`5060`)<br>P-CSCF, IPsec: UDP and TCP in ESP, `pcscf.ipsec.server_port` (`5063`), `pcscf.ipsec.client_ports` (`5064`, `5065`)<br>I-CSCF: UDP and TCP `icscf.port` (`5070`)<br>S-CSCF: UDP and TCP `scscf.port` (`5080`)<br>MCPTT, `direct` mode: UDP and TCP `mcptt.port` (`5090`)<br>Voice of calls over SIP trunks: UDP `ibcf.media.min_port`–`max_port` (`10000`–`19999`) |
+| SIP | `sip.name` or `sip.addresses` | Phones, Application Servers | P-CSCF: UDP and TCP `pcscf.port` (`5060`)<br>P-CSCF, IPsec: UDP and TCP in ESP, `pcscf.ipsec.server_port` (`5063`), `pcscf.ipsec.client_ports` (`5064`, `5065`)<br>I-CSCF: UDP and TCP `icscf.port` (`5070`)<br>S-CSCF: UDP and TCP `scscf.port` (`5080`)<br>MCPTT, `direct` mode, or `ims` mode with a `cluster` block: UDP and TCP `mcptt.port` (`5090`)<br>Voice of calls over SIP trunks: UDP `ibcf.media.min_port`–`max_port` (`10000`–`19999`) |
 | Carriers | `ibcf.external.addresses` | SIP trunks | SIP: UDP and TCP `5060`, TLS `5061`<br>Voice: UDP `ibcf.media.min_port`–`max_port` (`10000`–`19999`) |
 | Diameter | `diameter.name` or `diameter.address` | HSS, PCRF, SMSC, MME, SMSF | TCP or SCTP `diameter.port` (`3868`) |
 | MCPTT media | `mcptt.media.address` | MCPTT clients | UDP `mcptt.media.min_port`–`max_port` (`20000`–`20999`), `mcptt.media.control_port` (`21000`) |
@@ -16,7 +16,7 @@ description: Reference of the network interfaces and ports of Ella IMS.
 
 Defaults are in parentheses. The cluster port listens only when the configuration file has a `cluster` block.
 
-In a cluster, the I-CSCF of each node sends requests to the S-CSCF of the other nodes, on their SIP addresses, over TCP or UDP `scscf.port`. Each node trusts the SIP addresses of the other members.
+In a cluster, the I-CSCF of each node sends requests to the S-CSCF of the other nodes, on their SIP addresses, over TCP or UDP `scscf.port`. The MCPTT server of each node sends requests to the MCPTT server of the other nodes, on their SIP addresses, over UDP or TCP `mcptt.port`. MCPTT clients send media to the MCPTT media address of any node. Each node trusts the SIP addresses of the other members.
 
 On Kubernetes, the cluster address of node `<n>` is `ella-ims-<n>.ella-ims-internal.<namespace>.svc.cluster.local`.
 

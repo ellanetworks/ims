@@ -25,6 +25,7 @@ import (
 	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/mcptt"
+	mcpttserver "github.com/ellanetworks/ims/internal/mcptt/server"
 	"github.com/ellanetworks/ims/internal/oidc"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
@@ -77,10 +78,11 @@ type Server struct {
 	TrunkMediaTimeout      time.Duration
 	TrunkKeepaliveFailures int
 
-	ASTimeout      time.Duration
-	PruneInterval  time.Duration
-	BcryptCost     int
-	TracerProvider trace.TracerProvider
+	ASTimeout        time.Duration
+	PruneInterval    time.Duration
+	MCPTTOrphanAfter time.Duration
+	BcryptCost       int
+	TracerProvider   trace.TracerProvider
 
 	tracerProvider  trace.TracerProvider
 	shutdownTracing func(context.Context) error
@@ -93,6 +95,8 @@ type Server struct {
 	metrics     *metrics
 	stopPrune   context.CancelFunc
 	pruneDone   chan struct{}
+	stopSweep   context.CancelFunc
+	sweepDone   chan struct{}
 	readiness   *readiness
 	stopReady   context.CancelFunc
 	stopEvents  func()
@@ -114,6 +118,7 @@ type Server struct {
 	running bool
 
 	mcptt           atomic.Pointer[mcptt.AS]
+	mcpttCluster    *mcpttCluster
 	ases            builtinASs
 	peers           *peerDirectory
 	mcpttHomeDomain string
@@ -531,6 +536,19 @@ func (s *Server) finish(ctx context.Context) error {
 		})
 	}()
 
+	sweepCtx, stopSweep := context.WithCancel(base)
+	s.stopSweep, s.sweepDone = stopSweep, make(chan struct{})
+
+	go func() {
+		defer close(s.sweepDone)
+
+		if cfg.MCPTT != nil && cfg.Cluster != nil {
+			mcpttSweep{
+				database: database, node: node, after: cmp.Or(s.MCPTTOrphanAfter, mcpttserver.DefaultSessionInterval), logger: s.Logger,
+			}.run(sweepCtx)
+		}
+	}()
+
 	drainCtx, stopDrain := context.WithCancel(base)
 	s.drain = &drainer{node: node, store: database, refusing: &s.refusing, logger: s.Logger, wake: make(chan struct{}, 1)}
 	s.stopDrain, s.drainDone = stopDrain, make(chan struct{})
@@ -922,6 +940,9 @@ func (s *Server) stopRunning(ctx context.Context) {
 
 	s.stopPrune()
 	<-s.pruneDone
+
+	s.stopSweep()
+	<-s.sweepDone
 }
 
 func (s *Server) stopTrunks(ctx context.Context) {
