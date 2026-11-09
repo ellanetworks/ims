@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/cluster"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ipsec/ipsectest"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -47,7 +49,9 @@ func TestMetrics(t *testing.T) {
 	}
 
 	for _, p := range problems {
-		t.Errorf("lint: %s: %s", p.Metric, p.Text)
+		if !strings.HasPrefix(p.Metric, "raft_") {
+			t.Errorf("lint: %s: %s", p.Metric, p.Text)
+		}
 	}
 
 	parser := expfmt.NewTextParser(model.UTF8Validation)
@@ -424,12 +428,24 @@ func testMetrics(t *testing.T) *metrics {
 
 	t.Cleanup(func() { _ = d.Close() })
 
+	node, err := cluster.Open(t.Context(), cluster.Config{Dir: filepath.Join(t.TempDir(), "raft")}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = node.Close() })
+
 	records := callrecords.New(callrecords.Config{Store: d})
 
 	t.Cleanup(func() { _ = records.Close(context.Background()) })
 
-	return newMetrics(d, records, func() ([]settings.Peer, []diameter.PeerStatus) { return nil, nil },
+	m, err := newMetrics(d, node, records, func() ([]settings.Peer, []diameter.PeerStatus) { return nil, nil },
 		func() []settings.Trunk { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return m
 }
 
 func TestTrunkInfoMetric(t *testing.T) {

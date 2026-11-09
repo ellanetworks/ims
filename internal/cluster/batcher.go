@@ -45,6 +45,7 @@ type batcher struct {
 	raft   *raft.Raft
 	now    func() time.Time
 	floor  func() int64
+	check  func() *db.HashCheck
 	queue  chan *request
 	slots  chan struct{}
 	stop   chan struct{}
@@ -54,11 +55,12 @@ type batcher struct {
 	last   int64
 }
 
-func newBatcher(r *raft.Raft, now func() time.Time, floor func() int64) *batcher {
+func newBatcher(r *raft.Raft, now func() time.Time, floor func() int64, check func() *db.HashCheck) *batcher {
 	b := &batcher{
 		raft:  r,
 		now:   now,
 		floor: floor,
+		check: check,
 		queue: make(chan *request, queueLength),
 		slots: make(chan struct{}, maxInFlight),
 		stop:  make(chan struct{}),
@@ -207,7 +209,12 @@ func (b *batcher) send(batch []*request) {
 		cmds = append(cmds, r.cmds...)
 	}
 
-	entry, err := db.EncodeBatch(db.Batch{LeaderTime: b.last, Commands: cmds})
+	var check *db.HashCheck
+	if b.check != nil {
+		check = b.check()
+	}
+
+	entry, err := db.EncodeBatch(db.Batch{LeaderTime: b.last, Commands: cmds, Check: check})
 	if err != nil {
 		<-b.slots
 

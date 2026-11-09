@@ -331,7 +331,7 @@ func TestCloseOpenCallRecords(t *testing.T) {
 	done := ended(attempt("ICID3", callT0), 487, OutcomeCancelled, PartyCaller)
 	saveCalls(t, d, ringing, inCall, done)
 
-	n, err := d.CloseOpenCallRecords(t.Context(), nil)
+	n, err := d.CloseOpenCallRecords(t.Context(), "", nil)
 	if err != nil || n != 2 {
 		t.Fatalf("CloseOpenCallRecords = %d, %v; want 2", n, err)
 	}
@@ -347,7 +347,7 @@ func TestCloseOpenCallRecords(t *testing.T) {
 		}
 	}
 
-	if n, err := d.CloseOpenCallRecords(t.Context(), nil); err != nil || n != 0 {
+	if n, err := d.CloseOpenCallRecords(t.Context(), "", nil); err != nil || n != 0 {
 		t.Fatalf("second CloseOpenCallRecords = %d, %v; want 0", n, err)
 	}
 }
@@ -358,7 +358,7 @@ func TestCloseOpenCallRecordsSparesTheLive(t *testing.T) {
 	live, lost := attempt("ICID1", callT0), attempt("ICID2", callT0)
 	saveCalls(t, d, live, lost)
 
-	if n, err := d.CloseOpenCallRecords(t.Context(), []string{"ICID1", "ICID9"}); err != nil || n != 1 {
+	if n, err := d.CloseOpenCallRecords(t.Context(), "", []string{"ICID1", "ICID9"}); err != nil || n != 1 {
 		t.Fatalf("CloseOpenCallRecords = %d, %v; want 1", n, err)
 	}
 
@@ -436,4 +436,38 @@ func idsOf(records []*CallRecord) string {
 	}
 
 	return fmt.Sprint(s)
+}
+
+func TestCloseOpenCallRecordsOfOneNode(t *testing.T) {
+	d := openTestDB(t)
+
+	mine, theirs := attempt("ICID1", callT0), attempt("ICID2", callT0)
+	mine.NodeID, theirs.NodeID = "node-a", "node-b"
+
+	if errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{mine, theirs}, nil); err != nil || errs != nil {
+		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
+	}
+
+	if n, err := d.CloseOpenCallRecords(t.Context(), "node-a", nil); err != nil || n != 1 {
+		t.Fatalf("CloseOpenCallRecords = %d, %v; want 1", n, err)
+	}
+
+	got, err := d.GetCallRecord(t.Context(), theirs.ID)
+	if err != nil || got.Incomplete || got.NodeID != "node-b" {
+		t.Fatalf("the other node's record = %+v, %v; want it open", got, err)
+	}
+}
+
+func TestSaveCallRecordsRetriedOnce(t *testing.T) {
+	d := openTestDB(t)
+
+	first, retry := attempt("ICID1", callT0), attempt("ICID1", callT0)
+
+	if errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{first}, nil); err != nil || errs != nil {
+		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
+	}
+
+	if errs, err := d.SaveCallRecords(t.Context(), []*CallRecord{retry}, nil); err != nil || errs != nil || retry.ID != first.ID {
+		t.Fatalf("retried SaveCallRecords = %v, %v, ID %d; want the first result, ID %d", errs, err, retry.ID, first.ID)
+	}
 }

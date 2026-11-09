@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -425,9 +424,7 @@ func (n *Node) discover() {
 		cancel()
 	}()
 
-	var lastForeign, lastProbe time.Time
-
-	lastLeader := n.cfg.Now()
+	var lastForeign time.Time
 
 	for {
 		wait := discoverInterval/2 + rand.N(discoverInterval)
@@ -441,13 +438,8 @@ func (n *Node) discover() {
 		switch n.formation.current() {
 		case FormationForming, FormationJoining:
 			n.formStep(ctx)
-			lastLeader = n.cfg.Now()
 		case FormationMember:
 			now := n.cfg.Now()
-
-			if n.hasLeader() {
-				lastLeader = now
-			}
 
 			if len(n.cfg.Join) > 0 && now.Sub(lastForeign) >= foreignInterval {
 				lastForeign = now
@@ -455,11 +447,6 @@ func (n *Node) discover() {
 				n.countForeign(ctx)
 			}
 
-			if now.Sub(lastLeader) >= cmp.Or(n.cfg.removalAfter, removalAfter) && now.Sub(lastProbe) >= removalProbe {
-				lastProbe = now
-
-				n.probeRemoval(ctx)
-			}
 		default:
 			return
 		}
@@ -588,18 +575,13 @@ func (n *Node) countForeign(ctx context.Context) {
 }
 
 func (n *Node) probeRemoval(ctx context.Context) {
-	secrets, err := n.db.ReadSecrets(ctx)
-	if err != nil {
-		return
-	}
-
-	targets := n.resolveJoin(ctx)
+	peers := map[string]string{}
 
 	if r, _ := n.current(); r != nil {
 		if future := r.GetConfiguration(); future.Error() == nil {
 			for _, s := range future.Configuration().Servers {
 				if string(s.ID) != n.id {
-					targets = append(targets, string(s.Address))
+					peers[string(s.ID)] = string(s.Address)
 				}
 			}
 		}
@@ -608,9 +590,27 @@ func (n *Node) probeRemoval(ctx context.Context) {
 	if members, err := n.db.Members(ctx); err == nil {
 		for _, m := range members {
 			if m.NodeID != n.id && m.Address != "" {
-				targets = append(targets, m.Address)
+				peers[m.NodeID] = m.Address
 			}
 		}
+	}
+
+	if n.peers != nil {
+		for id, addr := range peers {
+			if err := n.peers.callAt(ctx, addr, id, "/cluster/v1/probe", struct{}{}, nil); errors.Is(err, ErrRemoved) {
+				return
+			}
+		}
+	}
+
+	secrets, err := n.db.ReadSecrets(ctx)
+	if err != nil || !n.auth.enabled() {
+		return
+	}
+
+	targets := n.resolveJoin(ctx)
+	for _, addr := range peers {
+		targets = append(targets, addr)
 	}
 
 	slices.Sort(targets)

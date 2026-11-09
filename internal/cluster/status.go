@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -14,11 +15,7 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-const (
-	readyLag        = 1000
-	leaderViewAge   = 3 * time.Second
-	healthCallLimit = 2 * time.Second
-)
+const readyLag = 1000
 
 type MemberStatus struct {
 	NodeID        string    `json:"node_id"`
@@ -34,8 +31,8 @@ type MemberStatus struct {
 	Leader        bool      `json:"leader"`
 	Healthy       *bool     `json:"healthy,omitempty"`
 	LastContact   string    `json:"last_contact,omitempty"`
-	AppliedIndex  uint64    `json:"applied_index,omitempty"`
-	Diverged      bool      `json:"diverged,omitempty"`
+	CaughtUp      bool      `json:"caught_up"`
+	APIAddress    string    `json:"api_address,omitempty"`
 }
 
 type Status struct {
@@ -92,12 +89,12 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 
-	h, known := Health{}, false
-	if r != nil {
-		h, known = n.leaderHealth(ctx)
+	h := Health{}
+	if leading, _ := n.Leader(); leading {
+		h = n.health.snapshot()
 	}
 
-	if known {
+	if h.Servers != nil {
 		st.Healthy, st.FailureTolerance = &h.Healthy, &h.FailureTolerance
 	}
 
@@ -105,7 +102,7 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 		ms := MemberStatus{
 			NodeID: m.NodeID, Address: m.Address, DiameterLabel: m.DiameterLabel,
 			DiameterHost: s.Operator.DiameterHost(m.DiameterLabel), Generated: m.LabelGenerated, DisplayName: m.DisplayName,
-			Version:  m.Version,
+			Version: m.Version, CaughtUp: m.CaughtUp, APIAddress: m.APIAddress,
 			JoinedAt: m.JoinedAt, DrainState: string(m.DrainState), Suffrage: "none", Leader: m.NodeID == string(leaderID),
 		}
 
@@ -118,46 +115,13 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 
 		if i := slices.IndexFunc(h.Servers, func(s ServerHealth) bool { return s.NodeID == m.NodeID }); i >= 0 {
 			s := h.Servers[i]
-			ms.Healthy, ms.LastContact, ms.AppliedIndex, ms.Diverged = &s.Healthy, s.LastContact, s.AppliedIndex, s.Diverged
+			ms.Healthy, ms.LastContact = &s.Healthy, s.LastContact
 		}
 
 		st.Members = append(st.Members, ms)
 	}
 
 	return st, nil
-}
-
-func (n *Node) leaderHealth(ctx context.Context) (Health, bool) {
-	if leading, _ := n.Leader(); leading {
-		h := n.health.snapshot()
-		return h, h.Servers != nil
-	}
-
-	if n.peers == nil {
-		return Health{}, false
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, healthCallLimit)
-	defer cancel()
-
-	addr, id, err := n.peers.leader()
-	if err != nil {
-		return Health{}, false
-	}
-
-	resp, err := n.peers.do(ctx, addr, id, "GET", "/cluster/v1/health", nil)
-	if err != nil {
-		return Health{}, false
-	}
-
-	defer func() { _ = resp.Body.Close() }()
-
-	var h Health
-	if err := decodeReply(resp, &h); err != nil {
-		return Health{}, false
-	}
-
-	return h, h.Servers != nil
 }
 
 const (
@@ -302,8 +266,8 @@ func (n *Node) checkConsistent() Check {
 		return pass(CheckConsistent)
 	}
 
-	if n.health.leaderView().Diverged {
-		return fail(CheckConsistent, "the leader found that this node's database differs from its own: remove the node, "+
+	if n.db.Diverged() {
+		return fail(CheckConsistent, "this node's database differs from the leader's: remove the node, "+
 			"delete its data directory and join it again")
 	}
 
@@ -349,17 +313,15 @@ func (n *Node) ApplyLag() (uint64, bool) {
 		return 0, false
 	}
 
-	if r.State() == raft.Leader {
-		commit := r.CommitIndex()
-		return commit - min(commit, applied), true
+	if r.State() != raft.Leader {
+		if _, id := r.LeaderWithID(); id == "" {
+			return 0, false
+		}
 	}
 
-	view := n.health.leaderView()
-	if view.At.IsZero() || n.cfg.Now().Sub(view.At) > leaderViewAge {
-		return 0, false
-	}
+	commit := max(r.CommitIndex(), n.leaderCommit.Load())
 
-	return view.CommitIndex - min(view.CommitIndex, applied), true
+	return commit - min(commit, applied), true
 }
 
 func (n *Node) checkCaughtUp() Check {
@@ -367,7 +329,7 @@ func (n *Node) checkCaughtUp() Check {
 
 	switch {
 	case !known:
-		return fail(CheckCaughtUp, "no recent commit index from the cluster leader")
+		return fail(CheckCaughtUp, "no known cluster leader")
 	case lag > cmp.Or(n.cfg.readyLag, readyLag):
 		return fail(CheckCaughtUp, fmt.Sprintf("the database is %d entries behind the cluster leader", lag))
 	}
@@ -380,21 +342,15 @@ func (n *Node) checkCluster() Check {
 		return pass(CheckCluster)
 	}
 
-	var (
-		known     bool
-		unhealthy []string
-	)
-
-	if leading, _ := n.Leader(); leading {
-		known, unhealthy = n.health.voters()
-	} else if view := n.health.leaderView(); !view.At.IsZero() && n.cfg.Now().Sub(view.At) <= leaderViewAge &&
-		view.Voters != nil {
-		known, unhealthy = true, view.Unhealthy
+	if leading, _ := n.Leader(); !leading {
+		return fail(CheckCluster, "only the leader sees the health of the voters: "+n.notLeader(context.Background()).Error())
 	}
+
+	known, unhealthy := n.health.voters()
 
 	switch {
 	case !known:
-		return fail(CheckCluster, "no recent view of the voters from the cluster leader")
+		return fail(CheckCluster, "the leader has no view of the voters yet")
 	case len(unhealthy) > 0:
 		return fail(CheckCluster, "unhealthy voters: "+strings.Join(unhealthy, ", "))
 	}
@@ -414,13 +370,44 @@ func (n *Node) HandOver() error {
 		return err
 	}
 
+	type candidate struct {
+		server raft.Server
+		since  time.Duration
+	}
+
+	var candidates []candidate
+
 	for _, s := range future.Configuration().Servers {
-		if s.Suffrage == raft.Voter && string(s.ID) != n.id && !n.isDraining(s.ID) {
-			return r.LeadershipTransferToServer(s.ID, s.Address).Error()
+		if s.Suffrage != raft.Voter || string(s.ID) == n.id || n.isDraining(s.ID) {
+			continue
+		}
+
+		since, known := n.health.contact(s.ID)
+		if !known {
+			since = time.Duration(math.MaxInt64)
+		}
+
+		candidates = append(candidates, candidate{server: s, since: since})
+	}
+
+	slices.SortStableFunc(candidates, func(a, b candidate) int { return cmp.Compare(a.since, b.since) })
+
+	var errs []error
+
+	for _, c := range candidates {
+		err := r.LeadershipTransferToServer(c.server.ID, c.server.Address).Error()
+		if err == nil {
+			return nil
+		}
+
+		errs = append(errs, fmt.Errorf("%s: %w", c.server.ID, err))
+
+		if leading, _ := n.Leader(); !leading {
+			return nil
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func (n *Node) RaftLeader() bool {

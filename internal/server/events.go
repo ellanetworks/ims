@@ -15,7 +15,7 @@ type events struct {
 	wake    chan struct{}
 }
 
-func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oidc.Live) func() {
+func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oidc.Live, secrets *secrets) func() {
 	e := &events{wake: make(chan struct{}, 1)}
 
 	database.OnEvents(func(ev db.Events) {
@@ -23,6 +23,8 @@ func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oi
 		e.pending.Settings = e.pending.Settings || ev.Settings || ev.Replaced
 		e.pending.OIDC = e.pending.OIDC || ev.OIDC || ev.Replaced
 		e.pending.MCPTT = e.pending.MCPTT || ev.MCPTT || ev.Replaced
+		e.pending.Replaced = e.pending.Replaced || ev.Replaced
+		e.pending.Members = e.pending.Members || ev.Members
 		e.mu.Unlock()
 
 		select {
@@ -49,7 +51,7 @@ func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oi
 			e.pending = db.Events{}
 			e.mu.Unlock()
 
-			s.applyEvents(ctx, ev, database, oidcLive)
+			s.applyEvents(ctx, ev, database, oidcLive, secrets)
 		}
 	}()
 
@@ -59,7 +61,17 @@ func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oi
 	}
 }
 
-func (s *Server) applyEvents(ctx context.Context, ev db.Events, database *db.DB, oidcLive *oidc.Live) {
+func (s *Server) applyEvents(ctx context.Context, ev db.Events, database *db.DB, oidcLive *oidc.Live, secrets *secrets) {
+	if (ev.Members || ev.Replaced) && s.drain != nil {
+		s.drain.changed()
+	}
+
+	if ev.Replaced {
+		if err := secrets.reload(ctx, database); err != nil {
+			s.Logger.ErrorContext(ctx, "failed to reload the secrets", slog.Any("error", err))
+		}
+	}
+
 	if ev.Settings {
 		current, err := database.GetSettings(ctx)
 		if err != nil {

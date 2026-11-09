@@ -1,7 +1,7 @@
 package cluster
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	reportInterval   = time.Second
+	selfInterval     = time.Second
 	maintainInterval = 10 * time.Second
 	tokenCleanup     = time.Hour
 	maxVoters        = 5
@@ -28,69 +28,124 @@ const (
 	maxTrailingLogs  = 5000
 )
 
-type report struct {
-	Address      string `json:"address"`
-	AppliedIndex uint64 `json:"applied_index"`
-	LastTerm     uint64 `json:"last_term"`
-	LastIndex    uint64 `json:"last_index"`
-	Schema       int    `json:"schema"`
-	Version      string `json:"version"`
-	Label        string `json:"diameter_label,omitempty"`
-	Generated    bool   `json:"label_generated,omitempty"`
-	Hash         []byte `json:"hash,omitempty"`
-}
-
-type reportReply struct {
-	CommitIndex uint64   `json:"commit_index"`
-	Diverged    bool     `json:"diverged,omitempty"`
-	Voters      *bool    `json:"voters_healthy,omitempty"`
-	Unhealthy   []string `json:"unhealthy_voters,omitempty"`
-}
-
-type leaderView struct {
-	reportReply
-	At time.Time
-}
-
-type peerReport struct {
-	report
-	At       time.Time
-	Diverged bool
+type peerState struct {
+	lastContact time.Time
+	healthy     bool
 }
 
 type health struct {
-	n       *Node
-	mu      sync.Mutex
-	reports map[string]peerReport
-	state   *autopilot.State
-	view    leaderView
+	n     *Node
+	mu    sync.Mutex
+	peers map[raft.ServerID]*peerState
+	state *autopilot.State
 }
 
 func newHealth(n *Node) *health {
-	return &health{n: n, reports: map[string]peerReport{}}
+	return &health{n: n, peers: map[raft.ServerID]*peerState{}}
 }
 
-func (h *health) record(nodeID string, r report) {
-	if nodeID == "" {
-		return
-	}
+func (h *health) track(ctx context.Context, r *raft.Raft) {
+	now := h.n.cfg.Now()
+	peers := map[raft.ServerID]*peerState{}
 
-	diverged := false
-
-	if mine, ok := h.n.db.HashAt(r.AppliedIndex); ok && r.Hash != nil && !bytes.Equal(mine, r.Hash) {
-		diverged = true
+	if future := r.GetConfiguration(); future.Error() == nil {
+		for _, srv := range future.Configuration().Servers {
+			if string(srv.ID) != h.n.id {
+				peers[srv.ID] = &peerState{lastContact: now, healthy: true}
+			}
+		}
 	}
 
 	h.mu.Lock()
-	previous := h.reports[nodeID].Diverged
-	h.reports[nodeID] = peerReport{report: r, At: h.n.cfg.Now(), Diverged: diverged || previous}
+	h.peers = peers
 	h.mu.Unlock()
 
-	if diverged && !previous {
-		h.n.metrics.mismatches.Inc()
-		h.n.cfg.Logger.Error("a member's database differs from the leader's: remove it and join it again with an empty data directory",
-			slog.String("node", nodeID), slog.Uint64("index", r.AppliedIndex))
+	ch := make(chan raft.Observation, 64)
+	observer := raft.NewObserver(ch, false, func(o *raft.Observation) bool {
+		switch o.Data.(type) {
+		case raft.FailedHeartbeatObservation, raft.ResumedHeartbeatObservation, raft.PeerObservation:
+			return true
+		}
+
+		return false
+	})
+
+	r.RegisterObserver(observer)
+	defer r.DeregisterObserver(observer)
+
+	defer func() {
+		h.mu.Lock()
+		h.peers, h.state = map[raft.ServerID]*peerState{}, nil
+		h.mu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case o := <-ch:
+			h.observe(o)
+		}
 	}
+}
+
+func (h *health) observe(o raft.Observation) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	switch v := o.Data.(type) {
+	case raft.FailedHeartbeatObservation:
+		if p, ok := h.peers[v.PeerID]; ok {
+			if p.healthy {
+				h.n.cfg.Logger.Warn("a cluster member stopped answering heartbeats", slog.String("node", string(v.PeerID)))
+			}
+
+			p.healthy, p.lastContact = false, v.LastContact
+		}
+	case raft.ResumedHeartbeatObservation:
+		if p, ok := h.peers[v.PeerID]; ok {
+			p.healthy, p.lastContact = true, h.n.cfg.Now()
+		}
+	case raft.PeerObservation:
+		switch {
+		case v.Removed:
+			delete(h.peers, v.Peer.ID)
+		case string(v.Peer.ID) != h.n.id && h.peers[v.Peer.ID] == nil:
+			h.peers[v.Peer.ID] = &peerState{lastContact: h.n.cfg.Now(), healthy: true}
+		}
+	}
+}
+
+func (h *health) contact(id raft.ServerID) (time.Duration, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	p, ok := h.peers[id]
+
+	switch {
+	case !ok:
+		return 0, false
+	case p.healthy:
+		return 0, true
+	}
+
+	return h.n.cfg.Now().Sub(p.lastContact), true
+}
+
+func (h *health) lastSeen(id raft.ServerID) (time.Time, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	p, ok := h.peers[id]
+
+	switch {
+	case !ok:
+		return time.Time{}, false
+	case p.healthy:
+		return h.n.cfg.Now(), true
+	}
+
+	return p.lastContact, true
 }
 
 func (h *health) voters() (bool, []string) {
@@ -115,52 +170,14 @@ func (h *health) voters() (bool, []string) {
 	return true, unhealthy
 }
 
-func (h *health) reply(nodeID string, commitIndex uint64) reportReply {
-	r, _ := h.get(nodeID)
-	out := reportReply{CommitIndex: commitIndex, Diverged: r.Diverged}
-
-	if known, unhealthy := h.voters(); known {
-		healthy := len(unhealthy) == 0
-		out.Voters, out.Unhealthy = &healthy, unhealthy
-	}
-
-	return out
-}
-
-func (h *health) setView(r reportReply) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	h.view = leaderView{reportReply: r, At: h.n.cfg.Now()}
-}
-
-func (h *health) leaderView() leaderView {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return h.view
-}
-
-func (h *health) get(nodeID string) (peerReport, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	r, ok := h.reports[nodeID]
-
-	return r, ok
-}
-
 type ServerHealth struct {
-	NodeID       string    `json:"node_id"`
-	Address      string    `json:"address"`
-	Suffrage     string    `json:"suffrage"`
-	Leader       bool      `json:"leader"`
-	Healthy      bool      `json:"healthy"`
-	StableSince  time.Time `json:"stable_since,omitzero"`
-	LastContact  string    `json:"last_contact,omitempty"`
-	AppliedIndex uint64    `json:"applied_index"`
-	Version      string    `json:"version,omitempty"`
-	Diverged     bool      `json:"diverged,omitempty"`
+	NodeID      string    `json:"node_id"`
+	Address     string    `json:"address"`
+	Suffrage    string    `json:"suffrage"`
+	Leader      bool      `json:"leader"`
+	Healthy     bool      `json:"healthy"`
+	StableSince time.Time `json:"stable_since,omitzero"`
+	LastContact string    `json:"last_contact,omitempty"`
 }
 
 type Health struct {
@@ -184,15 +201,10 @@ func (h *health) snapshot() Health {
 		sh := ServerHealth{
 			NodeID: string(id), Address: string(s.Server.Address), Suffrage: suffrageName(s.State),
 			Leader: s.State == autopilot.RaftLeader, Healthy: s.Health.Healthy, StableSince: s.Health.StableSince,
-			AppliedIndex: s.Stats.LastIndex,
 		}
 
 		if s.State != autopilot.RaftLeader {
 			sh.LastContact = s.Stats.LastContact.String()
-		}
-
-		if r, ok := h.get(string(id)); ok {
-			sh.Version, sh.AppliedIndex, sh.Diverged = r.Version, r.AppliedIndex, r.Diverged
 		}
 
 		out.Servers = append(out.Servers, sh)
@@ -246,26 +258,23 @@ func (p *pilot) NotifyState(s *autopilot.State) {
 }
 
 func (p *pilot) FetchServerStats(_ context.Context, servers map[raft.ServerID]*autopilot.Server) map[raft.ServerID]*autopilot.ServerStats {
+	stats := p.r.Stats()
+	term, index := parseUint(stats["last_log_term"]), parseUint(stats["last_log_index"])
+
 	out := make(map[raft.ServerID]*autopilot.ServerStats, len(servers))
-	now := p.n.cfg.Now()
 
 	for id := range servers {
 		if string(id) == p.n.id {
-			stats := p.r.Stats()
-			out[id] = &autopilot.ServerStats{
-				LastTerm:  parseUint(stats["last_log_term"]),
-				LastIndex: parseUint(stats["last_log_index"]),
-			}
-
+			out[id] = &autopilot.ServerStats{LastTerm: term, LastIndex: index}
 			continue
 		}
 
-		r, ok := p.n.health.get(string(id))
-		if !ok {
+		lastContact, known := p.n.health.contact(id)
+		if !known {
 			continue
 		}
 
-		out[id] = &autopilot.ServerStats{LastContact: now.Sub(r.At), LastTerm: r.LastTerm, LastIndex: r.LastIndex}
+		out[id] = &autopilot.ServerStats{LastContact: lastContact, LastTerm: term, LastIndex: index}
 	}
 
 	return out
@@ -300,6 +309,7 @@ type cappedPromoter struct {
 	autopilot.StablePromoter
 
 	draining func(raft.ServerID) bool
+	caughtUp func(raft.ServerID) bool
 }
 
 func (p cappedPromoter) isDraining(id raft.ServerID) bool {
@@ -336,7 +346,7 @@ func (p cappedPromoter) CalculatePromotionsAndDemotions(c *autopilot.Config, s *
 		case srv.State == autopilot.RaftNonVoter && !draining:
 			nonvoters++
 
-			if srv.Health.IsStable(now, stable) {
+			if srv.Health.IsStable(now, stable) && (p.caughtUp == nil || p.caughtUp(id)) {
 				standbys = append(standbys, id)
 			}
 		}
@@ -382,15 +392,27 @@ func (n *Node) runAutopilot(ctx context.Context, _ uint64) {
 
 	r, _ := n.current()
 
+	var tracking sync.WaitGroup
+
+	tracking.Go(func() { n.health.track(ctx, r) })
+
 	ap := autopilot.New(r, &pilot{n: n, r: r}, autopilot.WithLogger(hclog.NewNullLogger()),
-		autopilot.WithPromoter(&cappedPromoter{draining: n.isDraining}), autopilot.WithReconcileInterval(time.Second),
-		autopilot.WithUpdateInterval(time.Second))
+		autopilot.WithPromoter(&cappedPromoter{draining: n.isDraining, caughtUp: n.caughtUp}),
+		autopilot.WithReconcileInterval(time.Second), autopilot.WithUpdateInterval(time.Second))
 
 	ap.Start(ctx)
 
 	<-ctx.Done()
 
 	<-ap.Stop()
+
+	tracking.Wait()
+}
+
+func (n *Node) caughtUp(id raft.ServerID) bool {
+	m, err := n.db.Member(context.Background(), string(id))
+
+	return err == nil && m.CaughtUp
 }
 
 func (n *Node) isDraining(id raft.ServerID) bool {
@@ -410,19 +432,24 @@ func (n *Node) onEvents(ev db.Events) {
 		}
 	}
 
+	if ev.Diverged {
+		n.metrics.mismatches.Inc()
+		n.cfg.Logger.Error("this node's database differs from the leader's: remove the node, delete its data " +
+			"directory and join it again")
+	}
+
 	if slices.Contains(ev.Removed, n.id) {
 		n.markRemoved()
 	}
 }
 
 func (n *Node) maintain() {
-	report := time.NewTicker(reportInterval)
-	defer report.Stop()
-
-	maintain := time.NewTicker(maintainInterval)
+	maintain := time.NewTicker(selfInterval)
 	defer maintain.Stop()
 
-	var lastCleanup time.Time
+	var lastCleanup, lastReconcile, lastProbe time.Time
+
+	lastLeader := n.cfg.Now()
 
 	for {
 		select {
@@ -438,87 +465,107 @@ func (n *Node) maintain() {
 			<-n.done
 
 			return
-		case <-report.C:
-			if leading, _ := n.Leader(); !leading && n.peers != nil {
-				n.sendReport()
-			}
 		case <-maintain.C:
-			leading, _ := n.Leader()
-			if !leading {
-				continue
+		}
+
+		now := n.cfg.Now()
+
+		if n.formation.current() != FormationMember || n.hasLeader() {
+			lastLeader = now
+		} else if now.Sub(lastLeader) >= cmp.Or(n.cfg.removalAfter, removalAfter) && now.Sub(lastProbe) >= removalProbe {
+			lastProbe = now
+
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			n.probeRemoval(ctx)
+			cancel()
+		}
+
+		leading, _ := n.Leader()
+		if !leading {
+			n.updateSelf()
+			continue
+		}
+
+		if now.Sub(lastReconcile) < maintainInterval {
+			continue
+		}
+
+		lastReconcile = now
+
+		n.reconcileAddresses()
+
+		if now.Sub(lastCleanup) >= tokenCleanup {
+			lastCleanup = now
+
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+			if err := n.db.DeleteExpiredJoinTokens(ctx, now); err != nil {
+				n.cfg.Logger.Warn("failed to delete expired join tokens", slog.Any("error", err))
 			}
 
-			n.registerMembers()
-
-			if now := n.cfg.Now(); now.Sub(lastCleanup) >= tokenCleanup {
-				lastCleanup = now
-
-				ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-				if err := n.db.DeleteExpiredJoinTokens(ctx, now); err != nil {
-					n.cfg.Logger.Warn("failed to delete expired join tokens", slog.Any("error", err))
-				}
-
-				cancel()
-			}
+			cancel()
 		}
 	}
 }
 
-func (n *Node) sendReport() {
+func (n *Node) updateSelf() {
 	r, _ := n.current()
-	stats := r.Stats()
-
-	ctx, cancel := context.WithTimeout(context.Background(), reportInterval)
-	defer cancel()
-
-	rep := report{
-		Address: n.cfg.Advertise, AppliedIndex: n.db.AppliedIndex(), LastTerm: parseUint(stats["last_log_term"]),
-		LastIndex: parseUint(stats["last_log_index"]), Schema: db.SchemaVersion(), Version: n.cfg.Version,
-		Label: n.label, Generated: n.generated,
-	}
-
-	if h, ok := n.db.HashAt(rep.AppliedIndex); ok {
-		rep.Hash = h
+	if r == nil || n.peers == nil {
+		return
 	}
 
 	if _, id := r.LeaderWithID(); id == "" {
-		n.reportToServers(ctx, r, rep)
 		return
 	}
 
-	var reply reportReply
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
 
-	if err := n.peers.call(ctx, "/cluster/v1/report", rep, &reply); err != nil {
-		n.cfg.Logger.DebugContext(ctx, "failed to report to the leader", slog.Any("error", err))
+	have, err := n.db.Member(ctx, n.id)
+	if err != nil {
 		return
 	}
 
-	n.health.setView(reply)
+	want := n.certs.member(n.cfg.Advertise, n.cfg.Version, n.label, n.generated)
+	want.APIAddress = n.cfg.APIAddress
+	commit := max(r.CommitIndex(), n.leaderCommit.Load())
+	want.CaughtUp = have.CaughtUp || (commit > 0 && n.db.AppliedIndex() >= commit)
+
+	if sameMember(have, want) {
+		return
+	}
+
+	if err := n.db.RegisterMember(ctx, want); err != nil {
+		n.cfg.Logger.Warn("failed to update this node's member record", slog.Any("error", err))
+	}
 }
 
-func (n *Node) reportToServers(ctx context.Context, r *raft.Raft, rep report) {
+func (n *Node) reconcileAddresses() {
+	r, _ := n.current()
+
 	future := r.GetConfiguration()
 	if future.Error() != nil {
 		return
 	}
 
-	var wg sync.WaitGroup
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+
+	members, err := n.db.Members(ctx)
+	if err != nil {
+		return
+	}
 
 	for _, s := range future.Configuration().Servers {
-		if string(s.ID) == n.id {
+		i := slices.IndexFunc(members, func(m db.Member) bool { return m.NodeID == string(s.ID) })
+		if i < 0 || members[i].Address == "" || members[i].Address == string(s.Address) {
 			continue
 		}
 
-		wg.Go(func() {
-			var reply reportReply
-
-			if err := n.peers.callAt(ctx, string(s.Address), string(s.ID), "/cluster/v1/report", rep, &reply); err == nil {
-				n.health.setView(reply)
-			}
-		})
+		if err := n.addServer(s.ID, raft.ServerAddress(members[i].Address)); err != nil {
+			n.cfg.Logger.Warn("failed to update a member's address", slog.String("node", string(s.ID)),
+				slog.Any("error", err))
+		}
 	}
-
-	wg.Wait()
 }
 
 func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
@@ -549,6 +596,7 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 	}
 
 	want := n.certs.member(address, n.cfg.Version, n.label, n.generated)
+	want.APIAddress, want.CaughtUp = n.cfg.APIAddress, true
 
 	have, err := n.db.Member(ctx, n.id)
 	if err == nil && sameMember(have, want) {
@@ -564,80 +612,18 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 
 func sameMember(a, b db.Member) bool {
 	return a.Address == b.Address && a.Fingerprint == b.Fingerprint && a.SchemaVersion == b.SchemaVersion &&
-		a.Version == b.Version && a.DiameterLabel == b.DiameterLabel && a.LabelGenerated == b.LabelGenerated
-}
-
-func (n *Node) registerMembers() {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
-	defer cancel()
-
-	members, err := n.db.Members(ctx)
-	if err != nil {
-		return
-	}
-
-	for _, m := range members {
-		if m.NodeID == n.id {
-			continue
-		}
-
-		r, ok := n.health.get(m.NodeID)
-		if !ok || r.Address == "" {
-			continue
-		}
-
-		want := m
-		want.Address, want.SchemaVersion, want.Version = r.Address, r.Schema, r.Version
-
-		if r.Label != "" {
-			want.DiameterLabel, want.LabelGenerated = r.Label, r.Generated
-		}
-
-		if sameMember(m, want) {
-			continue
-		}
-
-		if err := n.db.RegisterMember(ctx, want); err != nil {
-			n.cfg.Logger.Warn("failed to update a member", slog.String("node", m.NodeID), slog.Any("error", err))
-			continue
-		}
-
-		if want.Address != m.Address {
-			if err := n.addServer(raft.ServerID(m.NodeID), raft.ServerAddress(want.Address)); err != nil {
-				n.cfg.Logger.Warn("failed to update a member's address", slog.String("node", m.NodeID),
-					slog.Any("error", err))
-			}
-		}
-	}
+		a.Version == b.Version && a.DiameterLabel == b.DiameterLabel && a.LabelGenerated == b.LabelGenerated &&
+		a.APIAddress == b.APIAddress && a.CaughtUp == b.CaughtUp
 }
 
 var ErrNotDrained = errors.New("drain the member before removing it, or force the removal")
 
 func (n *Node) RemoveMember(ctx context.Context, nodeID string, force bool) error {
-	ctx, cancel := context.WithTimeout(ctx, n.forwardBudget())
-	defer cancel()
-
-	for attempt := 0; ; attempt++ {
-		var err error
-
-		if leading, _ := n.Leader(); leading {
-			err = n.removeAsLeader(ctx, nodeID, force)
-		} else if n.peers != nil {
-			err = n.peers.call(ctx, "/cluster/v1/remove", removeRequest{NodeID: nodeID, Force: force}, nil)
-		} else {
-			err = fmt.Errorf("%w: no leader", errRetry)
-		}
-
-		if !errors.Is(err, errRetry) {
-			return err
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w: %w", ErrNoLeader, err)
-		case <-time.After(backoff(attempt)):
-		}
+	if leading, _ := n.Leader(); !leading {
+		return n.notLeader(ctx)
 	}
+
+	return n.removeAsLeader(ctx, nodeID, force)
 }
 
 func (n *Node) removeAsLeader(ctx context.Context, nodeID string, force bool) error {
@@ -662,7 +648,7 @@ func (n *Node) removeAsLeader(ctx context.Context, nodeID string, force bool) er
 			return fmt.Errorf("hand over the leadership before leaving: %w", err)
 		}
 
-		return fmt.Errorf("%w: leadership handed over", errRetry)
+		return n.awaitOtherLeader(ctx, r)
 	}
 
 	future := r.GetConfiguration()
@@ -705,10 +691,6 @@ func (n *Node) removeAsLeader(ctx context.Context, nodeID string, force bool) er
 		}
 	}
 
-	n.health.mu.Lock()
-	delete(n.health.reports, nodeID)
-	n.health.mu.Unlock()
-
 	n.cfg.Logger.InfoContext(ctx, "node removed from the cluster", slog.String("node", nodeID))
 
 	return nil
@@ -733,7 +715,7 @@ func (n *Node) keepsQuorum(servers []raft.Server, removed string) error {
 			continue
 		}
 
-		if r, ok := n.health.get(string(s.ID)); ok && now.Sub(r.At) < limit {
+		if seen, ok := n.health.lastSeen(s.ID); ok && now.Sub(seen) < limit {
 			healthy++
 		}
 	}

@@ -40,7 +40,7 @@ func waitRemoved(t testing.TB, e *env) {
 }
 
 func TestRemovedWhileDownIsFencedOnRestart(t *testing.T) {
-	labels := []string{"smsc-a", "smsc-b", "smsc-c"}
+	labels := []string{"ims-a", "ims-b", "ims-c"}
 	c := newClusterWith(t, 3, func(i int, dir, address string) *env {
 		return mustOpenLabeled(t, dir, address, labels[i])
 	})
@@ -95,7 +95,7 @@ func TestRemovedWhileDownIsFencedOnRestart(t *testing.T) {
 	_ = restarted.db.Close()
 	c.nodes[i] = nil
 
-	d, err := db.Open(context.Background(), filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(context.Background(), filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

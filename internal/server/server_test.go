@@ -194,7 +194,7 @@ func TestServerStartShutdown(t *testing.T) {
 
 	srv.draining.Store(true)
 
-	if checks := srv.readiness.checks(ctx); checks[0].Name != CheckShutdown || checks[0].OK {
+	if checks := srv.readiness.checks(ctx, false); checks[0].Name != CheckShutdown || checks[0].OK {
 		t.Fatalf("checks while shutting down = %+v", checks)
 	}
 }

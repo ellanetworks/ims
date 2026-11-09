@@ -52,7 +52,7 @@ func TestAPITokenBacksUp(t *testing.T) {
 	}
 
 	cfg := testConfig(t, a.store)
-	cfg.JWTSecret = secret
+	cfg.JWTSecret = func() []byte { return secret }
 	cfg.Logger = slog.New(slog.NewJSONHandler(&a.logs, nil))
 	cfg.Backups = node
 	a.handler = api.NewHandler(cfg)
@@ -86,6 +86,8 @@ func TestAPITokenBacksUp(t *testing.T) {
 type failingBackups struct{}
 
 func (failingBackups) Backup(context.Context, io.Writer) error { return errors.New("disk full") }
+
+func (failingBackups) Restore(context.Context, io.Reader) error { return errors.New("disk full") }
 
 func TestBackupUnavailable(t *testing.T) {
 	a := newTestAPI(t)

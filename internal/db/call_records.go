@@ -57,6 +57,7 @@ type CallRecord struct {
 	InTrunkName     string
 	OutTrunk        string
 	OutTrunkName    string
+	NodeID          string
 }
 
 type CallRecordFilter struct {
@@ -68,7 +69,7 @@ type CallRecordFilter struct {
 const (
 	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
 		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete, in_trunk_id,
-		in_trunk_name, out_trunk_id, out_trunk_name`
+		in_trunk_name, out_trunk_id, out_trunk_name, node_id`
 
 	callRecordBatch = 1000
 )
@@ -91,6 +92,13 @@ func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted
 	for i, r := range records {
 		p.Records[i] = *r
 	}
+
+	body, err := json.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("save call records: %w", err)
+	}
+
+	ctx = WithRequestID(ctx, RequestIDOf(body))
 
 	saved, err := run[[]savedCallRecord](ctx, d, cmdSaveCallRecords, "save call records", p)
 	if err != nil {
@@ -194,11 +202,11 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 
 	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
 		requested_at, calling_party, called_party, callee_impi, delivery_start_at, delivery_end_at, sip_status, outcome,
-		ended_by, alerted, media, incomplete, in_trunk_id, in_trunk_name, out_trunk_id, out_trunk_name) VALUES (`+placeholders(20)+`) RETURNING id`,
+		ended_by, alerted, media, incomplete, in_trunk_id, in_trunk_name, out_trunk_id, out_trunk_name, node_id) VALUES (`+placeholders(21)+`) RETURNING id`,
 		append([]any{
 			r.ICID, r.SessionID, nullableString(r.CallerIMPI), r.RequestedParty,
 			r.RequestedAt.UTC().UnixNano(),
-		}, mutable...)...).Scan(&r.ID)
+		}, append(mutable, r.NodeID)...)...).Scan(&r.ID)
 	if isConstraint(err, sqlite3.ErrConstraintUnique) {
 		return ErrDuplicateICID
 	}
@@ -349,20 +357,31 @@ func applyPruneCallRecords(a *applyCtx, p pruneCallRecords) (int64, error) {
 	return deleted, nil
 }
 
-func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
-
-	return run[int64](ctx, d, cmdCloseOpenCallRecords, "close open call records", nonNilList(live))
+type closeOpenCallRecords struct {
+	NodeID string
+	Live   []string
 }
 
-func applyCloseOpenCallRecords(a *applyCtx, live []string) (int64, error) {
+func (d *DB) CloseOpenCallRecords(ctx context.Context, nodeID string, live []string) (_ int64, err error) {
+	defer d.observe(poolWrite, &err)()
+
+	return run[int64](ctx, d, cmdCloseOpenCallRecords, "close open call records", closeOpenCallRecords{
+		NodeID: nodeID, Live: nonNilList(live),
+	})
+}
+
+func applyCloseOpenCallRecords(a *applyCtx, p closeOpenCallRecords) (int64, error) {
+	return closeCallRecordsOf(a, p.NodeID, p.Live)
+}
+
+func closeCallRecordsOf(a *applyCtx, nodeID string, live []string) (int64, error) {
 	icids, err := json.Marshal(nonNilList(live))
 	if err != nil {
 		return 0, err
 	}
 
-	res, err := a.tx.ExecContext(a.ctx, `UPDATE call_records SET incomplete = 1 WHERE ended_by IS NULL AND
-		incomplete = 0 AND icid NOT IN (SELECT value FROM json_each(?))`, string(icids))
+	res, err := a.tx.ExecContext(a.ctx, `UPDATE call_records SET incomplete = 1 WHERE node_id = ? AND ended_by IS NULL AND
+		incomplete = 0 AND icid NOT IN (SELECT value FROM json_each(?))`, nodeID, string(icids))
 	if err != nil {
 		return 0, err
 	}
@@ -446,7 +465,7 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 
 	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &calling, &callerIMPI, &r.RequestedParty, &calledParty,
 		&calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome, &endedBy, &r.Alerted, &media,
-		&r.Incomplete, &inTrunk, &inTrunkName, &outTrunk, &outTrunkName); err != nil {
+		&r.Incomplete, &inTrunk, &inTrunkName, &outTrunk, &outTrunkName, &r.NodeID); err != nil {
 		return CallRecord{}, err
 	}
 

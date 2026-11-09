@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/cluster"
 )
 
 func TestLivez(t *testing.T) {
 	cfg := testConfig(t, openStore(t))
-	cfg.Ready = func(context.Context) []api.Check {
-		return []api.Check{{Name: "database", Detail: "database is locked"}}
+	cfg.Ready = func(context.Context, bool) []cluster.Check {
+		return []cluster.Check{{Name: "database", Detail: "database is locked"}}
 	}
 
 	if rec := serve(api.NewHandler(cfg), request(http.MethodGet, "/api/v1/livez", "", "")); rec.Code != http.StatusNoContent {
@@ -41,20 +42,20 @@ func readyz(t *testing.T, h http.Handler) (int, api.Readiness) {
 }
 
 func TestReadyz(t *testing.T) {
-	var checks []api.Check
+	var checks []cluster.Check
 
 	cfg := testConfig(t, openStore(t))
-	cfg.Ready = func(context.Context) []api.Check { return checks }
+	cfg.Ready = func(context.Context, bool) []cluster.Check { return checks }
 	h := api.NewHandler(cfg)
 
-	checks = []api.Check{{Name: "shutdown", OK: true}, {Name: "database", OK: true}}
+	checks = []cluster.Check{{Name: "shutdown", OK: true}, {Name: "database", OK: true}}
 
 	code, res := readyz(t, h)
 	if code != http.StatusOK || !res.Ready || len(res.Checks) != 2 {
 		t.Fatalf("ready: code = %d, result = %+v", code, res)
 	}
 
-	checks = []api.Check{{Name: "shutdown", OK: true}, {Name: "database", Detail: "database is locked"}}
+	checks = []cluster.Check{{Name: "shutdown", OK: true}, {Name: "database", Detail: "database is locked"}}
 
 	code, res = readyz(t, h)
 	if code != http.StatusServiceUnavailable || res.Ready {

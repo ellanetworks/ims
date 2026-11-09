@@ -71,7 +71,7 @@ func TestEveryCallIsObserved(t *testing.T) {
 		"Close": true, "Collectors": true, "Ping": true, "Apply": true, "ApplyEntries": true, "AppliedIndex": true,
 		"WaitApplied": true, "OnEvents": true, "SetProposer": true, "RecordConfiguration": true, "MakeDurable": true,
 		"ResetPosition": true, "JWTSecret": true, "OIDCCookieKey": true, "HashAt": true, "LeaderTime": true,
-		"Schema": true, "RegisterMember": true, "Secrets": true,
+		"Schema": true, "RegisterMember": true, "Secrets": true, "Diverged": true, "Check": true,
 	}
 
 	files, err := filepath.Glob("*.go")

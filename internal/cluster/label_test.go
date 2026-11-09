@@ -18,12 +18,12 @@ func openLabeled(t testing.TB, dir, address, label string) (*env, error) {
 
 	ctx := context.Background()
 
-	d, err := db.Open(ctx, filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(ctx, filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	n, err := Open(ctx, Config{Dir: filepath.Join(dir, "raft"), Address: address, Version: "test", DiameterLabel: label}, d)
+	n, err := Open(ctx, Config{Dir: filepath.Join(dir, "raft"), Address: address, Version: "test", DiameterLabel: label, removalAfter: time.Second}, d)
 	if err != nil {
 		_ = d.Close()
 		return nil, err
@@ -76,7 +76,7 @@ func TestGeneratedLabel(t *testing.T) {
 }
 
 func TestReplacementTakesOverALabel(t *testing.T) {
-	labels := []string{"smsc-a", "smsc-b", "smsc-c"}
+	labels := []string{"ims-a", "ims-b", "ims-c"}
 	c := newClusterWith(t, 3, func(i int, dir, address string) *env {
 		return mustOpenLabeled(t, dir, address, labels[i])
 	})
@@ -140,7 +140,7 @@ func TestReplacementTakesOverALabel(t *testing.T) {
 
 func TestRestartWithAnotherLabel(t *testing.T) {
 	c := newClusterWith(t, 3, func(i int, dir, address string) *env {
-		return mustOpenLabeled(t, dir, address, fmt.Sprintf("smsc-%d", i))
+		return mustOpenLabeled(t, dir, address, fmt.Sprintf("ims-%d", i))
 	})
 
 	idx := 0
@@ -160,9 +160,9 @@ func TestRestartWithAnotherLabel(t *testing.T) {
 
 	c.nodes[idx] = nil
 
-	taken := "smsc-0"
+	taken := "ims-0"
 	if idx == 0 {
-		taken = "smsc-1"
+		taken = "ims-1"
 	}
 
 	conflicting := mustOpenLabeled(t, follower.dir, c.addrs[idx], taken)
@@ -177,7 +177,7 @@ func TestRestartWithAnotherLabel(t *testing.T) {
 	})
 
 	waitFailing(t, conflicting, CheckLabel, taken)
-	waitLabel(t, c.leader(), id, fmt.Sprintf("smsc-%d", idx), false)
+	waitLabel(t, c.leader(), id, fmt.Sprintf("ims-%d", idx), false)
 
 	if err := errors.Join(conflicting.node.Close(), conflicting.db.Close()); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestRestartWithAnotherLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c.nodes[idx] = mustOpenLabeled(t, follower.dir, c.addrs[idx], "smsc-new")
+	c.nodes[idx] = mustOpenLabeled(t, follower.dir, c.addrs[idx], "ims-new")
 
-	waitLabel(t, c.leader(), id, "smsc-new", false)
+	waitLabel(t, c.leader(), id, "ims-new", false)
 }

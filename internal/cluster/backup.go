@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,28 +41,8 @@ type Manifest struct {
 	CreatedAt    time.Time        `json:"created_at"`
 }
 
-const maxRestoreBytes = 64 << 30
-
 func (n *Node) Backup(ctx context.Context, w io.Writer) error {
 	return n.backupLocal(ctx, w)
-}
-
-func (n *Node) toLeader(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	deadline, cancel := context.WithTimeout(ctx, n.forwardBudget())
-	defer cancel()
-
-	for attempt := 0; ; attempt++ {
-		addr, id, err := n.peers.leader()
-		if err == nil && id != n.id {
-			return n.peers.stream(ctx, addr, id, method, path, body)
-		}
-
-		select {
-		case <-deadline.Done():
-			return nil, ErrNoLeader
-		case <-time.After(backoff(attempt)):
-		}
-	}
 }
 
 func (n *Node) backupLocal(ctx context.Context, w io.Writer) error {
@@ -160,22 +139,11 @@ func fileDigest(path string) (string, int64, error) {
 }
 
 func (n *Node) Restore(ctx context.Context, r io.Reader) error {
-	if leading, _ := n.Leader(); leading {
-		return n.restoreLocal(ctx, r)
+	if leading, _ := n.Leader(); !leading {
+		return n.notLeader(ctx)
 	}
 
-	if n.peers == nil {
-		return ErrNotLeader
-	}
-
-	resp, err := n.toLeader(ctx, http.MethodPost, "/cluster/v1/restore", r)
-	if err != nil {
-		return err
-	}
-
-	defer func() { _ = resp.Body.Close() }()
-
-	return decodeReply(resp, nil)
+	return n.restoreLocal(ctx, r)
 }
 
 func (n *Node) restoreLocal(ctx context.Context, r io.Reader) error {

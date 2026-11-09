@@ -34,6 +34,8 @@ var defaultIPsecClients = []int{5064, 5065}
 const maxASTimeout = 32 * time.Second
 
 type Config struct {
+	warnings []string
+
 	Logging   Logging   `yaml:"logging"`
 	DB        DB        `yaml:"db"`
 	API       API       `yaml:"api"`
@@ -45,6 +47,7 @@ type Config struct {
 	N5        *N5       `yaml:"n5"`
 	MCPTT     *MCPTT    `yaml:"mcptt"`
 	IBCF      *IBCF     `yaml:"ibcf"`
+	Cluster   *Cluster  `yaml:"cluster"`
 	Telemetry Telemetry `yaml:"telemetry"`
 }
 
@@ -172,6 +175,12 @@ func Load(path string) (Config, error) {
 		cfg.Diameter.HostLabel = v
 	}
 
+	cfg.applyClusterEnv()
+
+	if cfg.Cluster != nil && cfg.Cluster.Port == 0 {
+		cfg.Cluster.Port = defaultClusterPort
+	}
+
 	if cfg.API.Port == 0 {
 		cfg.API.Port = defaultAPIPort
 	}
@@ -271,6 +280,12 @@ func (c Config) validate() error {
 
 	if c.IBCF != nil {
 		if err := c.validateIBCF(*c.IBCF); err != nil {
+			return err
+		}
+	}
+
+	if c.Cluster != nil {
+		if err := c.Cluster.validate(); err != nil {
 			return err
 		}
 	}

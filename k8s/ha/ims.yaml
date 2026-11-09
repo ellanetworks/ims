@@ -1,0 +1,17 @@
+logging:
+  level: info
+db:
+  path: /data/ims.db
+api:
+  address: 0.0.0.0
+  port: 5020
+sip:
+  name: eth1
+diameter:
+  name: eth0
+cluster:
+  address: 0.0.0.0
+  port: 7000
+  join: [ella-ims-internal:7000]
+  bootstrap_expect: 3
+  secret_file: /secrets/cluster/secret

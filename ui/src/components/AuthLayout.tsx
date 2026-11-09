@@ -17,6 +17,7 @@ export default function AuthLayout({
   submitting,
   valid,
   onSubmit,
+  footer,
   children,
 }: {
   title: string;
@@ -26,6 +27,7 @@ export default function AuthLayout({
   submitting: boolean;
   valid: boolean;
   onSubmit: () => void;
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   useEffect(() => {
@@ -77,6 +79,7 @@ export default function AuthLayout({
         >
           {submitting ? <CircularProgress size={24} /> : submitLabel}
         </Button>
+        {footer}
       </Box>
     </AuthFrame>
   );

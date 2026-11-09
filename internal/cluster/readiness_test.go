@@ -118,12 +118,12 @@ func openWith(t testing.TB, dir, address string, edit func(*Config)) *env {
 
 	ctx := context.Background()
 
-	d, err := db.Open(ctx, filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(ctx, filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cfg := Config{Dir: filepath.Join(dir, "raft"), Address: address, Version: "test"}
+	cfg := Config{Dir: filepath.Join(dir, "raft"), Address: address, Version: "test", removalAfter: time.Second}
 	edit(&cfg)
 
 	n, err := Open(ctx, cfg, d)
@@ -298,31 +298,16 @@ func TestReadinessOfASingleNode(t *testing.T) {
 }
 
 func TestReadinessOfAFollower(t *testing.T) {
-	c := newCluster(t, 2)
+	c, corrupt := corruptingChecks(t, 2)
 	c.initialize()
 	leader, follower := c.leader(), c.follower()
 
 	waitReady(t, leader, true)
-	waitReady(t, follower, true)
+	waitReady(t, follower, false)
 
-	var index uint64
-
-	eventually(t, "a report with a hash from the follower", func() error {
-		r, ok := leader.node.health.get(follower.node.ID())
-		if !ok || r.Hash == nil {
-			return errors.New("no report with a hash yet")
-		}
-
-		if _, ok := leader.db.HashAt(r.AppliedIndex); !ok {
-			return errors.New("no leader hash at the reported index")
-		}
-
-		index = r.AppliedIndex
-
-		return nil
-	})
-
-	leader.node.health.record(follower.node.ID(), report{AppliedIndex: index, Hash: []byte("not the leader's hash")})
+	corrupt.Store(true)
+	write(t, leader, "first")
+	write(t, leader, "second")
 
 	waitFailing(t, follower, CheckConsistent, "differs")
 
@@ -441,8 +426,13 @@ func TestClusterCheckWithAVoterDown(t *testing.T) {
 
 	leader, follower := c.leader(), c.follower()
 
+	waitReady(t, leader, true)
+
 	for _, e := range c.nodes {
-		waitReady(t, e, true)
+		if e != leader {
+			waitReady(t, e, false)
+			waitFailing(t, e, CheckCluster, "only the leader")
+		}
 	}
 
 	_ = follower.node.Close()
@@ -458,7 +448,6 @@ func TestClusterCheckWithAVoterDown(t *testing.T) {
 
 	for _, e := range c.nodes {
 		if e != nil && e != leader {
-			waitFailing(t, e, CheckCluster, follower.node.ID())
 			waitReady(t, e, false)
 		}
 	}

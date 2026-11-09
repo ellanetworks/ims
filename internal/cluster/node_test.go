@@ -24,7 +24,7 @@ func open(t testing.TB, dir string) *env {
 
 	ctx := context.Background()
 
-	d, err := db.Open(ctx, filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(ctx, filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestRaftOverAnExistingDatabase(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	d, err := db.Open(ctx, filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(ctx, filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,12 +171,12 @@ func TestRefusesADatabaseBehindTheLog(t *testing.T) {
 	e.close(t)
 
 	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.Remove(filepath.Join(dir, "smsc.db"+suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(filepath.Join(dir, "ims.db"+suffix)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
 	}
 
-	d, err := db.Open(context.Background(), filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(context.Background(), filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestSnapshotInstallsOnAnotherDatabase(t *testing.T) {
 
 	otherDir := t.TempDir()
 
-	other, err := db.Open(ctx, filepath.Join(otherDir, "smsc.db"))
+	other, err := db.Open(ctx, filepath.Join(otherDir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

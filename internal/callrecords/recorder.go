@@ -27,7 +27,7 @@ const (
 
 type Store interface {
 	SaveCallRecords(ctx context.Context, records []*db.CallRecord, deleted []int64) ([]error, error)
-	CloseOpenCallRecords(ctx context.Context, live []string) (int64, error)
+	CloseOpenCallRecords(ctx context.Context, nodeID string, live []string) (int64, error)
 }
 
 type Clock interface {
@@ -40,6 +40,7 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 type Config struct {
 	Store      Store
+	NodeID     string
 	MaxUnsaved int
 	Clock      Clock
 	Logger     *slog.Logger
@@ -76,6 +77,7 @@ type End struct {
 
 type Recorder struct {
 	store      Store
+	nodeID     string
 	clock      Clock
 	log        *slog.Logger
 	maxUnsaved int
@@ -122,7 +124,7 @@ func New(cfg Config) *Recorder {
 
 	r := &Recorder{
 		ctx: ctx, cancel: cancel,
-		store: cfg.Store, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
+		store: cfg.Store, nodeID: cfg.NodeID, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		calls: map[string]*call{}, sessions: map[string]*call{}, metrics: newMetrics(),
 	}
@@ -193,6 +195,7 @@ func (r *Recorder) Attempt(a Attempt) {
 	c := &call{rec: db.CallRecord{
 		ICID: a.ICID, SessionID: a.CallID, CallingParty: slices.Clone(a.Asserted), CallerIMPI: a.IMPI,
 		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(), InTrunk: a.InTrunk, InTrunkName: trunkName(a.InTrunk, a.InName),
+		NodeID: r.nodeID,
 	}}
 	r.calls[a.ICID] = c
 	r.metrics.active.Inc()
@@ -506,7 +509,7 @@ func (r *Recorder) closeOrphans() error {
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.ctx, writeTimeout)
-	n, err := r.store.CloseOpenCallRecords(ctx, live)
+	n, err := r.store.CloseOpenCallRecords(ctx, r.nodeID, live)
 
 	cancel()
 

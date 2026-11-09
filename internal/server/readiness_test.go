@@ -2,12 +2,13 @@ package server
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"testing"
 
-	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/cluster"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -49,28 +50,49 @@ func (h *countingHandler) count(msg string) int {
 func TestReadinessChecks(t *testing.T) {
 	ctx := context.Background()
 
-	var (
-		stopping bool
-		pingErr  error
-	)
+	d, err := db.Open(ctx, filepath.Join(t.TempDir(), "ims.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = d.Close() })
+
+	node, err := cluster.Open(ctx, cluster.Config{Dir: filepath.Join(t.TempDir(), "raft")}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = node.Close() })
+
+	var stopping bool
 
 	r := &readiness{
-		ping: func(context.Context) error { return pingErr }, stopping: func() bool { return stopping },
-		metrics: newReadinessMetrics(), logger: slog.New(slog.DiscardHandler),
+		node: node, stopping: func() bool { return stopping }, metrics: newReadinessMetrics(),
+		logger: slog.New(slog.DiscardHandler),
 	}
 
-	want := []api.Check{{Name: CheckShutdown, OK: true}, {Name: CheckDatabase, OK: true}}
-	if got := r.checks(ctx); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("ready: checks = %+v, want %+v", got, want)
+	check := func(name string) (cluster.Check, bool) {
+		for _, c := range r.checks(ctx, false) {
+			if c.Name == name {
+				return c, true
+			}
+		}
+
+		return cluster.Check{}, false
 	}
 
-	stopping, pingErr = true, errors.New("database is locked")
-
-	want = []api.Check{
-		{Name: CheckShutdown, Detail: "the IMS is shutting down"}, {Name: CheckDatabase, Detail: "database is locked"},
+	if c, ok := check(CheckShutdown); !ok || !c.OK {
+		t.Fatalf("shutdown check = %+v, %t; want it passing", c, ok)
 	}
-	if got := r.checks(ctx); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("not ready: checks = %+v, want %+v", got, want)
+
+	if _, ok := check(cluster.CheckDatabase); !ok {
+		t.Fatal("no database check")
+	}
+
+	stopping = true
+
+	if c, _ := check(CheckShutdown); c.OK || c.Detail != "the IMS is shutting down" {
+		t.Fatalf("shutdown check while stopping = %+v", c)
 	}
 }
 
@@ -79,9 +101,9 @@ func TestReadinessLogsTransitionsOnly(t *testing.T) {
 	logs := &countingHandler{}
 	r := &readiness{metrics: newReadinessMetrics(), logger: slog.New(logs)}
 
-	ok := []api.Check{{Name: CheckShutdown, OK: true}, {Name: CheckDatabase, OK: true}}
-	failing := func(n int) []api.Check {
-		return []api.Check{{Name: CheckShutdown, OK: true}, {Name: CheckDatabase, Detail: string(rune('a' + n))}}
+	ok := []cluster.Check{{Name: CheckShutdown, OK: true}, {Name: cluster.CheckDatabase, OK: true}}
+	failing := func(n int) []cluster.Check {
+		return []cluster.Check{{Name: CheckShutdown, OK: true}, {Name: cluster.CheckDatabase, Detail: string(rune('a' + n))}}
 	}
 
 	r.observe(ctx, ok)
@@ -91,7 +113,7 @@ func TestReadinessLogsTransitionsOnly(t *testing.T) {
 		r.observe(ctx, failing(n))
 	}
 
-	if v := testutil.ToFloat64(r.metrics.checks.WithLabelValues(CheckDatabase)); v != 0 {
+	if v := testutil.ToFloat64(r.metrics.checks.WithLabelValues(cluster.CheckDatabase)); v != 0 {
 		t.Fatalf("ellaims_ready_check{check=database} = %v", v)
 	}
 
@@ -105,7 +127,7 @@ func TestReadinessLogsTransitionsOnly(t *testing.T) {
 		t.Fatalf("logged ready %d times, want 1", got)
 	}
 
-	for _, check := range []string{CheckShutdown, CheckDatabase} {
+	for _, check := range []string{CheckShutdown, cluster.CheckDatabase} {
 		if v := testutil.ToFloat64(r.metrics.checks.WithLabelValues(check)); v != 1 {
 			t.Fatalf("ellaims_ready_check{check=%s} = %v", check, v)
 		}

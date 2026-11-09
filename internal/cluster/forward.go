@@ -263,10 +263,6 @@ func (p *peerClient) do(ctx context.Context, addr, id, method, path string, body
 	return p.send(ctx, p.client, addr, id, method, path, body)
 }
 
-func (p *peerClient) stream(ctx context.Context, addr, id, method, path string, body io.Reader) (*http.Response, error) {
-	return p.send(ctx, p.streams, addr, id, method, path, body)
-}
-
 func (p *peerClient) send(ctx context.Context, client *http.Client, addr, id, method, path string,
 	body io.Reader,
 ) (*http.Response, error) {

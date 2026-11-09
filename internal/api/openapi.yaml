@@ -29,6 +29,7 @@ tags:
   - name: Registrations
   - name: Call records
   - name: IP-SM-GW
+  - name: Cluster
   - name: Backup
   - name: MCPTT service configuration
   - name: MCPTT users
@@ -1693,8 +1694,19 @@ paths:
       security: []
       summary: Check readiness
       description: >-
-        Answers whether the IMS can serve requests, with the result of each check: `shutdown` passes when the IMS
-        is not stopping, and `database` when the database answers.
+        Answers whether this node should receive traffic, with the result of each check. The checks read state the
+        node already holds, without asking other nodes. A load balancer or a Kubernetes readiness probe calls it
+        without parameters.
+      parameters:
+        - name: cluster
+          in: query
+          required: false
+          description: >-
+            Add the cluster check: every voter is healthy in the leader's view. For scripts and rolling upgrades, not
+            for probes, since one failed voter makes every node fail it.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: Every check passes.
@@ -1707,6 +1719,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReadinessResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "503":
           description: A check fails.
           headers:
@@ -1725,6 +1739,7 @@ paths:
       operationId: getStatus
       security: []
       summary: Get the status of the IMS
+      description: The version of the IMS, whether it is initialized, and the identity of the node that answered.
       responses:
         "200":
           description: The version
@@ -1734,18 +1749,7 @@ paths:
                 type: object
                 properties:
                   result:
-                    type: object
-                    required: [version, revision, initialized]
-                    properties:
-                      version:
-                        type: string
-                        examples: [v0.0.1]
-                      revision:
-                        type: string
-                        description: Git commit of the build, empty in development builds.
-                      initialized:
-                        type: boolean
-                        description: Whether the first user exists. Until then, POST /api/v1/init creates it.
+                    $ref: "#/components/schemas/Status"
 
   /api/v1/metrics:
     get:
@@ -2279,6 +2283,243 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/restore:
+    post:
+      tags: [Backup]
+      operationId: restore
+      summary: Restore the database from a backup
+      description: >-
+        Replaces the settings, users and call records with those of an archive from GET /api/v1/backup, on every node
+        of the cluster, after checking its checksums and that its schema is not newer than this version's. IDs keep
+        increasing. The cluster keeps its members and secrets, and each node keeps its registrations. Runs on the
+        leader only: another node answers 421 with the leader's API address. Needs a login, not an API token.
+      requestBody:
+        required: true
+        content:
+          application/gzip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "421":
+          $ref: "#/components/responses/NotLeader"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/cluster:
+    get:
+      tags: [Cluster]
+      operationId: getCluster
+      summary: Get the cluster status
+      description: >-
+        The node answering, its cluster, the leader, and every member with its suffrage and Diameter label. Health
+        comes from the leader and is absent when no leader answers.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ClusterStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/cluster/tokens:
+    post:
+      tags: [Cluster]
+      operationId: createJoinToken
+      summary: Create a join token
+      description: >-
+        A single-use token that lets one new node join this cluster, with the members' addresses and certificate
+        fingerprints. Needs a login, not an API token, and a node with a cluster address.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJoinTokenParams"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    $ref: "#/components/schemas/JoinToken"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/cluster/join:
+    post:
+      tags: [Cluster]
+      operationId: joinCluster
+      summary: Join a cluster
+      description: >-
+        Called on the new node, which must have a cluster address and no user. Needs no login. The node replaces its
+        database with the cluster's and takes a Diameter host of its own.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinClusterParams"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          description: No member of the cluster answered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/cluster/members/{node_id}:
+    parameters:
+      - $ref: "#/components/parameters/NodeID"
+    put:
+      tags: [Cluster]
+      operationId: updateClusterMember
+      summary: Update a cluster member
+      description: Sets the member's display name. Needs a login, not an API token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemberParams"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [Cluster]
+      operationId: removeClusterMember
+      summary: Remove a cluster member
+      parameters:
+        - name: force
+          in: query
+          description: Remove a member that is not drained, such as one that is down for good.
+          schema:
+            type: boolean
+      description: >-
+        Removes a drained member from the cluster. The removed node closes its listeners, fails readiness, and
+        refuses to start until its data directory is deleted. Refused when the remaining voters could not commit
+        writes. Runs on the leader only: another node answers 421 with the leader's API address. Needs a login, not
+        an API token.
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "421":
+          $ref: "#/components/responses/NotLeader"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/cluster/members/{node_id}/drain:
+    parameters:
+      - $ref: "#/components/parameters/NodeID"
+    post:
+      tags: [Cluster]
+      operationId: drainClusterMember
+      summary: Drain a cluster member
+      description: >-
+        The member fails readiness and hands the leadership over if it leads. It is then drained, and can be removed
+        or stopped. Needs a login, not an API token.
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/cluster/members/{node_id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/NodeID"
+    post:
+      tags: [Cluster]
+      operationId: resumeClusterMember
+      summary: Resume a drained cluster member
+      description: The member passes readiness again. Needs a login, not an API token.
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /api/v1/oidc:
     get:
       tags: [Single sign-on]
@@ -2701,6 +2942,13 @@ components:
       schema:
         type: string
         examples: ["sip:fire@mcptt.example.com"]
+    NodeID:
+      name: node_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
 
   schemas:
     ReadinessCheck:
@@ -2709,7 +2957,16 @@ components:
       properties:
         name:
           type: string
-          enum: [shutdown, database]
+          enum: [shutdown, member, initialized, diameter_label, drain, consistent, database, leader, caught_up, cluster]
+          description: >-
+            shutdown: the node is not stopping. member: the node was not removed from the cluster and is not
+            forming one. initialized: the node has no cluster section, or its first user exists. diameter_label: the
+            cluster has committed this node's member record with the configured Diameter host label. drain: the node
+            is active, not draining or drained. consistent: the node's database matches the hashes that the
+            leader puts in the log. database: the database answers. leader: the node leads with an established term, or heard
+            from the leader within twice the election timeout. caught_up: the node knows the leader, and the database is at
+            most 1000 log entries behind the leader's commit index. cluster: with cluster=true only, the node leads
+            and every voter is healthy.
         ok:
           type: boolean
         detail:
@@ -2730,6 +2987,192 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/ReadinessCheck"
+    Status:
+      type: object
+      required: [version, revision, initialized, clustered, node_id, display_name, diameter_label, diameter_host, label_generated, formation]
+      properties:
+        version:
+          type: string
+          examples: [v0.0.1]
+        revision:
+          type: string
+          description: Git commit of the build, empty in development builds.
+        initialized:
+          type: boolean
+          description: Whether the first user exists. Until then, POST /api/v1/init creates it.
+        clustered:
+          type: boolean
+          description: >-
+            Whether the node has a cluster address. Until the first user exists, POST /api/v1/cluster/join can join it
+            to a cluster.
+        node_id:
+          type: string
+          format: uuid
+          description: The ID of the node that answered.
+        display_name:
+          type: string
+          description: The answering node's display name. Empty when unset.
+        diameter_label:
+          type: string
+          description: >-
+            The first label of the answering node's Diameter host, <label>.<derived domain>: diameter.host_label from
+            its configuration file or, when unset, ims- and the last 12 hex characters of the node ID.
+          examples: [ims-a]
+        diameter_host:
+          type: string
+          description: The answering node's Diameter host, <diameter_label>.<derived domain>.
+          examples: [ims-a.ims.mnc001.mcc001.3gppnetwork.org]
+        label_generated:
+          type: boolean
+          description: >-
+            Whether diameter_label was generated from the node ID because diameter.host_label is unset. A generated
+            host changes when the node is reinstalled.
+        formation:
+          $ref: "#/components/schemas/Formation"
+    Formation:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [forming, joining, member, removed]
+          description: >-
+            forming: the node has no cluster data and waits for the nodes behind cluster.join. joining: it joins a
+            member it found. member: it is a cluster member. removed: it was removed from the cluster and is fenced
+            until its data directory is deleted.
+        expected:
+          type: integer
+          description: cluster.bootstrap_expect. Absent when unset.
+        found:
+          type: integer
+          description: While forming, the forming nodes found, this one included.
+        detail:
+          type: string
+          description: What the node waits for, or why it does not form.
+          examples: [found 2 of 3 nodes]
+    ClusterStatus:
+      type: object
+      required: [node_id, cluster_id, clustered, term, applied_index, commit_index, schema, members]
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          description: The node that answered.
+        cluster_id:
+          type: string
+          format: uuid
+        clustered:
+          type: boolean
+          description: Whether the node has a cluster address.
+        leader_id:
+          type: string
+          format: uuid
+        term:
+          type: integer
+          format: int64
+        applied_index:
+          type: integer
+          format: int64
+        commit_index:
+          type: integer
+          format: int64
+        schema:
+          type: integer
+          description: Database schema version of the cluster.
+        healthy:
+          type: boolean
+          description: Only from the leader.
+        failure_tolerance:
+          type: integer
+          description: How many voters can fail without stopping writes. Only from the leader.
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClusterMember"
+    ClusterMember:
+      type: object
+      required: [node_id, address, diameter_label, diameter_host, label_generated, display_name, version, joined_at, drain_state, suffrage, leader, caught_up]
+      properties:
+        node_id:
+          type: string
+          format: uuid
+        address:
+          type: string
+          description: The cluster address, host:port. Empty for a node without one.
+        diameter_label:
+          type: string
+          description: >-
+            The first label of the member's Diameter host, <label>.<derived domain>: diameter.host_label from its
+            configuration file or, when unset, ims- and the last 12 hex characters of the node ID. Unique among
+            members.
+          examples: [ims-a]
+        diameter_host:
+          type: string
+          description: The member's Diameter host, <diameter_label>.<derived domain>.
+          examples: [ims-a.ims.mnc001.mcc001.3gppnetwork.org]
+        label_generated:
+          type: boolean
+          description: Whether diameter_label was generated from the node ID because diameter.host_label is unset.
+        display_name:
+          type: string
+          description: Name set by the operator. Empty when unset.
+        api_address:
+          type: string
+          description: The member's API address. Empty when the node has none.
+          examples: ["https://10.0.0.1:5020"]
+        version:
+          type: string
+        joined_at:
+          type: string
+          format: date-time
+        drain_state:
+          type: string
+          enum: [active, draining, drained]
+        suffrage:
+          type: string
+          enum: [voter, nonvoter, none]
+        leader:
+          type: boolean
+        caught_up:
+          type: boolean
+          description: The member has applied the whole log at least once. Only a caught-up member becomes a voter.
+        healthy:
+          type: boolean
+          description: Only from the leader.
+        last_contact:
+          type: string
+          description: Time since the leader last heard from the member, as a Go duration. Only from the leader.
+    CreateJoinTokenParams:
+      type: object
+      properties:
+        ttl_seconds:
+          type: integer
+          minimum: 300
+          maximum: 86400
+          description: How long the token is valid. Default 1800.
+    JoinToken:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    JoinClusterParams:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+    UpdateMemberParams:
+      type: object
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          maxLength: 63
+          description: Up to 63 bytes. Empty clears it.
     LoginParams:
       type: object
       required: [email, password]
@@ -3866,6 +4309,10 @@ components:
       properties:
         error:
           type: string
+        leader:
+          type: string
+          description: With 421 only, the API address of the cluster leader. Absent when the leader has none.
+          examples: ["https://10.0.0.1:5020"]
 
     MCPTTServiceConfiguration:
       type: object
@@ -4295,6 +4742,24 @@ components:
             $ref: "#/components/schemas/Error"
     Unavailable:
       description: The MCPTT AS is restarting or busy
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Gone:
+      description: The node was removed from the cluster.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotLeader:
+      description: This node is not the cluster leader. Send the request to the address in leader.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: Not available, or not ready. Retry later.
       content:
         application/json:
           schema:

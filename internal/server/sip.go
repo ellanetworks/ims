@@ -96,8 +96,8 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 	numbering func() scscf.Numbering,
 	tm timers, node *diameter.Node, rlm *realms, cxh *cxHandler,
 	rxh *rxHandler, pf *policyFunction, database *db.DB, records *callrecords.Recorder, m *metrics,
-	kernel pcscf.Kernel, failed func(local netip.AddrPort, err error), ases builtinASs, tp trace.TracerProvider,
-	logger *slog.Logger,
+	kernel pcscf.Kernel, refusing func() bool, failed func(local netip.AddrPort, err error), ases builtinASs,
+	tp trace.TracerProvider, logger *slog.Logger,
 ) (*sipServer, error) {
 	op := st.Operator
 	ph := newPlaceholderHandler(logger, op.SIPAliases())
@@ -230,13 +230,14 @@ func startSIP(ctx context.Context, cfg config.Config, st settings.Settings, live
 			ServerPort:  ipsecServer,
 			ClientPorts: ipsecClients,
 		},
-		Policy:               pol,
-		NoAnswer:             tm.noAnswer,
-		Records:              records,
-		RegistrationAttempts: m.registrations,
-		Trust:                pcscfDomain,
-		Fallback:             ph,
-		Logger:               logger,
+		Policy:                pol,
+		NoAnswer:              tm.noAnswer,
+		Records:               records,
+		RegistrationAttempts:  m.registrations,
+		Trust:                 pcscfDomain,
+		RefusingRegistrations: refusing,
+		Fallback:              ph,
+		Logger:                logger,
 	})
 
 	if err := pc.Restore(ctx); err != nil {

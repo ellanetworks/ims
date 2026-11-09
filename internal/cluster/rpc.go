@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 )
 
 const (
-	maxReportBody   = 8 << 20
 	maxJoinBody     = 64 << 10
 	rpcReadTimeout  = time.Minute
 	rpcWriteTimeout = 5 * time.Minute
@@ -34,14 +32,8 @@ const (
 )
 
 type (
-	peerKey   struct{}
 	fencedKey struct{}
 )
-
-func peerOf(r *http.Request) string {
-	id, _ := r.Context().Value(peerKey{}).(string)
-	return id
-}
 
 func fenced(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,11 +49,10 @@ func fenced(next http.Handler) http.Handler {
 func (n *Node) serveRPC() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /cluster/v1/propose", n.leaderOnly(n.handlePropose))
-	mux.HandleFunc("POST /cluster/v1/report", n.leaderOnly(n.handleReport))
 	mux.HandleFunc("POST /cluster/v1/join", n.leaderOnly(n.handleJoin))
-	mux.HandleFunc("POST /cluster/v1/remove", n.leaderOnly(n.handleRemove))
-	mux.HandleFunc("GET /cluster/v1/health", n.leaderOnly(n.handleHealth))
-	mux.HandleFunc("POST /cluster/v1/restore", n.leaderOnly(n.handleRestore))
+	mux.HandleFunc("POST /cluster/v1/probe", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
 
 	errorLog := slog.NewLogLogger(n.cfg.Logger.Handler(), slog.LevelDebug)
 
@@ -72,9 +63,7 @@ func (n *Node) serveRPC() {
 		WriteTimeout:      rpcWriteTimeout,
 		ErrorLog:          errorLog,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			ctx = context.WithValue(ctx, fencedKey{}, listener.Fenced(c))
-
-			return context.WithValue(ctx, peerKey{}, listener.PeerNodeID(c))
+			return context.WithValue(ctx, fencedKey{}, listener.Fenced(c))
 		},
 	}
 
@@ -196,24 +185,6 @@ func (n *Node) handlePropose(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (n *Node) handleReport(w http.ResponseWriter, r *http.Request) {
-	var rep report
-	if !decodeBody(w, r, maxReportBody, &rep) {
-		return
-	}
-
-	peer := peerOf(r)
-	n.health.record(peer, rep)
-
-	raftNode, _ := n.current()
-
-	writeJSON(w, http.StatusOK, n.health.reply(peer, raftNode.CommitIndex()))
-}
-
-func (n *Node) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, n.health.snapshot())
-}
-
 func (n *Node) handleJoin(w http.ResponseWriter, r *http.Request) {
 	var req joinRequest
 	if !decodeBody(w, r, maxJoinBody, &req) {
@@ -303,36 +274,4 @@ func (n *Node) relayJoin(ctx context.Context, req joinRequest) (joinReply, error
 	}
 
 	return reply, err
-}
-
-type removeRequest struct {
-	NodeID string `json:"node_id"`
-	Force  bool   `json:"force,omitempty"`
-}
-
-func (n *Node) handleRemove(w http.ResponseWriter, r *http.Request) {
-	var req removeRequest
-	if !decodeBody(w, r, 1<<10, &req) {
-		return
-	}
-
-	if err := n.removeAsLeader(r.Context(), req.NodeID, req.Force); err != nil {
-		writeRPCError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, struct{}{})
-}
-
-func (n *Node) handleRestore(w http.ResponseWriter, r *http.Request) {
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Time{})
-	_ = rc.SetWriteDeadline(time.Time{})
-
-	if err := n.restoreLocal(r.Context(), io.LimitReader(r.Body, maxRestoreBytes)); err != nil {
-		writeRPCError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, struct{}{})
 }

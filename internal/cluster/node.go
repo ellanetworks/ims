@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/cluster/listener"
@@ -29,7 +30,7 @@ const (
 	trailingLogs     = 10240
 	snapshotEntries  = 8192
 	soleVoterTimeout = 100 * time.Millisecond
-	commitTimeout    = 5 * time.Millisecond
+	commitTimeout    = 50 * time.Millisecond
 	maxPool          = 3
 	transportTimeout = 10 * time.Second
 	retryEstablish   = 5 * time.Second
@@ -52,6 +53,7 @@ type Config struct {
 	Dir             string
 	Address         string
 	Advertise       string
+	APIAddress      string
 	Version         string
 	DiameterLabel   string
 	Join            []string
@@ -65,6 +67,7 @@ type Config struct {
 	logStoreTimeout time.Duration
 	readyLag        uint64
 	removalAfter    time.Duration
+	hashCheck       func(func() *db.HashCheck) func() *db.HashCheck
 }
 
 func (c Config) clustered() bool {
@@ -72,12 +75,13 @@ func (c Config) clustered() bool {
 }
 
 type Node struct {
-	cfg       Config
-	id        string
-	label     string
-	generated bool
-	db        *db.DB
-	certs     *certs
+	cfg          Config
+	leaderCommit atomic.Uint64
+	id           string
+	label        string
+	generated    bool
+	db           *db.DB
+	certs        *certs
 
 	metrics *metrics
 	ln      *listener.Listener
@@ -352,6 +356,8 @@ func (n *Node) startRaft(ctx context.Context) error {
 		})
 		addr = raft.ServerAddress(n.cfg.Advertise)
 
+		transport = watchCommits(transport, &n.leaderCommit)
+
 		if n.cfg.transport != nil {
 			transport = n.cfg.transport(transport)
 		}
@@ -402,7 +408,14 @@ func (n *Node) startRaft(ctx context.Context) error {
 	default:
 	}
 
-	n.raft, n.store, n.transport, n.batcher = r, store, transport, newBatcher(r, n.cfg.Now, n.db.LeaderTime)
+	n.raft, n.store, n.transport = r, store, transport
+
+	check := n.db.Check
+	if n.cfg.hashCheck != nil {
+		check = n.cfg.hashCheck(check)
+	}
+
+	n.batcher = newBatcher(r, n.cfg.Now, n.db.LeaderTime, check)
 
 	return nil
 }

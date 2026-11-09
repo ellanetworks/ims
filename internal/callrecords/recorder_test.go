@@ -829,12 +829,12 @@ func (s *testStore) resume() {
 	close(s.gate)
 }
 
-func (s *testStore) CloseOpenCallRecords(ctx context.Context, live []string) (int64, error) {
+func (s *testStore) CloseOpenCallRecords(ctx context.Context, nodeID string, live []string) (int64, error) {
 	if s.next == nil {
 		return 0, nil
 	}
 
-	return s.next.CloseOpenCallRecords(ctx, live)
+	return s.next.CloseOpenCallRecords(ctx, nodeID, live)
 }
 
 func (s *testStore) SaveCallRecords(ctx context.Context, records []*db.CallRecord, deleted []int64) ([]error, error) {

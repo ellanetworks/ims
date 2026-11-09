@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ella
+resources:
+  - ../base
+  - ims-internal-service.yaml
+  - ims-pdb.yaml
+  - ims-networkpolicy.yaml
+configMapGenerator:
+  - name: ims-config
+    behavior: replace
+    files:
+      - ims.yaml
+patches:
+  - path: ims-statefulset-patch.yaml
+  - path: ims-statefulset-env-patch.yaml
+    target:
+      kind: StatefulSet
+      name: ella-ims

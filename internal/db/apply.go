@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -16,6 +17,7 @@ import (
 const appliedRequestsWindow = 5 * time.Minute
 
 type Events struct {
+	Diverged bool
 	Replaced bool
 	Settings bool
 	OIDC     bool
@@ -26,6 +28,7 @@ type Events struct {
 }
 
 func (e *Events) merge(o Events) {
+	e.Diverged = e.Diverged || o.Diverged
 	e.Replaced = e.Replaced || o.Replaced
 	e.Settings = e.Settings || o.Settings
 	e.OIDC = e.OIDC || o.OIDC
@@ -36,7 +39,7 @@ func (e *Events) merge(o Events) {
 }
 
 func (e Events) empty() bool {
-	return !e.Replaced && !e.Settings && !e.OIDC && !e.MCPTT && !e.Members && e.Migrated == 0 && len(e.Removed) == 0
+	return !e.Diverged && !e.Replaced && !e.Settings && !e.OIDC && !e.MCPTT && !e.Members && e.Migrated == 0 && len(e.Removed) == 0
 }
 
 type applyCtx struct {
@@ -154,6 +157,38 @@ func (d *DB) remember(index uint64, hash []byte) {
 	d.hashes[index%recentHashes] = appliedHash{index: index, hash: hash}
 }
 
+func (d *DB) differs(c HashCheck, local map[uint64][]byte) bool {
+	mine, ok := local[c.Index]
+	if !ok {
+		if mine, ok = d.HashAt(c.Index); !ok {
+			return false
+		}
+	}
+
+	if bytes.Equal(mine, c.Hash) {
+		return false
+	}
+
+	d.diverged.Store(true)
+
+	return true
+}
+
+func (d *DB) Diverged() bool {
+	return d.diverged.Load()
+}
+
+func (d *DB) Check() *HashCheck {
+	index := d.AppliedIndex()
+
+	h, ok := d.HashAt(index)
+	if !ok {
+		return nil
+	}
+
+	return &HashCheck{Index: index, Hash: h}
+}
+
 func (d *DB) HashAt(index uint64) ([]byte, bool) {
 	d.hashMu.Lock()
 	defer d.hashMu.Unlock()
@@ -251,6 +286,7 @@ func (d *DB) applyBatches(entries []Entry, batches []Batch) ([][]Result, Events,
 	var events Events
 
 	applied := state.appliedIndex
+	local := map[uint64][]byte{}
 
 	for i, e := range entries {
 		b := batches[i]
@@ -286,7 +322,12 @@ func (d *DB) applyBatches(entries []Entry, batches []Batch) ([][]Result, Events,
 		}
 
 		hashes[i] = state.hash
+		local[e.Index] = state.hash
 		state.appliedIndex, state.appliedTerm = e.Index, e.Term
+
+		if b.Check != nil && d.differs(*b.Check, local) {
+			events.Diverged = true
+		}
 	}
 
 	if state.appliedIndex == applied {

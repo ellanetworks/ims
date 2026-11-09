@@ -81,6 +81,7 @@ describe("App", () => {
       ["Push-to-Talk", "/ptt"],
       ["Users", "/users"],
       ["Single Sign-On", "/single-sign-on"],
+      ["Cluster", "/cluster"],
     ]);
     expect(screen.getByRole("main")).toBeInTheDocument();
     expect(screen.getByRole("contentinfo")).toBeInTheDocument();
@@ -193,6 +194,7 @@ describe("App", () => {
       "Calls",
       "SMS over IP",
       "Push-to-Talk",
+      "Cluster",
     ]);
 
     fireEvent.click(screen.getByRole("link", { name: "Cores" }));
@@ -200,7 +202,7 @@ describe("App", () => {
       await screen.findByRole("heading", { level: 1, name: "Cores" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Services")).toBeInTheDocument();
-    expect(screen.queryByText("System")).not.toBeInTheDocument();
+    expect(screen.getByText("System")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Add Peer" }),
     ).not.toBeInTheDocument();

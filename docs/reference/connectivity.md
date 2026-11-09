@@ -12,8 +12,11 @@ description: Reference of the network interfaces and ports of Ella IMS.
 | Diameter | `diameter.name` or `diameter.address` | HSS, PCRF, SMSC, MME, SMSF | TCP or SCTP `diameter.port` (`3868`) |
 | MCPTT media | `mcptt.media.address` | MCPTT clients | UDP `mcptt.media.min_port`–`max_port` (`20000`–`20999`), `mcptt.media.control_port` (`21000`) |
 | N5 | `n5.notify.address` | PCF | HTTP/2, optionally with mutual TLS, `n5.notify.port` (chosen by the system) |
+| Cluster | `cluster.address`, advertised as `cluster.advertise` | The other Ella IMS nodes | TCP, mutual TLS 1.3, `cluster.port` (`7000`) |
 
-Defaults are in parentheses.
+Defaults are in parentheses. The cluster port listens only when the configuration file has a `cluster` block.
+
+On Kubernetes, the cluster address of node `<n>` is `ella-ims-<n>.ella-ims-internal.<namespace>.svc.cluster.local`.
 
 ## Diameter identity
 

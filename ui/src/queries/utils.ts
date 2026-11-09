@@ -16,18 +16,21 @@ export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
   readonly detail?: string;
+  readonly leader?: string;
 
   constructor(
     kind: ApiErrorKind,
     message: string,
     status?: number,
     detail?: string,
+    leader?: string,
   ) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
     this.status = status;
     this.detail = detail;
+    this.leader = leader;
   }
 }
 
@@ -76,7 +79,7 @@ export async function apiFetch<T>(
 
   if (response.status === 204) return undefined as T;
 
-  let data: { result?: T; error?: string } | undefined;
+  let data: { result?: T; error?: string; leader?: string } | undefined;
   try {
     data = await response.json();
   } catch {
@@ -98,7 +101,13 @@ export async function apiFetch<T>(
     if (response.status === 403) {
       throw new ApiError("forbidden", message, response.status, detail);
     }
-    throw new ApiError("http", message, response.status, detail);
+    throw new ApiError(
+      "http",
+      message,
+      response.status,
+      detail,
+      data?.leader || undefined,
+    );
   }
 
   if (data === undefined) {

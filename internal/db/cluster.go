@@ -28,6 +28,8 @@ type Member struct {
 	DisplayName    string     `json:"display_name,omitempty"`
 	DiameterLabel  string     `json:"diameter_label,omitempty"`
 	LabelGenerated bool       `json:"label_generated,omitempty"`
+	APIAddress     string     `json:"api_address,omitempty"`
+	CaughtUp       bool       `json:"caught_up,omitempty"`
 }
 
 type DrainState string
@@ -39,7 +41,8 @@ const (
 )
 
 const (
-	memberColumns     = `node_id, address, fingerprint, schema_version, version, joined_at, diameter_label, label_generated`
+	memberColumns = `node_id, address, fingerprint, schema_version, version, joined_at, diameter_label, label_generated,
+		api_address, caught_up`
 	memberReadColumns = memberColumns + `, drain_state, display_name`
 )
 
@@ -51,7 +54,7 @@ func scanMember(scan func(...any) error) (Member, error) {
 	)
 
 	if err := scan(&m.NodeID, &m.Address, &fingerprint, &m.SchemaVersion, &m.Version,
-		&joined, &m.DiameterLabel, &m.LabelGenerated, &m.DrainState, &m.DisplayName); err != nil {
+		&joined, &m.DiameterLabel, &m.LabelGenerated, &m.APIAddress, &m.CaughtUp, &m.DrainState, &m.DisplayName); err != nil {
 		return Member{}, err
 	}
 
@@ -172,9 +175,12 @@ func applyRegisterMember(a *applyCtx, m Member) (struct{}, error) {
 		}
 	}
 
+	m.CaughtUp = m.CaughtUp || existing.CaughtUp
+
 	if _, err := a.tx.ExecContext(a.ctx, `UPDATE cluster_members SET address = ?, fingerprint = ?,
-		schema_version = ?, version = ?, diameter_label = ?, label_generated = ? WHERE node_id = ?`, m.Address,
-		nullableString(m.Fingerprint), m.SchemaVersion, m.Version, m.DiameterLabel, m.LabelGenerated, m.NodeID); err != nil {
+		schema_version = ?, version = ?, diameter_label = ?, label_generated = ?, api_address = ?, caught_up = ?
+		WHERE node_id = ?`, m.Address, nullableString(m.Fingerprint), m.SchemaVersion, m.Version, m.DiameterLabel,
+		m.LabelGenerated, m.APIAddress, m.CaughtUp, m.NodeID); err != nil {
 		if isConstraint(err, sqlite3.ErrConstraintUnique) || isConstraint(err, sqlite3.ErrConstraintPrimaryKey) {
 			return struct{}{}, fmt.Errorf("%w: another member has the address %s or the certificate", settings.ErrConflict,
 				m.Address)
@@ -184,7 +190,8 @@ func applyRegisterMember(a *applyCtx, m Member) (struct{}, error) {
 	}
 
 	if existing.Fingerprint != m.Fingerprint || existing.Address != m.Address || relabeled ||
-		existing.LabelGenerated != m.LabelGenerated {
+		existing.LabelGenerated != m.LabelGenerated || existing.APIAddress != m.APIAddress ||
+		existing.CaughtUp != m.CaughtUp {
 		a.events.Members = true
 	}
 
@@ -204,9 +211,9 @@ func insertMember(a *applyCtx, m Member) error {
 		return err
 	}
 
-	if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO cluster_members (`+memberColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO cluster_members (`+memberColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.NodeID, m.Address, nullableString(m.Fingerprint), m.SchemaVersion, m.Version,
-		a.leaderTime, m.DiameterLabel, m.LabelGenerated); err != nil {
+		a.leaderTime, m.DiameterLabel, m.LabelGenerated, m.APIAddress, m.CaughtUp); err != nil {
 		if isConstraint(err, sqlite3.ErrConstraintUnique) || isConstraint(err, sqlite3.ErrConstraintPrimaryKey) {
 			return fmt.Errorf("%w: another member has the address %s or the certificate", settings.ErrConflict, m.Address)
 		}
@@ -402,6 +409,10 @@ func applyRemoveMember(a *applyCtx, p removeMember) (struct{}, error) {
 		VALUES (?, ?, ?, ?) ON CONFLICT (node_id) DO UPDATE SET fingerprint = excluded.fingerprint,
 		removed_at = excluded.removed_at, reason = excluded.reason`, p.NodeID, fingerprint, a.leaderTime,
 		p.Reason); err != nil {
+		return struct{}{}, err
+	}
+
+	if _, err := closeCallRecordsOf(a, p.NodeID, nil); err != nil {
 		return struct{}{}, err
 	}
 

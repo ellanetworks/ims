@@ -66,6 +66,13 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
     - `media` (object, optional): The UDP ports of the voice of calls over SIP trunks, on `sip.addresses` and on `ibcf.external.addresses`. Two ports per call on each.
         - `min_port` (int, optional): The first port. Even, from `1024`. Default `10000`.
         - `max_port` (int, optional): The last port. Default `19999`.
+- `cluster` (object, optional): The cluster port. Required to create or join a [cluster](../explanation/high_availability.md).
+    - `address` (string): The IP address to listen on. `0.0.0.0` or `::` for all addresses, with `advertise` set.
+    - `port` (int, optional): The TCP port to listen on. Default `7000`.
+    - `advertise` (string, optional): The `host:port` the other nodes reach this node at. A specific address or a host name. Default `address:port`.
+    - `join` (list of strings, optional): The `host` or `host:port` of the other nodes, on `port` when the port is left out. Each name resolves to all its addresses.
+    - `bootstrap_expect` (int, optional): The number of nodes that form a new cluster together. 2 or more. Requires `join`.
+    - `secret_file` (string): The path to the cluster secret: base64 keys of at least 32 bytes, one per line, the first used to sign. Required with `join`.
 - `telemetry` (object, optional): The [traces](observability.md#traces).
     - `enabled` (boolean, optional): Export traces. Default `false`.
     - `otlp_endpoint` (string): The `host:port` of an OTLP/gRPC collector, over plain gRPC. Required when `enabled` is `true`.
@@ -106,6 +113,9 @@ ibcf:
 diameter:
   address: 10.3.0.5
   port: 3868
+cluster:
+  address: 10.0.0.1
+  port: 7000
 telemetry:
   enabled: true
   otlp_endpoint: localhost:4317

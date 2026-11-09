@@ -72,7 +72,7 @@ func newFormingCluster(t testing.TB, size, expect int, secret string) *formingCl
 	for i := range size {
 		c.specs = append(c.specs, formingSpec{
 			dir: t.TempDir(), address: addrs[i], join: addrs, expect: expect, secret: secret,
-			label: fmt.Sprintf("smsc-%d", i),
+			label: fmt.Sprintf("ims-%d", i),
 		})
 	}
 
@@ -211,9 +211,9 @@ func (c *formingCluster) voters() int {
 }
 
 func TestDecide(t *testing.T) {
-	self := hello{NodeID: "b", State: helloForming, Expect: 3, Schema: 1, Protocol: 2, Label: "smsc-b"}
+	self := hello{NodeID: "b", State: helloForming, Expect: 3, Schema: 1, Protocol: 2, Label: "ims-b"}
 	peer := func(id string, edit ...func(*hello)) hello {
-		h := hello{NodeID: id, State: helloForming, Expect: 3, Schema: 1, Protocol: 2, Label: "smsc-" + id}
+		h := hello{NodeID: id, State: helloForming, Expect: 3, Schema: 1, Protocol: 2, Label: "ims-" + id}
 		for _, e := range edit {
 			e(&h)
 		}
@@ -253,7 +253,7 @@ func TestDecide(t *testing.T) {
 			blocked: true, detail: "expects 5",
 		},
 		{
-			name: "duplicate label", self: self, peers: []hello{peer("a", func(h *hello) { h.Label = "smsc-b" }), peer("c")},
+			name: "duplicate label", self: self, peers: []hello{peer("a", func(h *hello) { h.Label = "ims-b" }), peer("c")},
 			blocked: true, detail: "same Diameter host label",
 		},
 		{
@@ -269,7 +269,7 @@ func TestDecide(t *testing.T) {
 			blocked: true, detail: "2 different clusters",
 		},
 		{
-			name: "no expect", self: hello{NodeID: "b", State: helloForming, Label: "smsc-b"}, peers: []hello{peer("a")},
+			name: "no expect", self: hello{NodeID: "b", State: helloForming, Label: "ims-b"}, peers: []hello{peer("a")},
 			detail: "cluster member",
 		},
 		{
@@ -450,7 +450,7 @@ func TestWrongSecretIsRefusedBothWays(t *testing.T) {
 
 	joiner := openForming(t, formingSpec{
 		dir: t.TempDir(), address: freeAddress(t), join: []string{member.specs[0].address}, secret: newSecret(t),
-		label: "smsc-joiner",
+		label: "ims-joiner",
 	})
 
 	defer func() { _ = joiner.node.Close(); _ = joiner.db.Close() }()
@@ -516,7 +516,7 @@ func TestNoFormationNextToAMemberWithoutQuorum(t *testing.T) {
 
 	fresh := openForming(t, formingSpec{
 		dir: t.TempDir(), address: freeAddress(t), join: []string{c.specs[0].address}, expect: 3, secret: secret,
-		label: "smsc-fresh",
+		label: "ims-fresh",
 	})
 
 	defer func() { _ = fresh.node.Close(); _ = fresh.db.Close() }()

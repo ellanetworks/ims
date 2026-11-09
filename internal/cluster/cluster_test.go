@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func openClustered(t testing.TB, dir, address string) *env {
 
 	ctx := context.Background()
 
-	d, err := db.Open(ctx, filepath.Join(dir, "smsc.db"))
+	d, err := db.Open(ctx, filepath.Join(dir, "ims.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,36 +386,48 @@ func TestUnreachableMember(t *testing.T) {
 	}
 }
 
-func TestLeaderNoticesADivergedMember(t *testing.T) {
-	c := newCluster(t, 2)
+func corruptingChecks(t *testing.T, size int) (*testCluster, *atomic.Bool) {
+	var corrupt atomic.Bool
+
+	c := newClusterWith(t, size, func(_ int, dir, address string) *env {
+		return openWith(t, dir, address, func(cfg *Config) {
+			cfg.hashCheck = func(check func() *db.HashCheck) func() *db.HashCheck {
+				return func() *db.HashCheck {
+					h := check()
+					if h == nil || !corrupt.Load() {
+						return h
+					}
+
+					return &db.HashCheck{Index: h.Index, Hash: []byte("not the leader's hash")}
+				}
+			}
+		})
+	})
+
+	return c, &corrupt
+}
+
+func TestFollowerNoticesItDiverged(t *testing.T) {
+	c, corrupt := corruptingChecks(t, 2)
 	leader, follower := c.leader(), c.follower()
 
-	eventually(t, "a matching report from the follower", func() error {
-		r, ok := leader.node.health.get(follower.node.ID())
-		if !ok || r.Hash == nil {
-			return errors.New("no report with a hash yet")
-		}
+	write(t, leader, "before")
 
-		if r.Diverged {
-			return errors.New("diverged")
+	if follower.db.Diverged() {
+		t.Fatal("the follower diverged before any corruption")
+	}
+
+	corrupt.Store(true)
+	write(t, leader, "first")
+	write(t, leader, "second")
+
+	eventually(t, "the follower to notice it diverged", func() error {
+		if !follower.db.Diverged() {
+			return errors.New("not diverged yet")
 		}
 
 		return nil
 	})
-
-	index := leader.db.AppliedIndex()
-	leader.node.health.record(follower.node.ID(), report{AppliedIndex: index, Hash: []byte("not the leader's hash")})
-
-	st, err := leader.node.Status(timeout(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, m := range st.Members {
-		if m.NodeID == follower.node.ID() && !m.Diverged {
-			t.Fatalf("member %+v not marked diverged", m)
-		}
-	}
 }
 
 func TestJoinRetriesAfterAHalfCompletedAdmission(t *testing.T) {
@@ -464,4 +477,12 @@ func TestJoinRetriesAfterAHalfCompletedAdmission(t *testing.T) {
 
 	waitMember(t, joiner, joiner.node.ID())
 	waitMember(t, joiner, leader.node.ID())
+}
+
+func write(t testing.TB, e *env, name string) {
+	t.Helper()
+
+	if _, err := e.db.CreateUser(timeout(t), db.NewUser{Email: name + "@example.com", Role: db.RoleAdmin}, 100); err != nil {
+		t.Fatal(err)
+	}
 }

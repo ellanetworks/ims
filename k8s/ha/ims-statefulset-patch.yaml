@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ella-ims
+spec:
+  replicas: 3
+  serviceName: ella-ims-internal
+  podManagementPolicy: Parallel
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ella-ims
+                app.kubernetes.io/instance: ella-ims
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: ims
+        ports:
+        - name: cluster
+          containerPort: 7000
+        startupProbe:
+          httpGet:
+            path: /api/v1/livez
+            port: http
+        volumeMounts:
+        - name: cluster-secret
+          mountPath: /secrets/cluster
+          readOnly: true
+      volumes:
+      - name: cluster-secret
+        secret:
+          secretName: ella-ims-cluster
+          defaultMode: 0440

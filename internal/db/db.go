@@ -39,6 +39,7 @@ type DB struct {
 	appliedCh   chan struct{}
 	leaderTime  atomic.Int64
 	schema      atomic.Int64
+	diverged    atomic.Bool
 	hashMu      sync.Mutex
 	hashes      []appliedHash
 	subscribers []func(Events)
@@ -76,6 +77,7 @@ var migrations = []string{
 		in_trunk_name TEXT,
 		out_trunk_id TEXT,
 		out_trunk_name TEXT,
+		node_id TEXT NOT NULL,
 		CHECK ((in_trunk_id IS NULL) = (in_trunk_name IS NULL)),
 		CHECK ((out_trunk_id IS NULL) = (out_trunk_name IS NULL)),
 		CHECK ((sip_status IS NULL) = (outcome IS NULL)),
@@ -88,7 +90,7 @@ var migrations = []string{
 	CREATE INDEX call_records_requested_at ON call_records (requested_at, id);
 	CREATE INDEX call_records_outcome ON call_records (outcome);
 	CREATE INDEX call_records_session ON call_records (session_id, caller_impi);
-	CREATE INDEX call_records_open ON call_records (id) WHERE ended_by IS NULL AND incomplete = 0;
+	CREATE INDEX call_records_open ON call_records (node_id, id) WHERE ended_by IS NULL AND incomplete = 0;
 	CREATE TABLE operator (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		mcc TEXT NOT NULL,
@@ -360,7 +362,9 @@ var migrations = []string{
 		drain_state TEXT NOT NULL DEFAULT 'active' CHECK (drain_state IN ('active', 'draining', 'drained')),
 		display_name TEXT NOT NULL DEFAULT '',
 		diameter_label TEXT NOT NULL UNIQUE CHECK (length(diameter_label) BETWEEN 1 AND 63),
-		label_generated INTEGER NOT NULL CHECK (label_generated IN (0, 1))
+		label_generated INTEGER NOT NULL CHECK (label_generated IN (0, 1)),
+		api_address TEXT NOT NULL DEFAULT '',
+		caught_up INTEGER NOT NULL DEFAULT 0 CHECK (caught_up IN (0, 1))
 	);
 	CREATE UNIQUE INDEX cluster_members_address ON cluster_members (address) WHERE address != '';
 	CREATE TABLE cluster_removed_members (

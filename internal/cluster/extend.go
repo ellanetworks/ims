@@ -1,5 +1,7 @@
 package cluster
 
+import "github.com/hashicorp/raft"
+
 func (n *Node) Unreachable(nodeID string) bool {
 	n.mu.Lock()
 	since := n.since
@@ -16,7 +18,7 @@ func (n *Node) Unreachable(nodeID string) bool {
 		return false
 	}
 
-	r, ok := n.health.get(nodeID)
+	seen, ok := n.health.lastSeen(raft.ServerID(nodeID))
 
-	return !ok || now.Sub(r.At) >= limit
+	return !ok || now.Sub(seen) >= limit
 }
