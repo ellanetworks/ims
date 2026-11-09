@@ -432,12 +432,6 @@ func TestUnknownCorrelationID(t *testing.T) {
 	}
 }
 
-func TestPLMNOf(t *testing.T) {
-	if got := plmnOf(home); got != "001001" {
-		t.Fatalf("plmnOf = %s", got)
-	}
-}
-
 // TS 29.338 clause 5.2.1.4
 func TestRoutingInfoBarred(t *testing.T) {
 	w := newWorld(t, newFakeStore())

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -32,11 +33,12 @@ type credentials struct {
 	integrityProtected string
 }
 
+// TS 24.229 clause 5.1.1.5.1
 func (c *credentials) answers(ch *challenge) bool {
-	return c != nil && ch != nil && c.nonce != "" && c.nonce == ch.nonce
+	return c != nil && ch != nil && c.nonce != "" && c.nonce == ch.nonce && strings.EqualFold(c.realm, ch.realm)
 }
 
-func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
+func parseAuthorization(h sip.Header, realms homedomain.Domains) (*credentials, error) {
 	var first *credentials
 
 	for _, v := range h.Values("Authorization") {
@@ -49,7 +51,7 @@ func parseAuthorization(h sip.Header, realm string) (*credentials, error) {
 			continue
 		}
 
-		if strings.EqualFold(c.realm, realm) {
+		if realms.Has(c.realm) {
 			return c, nil
 		}
 

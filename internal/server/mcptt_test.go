@@ -158,6 +158,49 @@ func TestMCPTT(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(string(b), "sip:alice@mcptt.example.com") {
 		t.Fatalf("users after a restart of the core: %d %s", code, b)
 	}
+
+	renamed := srv.mcptt.Load()
+	before = srv.core.Load()
+	op.Domain = "ims.example.com"
+
+	if err := srv.settings.UpdateOperator(t.Context(), op); err != nil {
+		t.Fatalf("UpdateOperator: %v", err)
+	}
+
+	eventually(t, "the core under the configured domain", func() bool {
+		c := srv.core.Load()
+		return c != nil && c != before
+	})
+
+	if a := srv.mcptt.Load(); a == nil || a == renamed {
+		t.Fatal("the MCPTT AS not started again for the configured domain")
+	}
+
+	if !resolves("mcptt.ims.example.com") || !resolves("mcptt.ims.mnc002.mcc001.3gppnetwork.org") {
+		t.Fatal("MCPTT not named under both home domains")
+	}
+
+	named := srv.mcptt.Load()
+	before = srv.core.Load()
+	op.MNC = "03"
+
+	if err := srv.settings.UpdateOperator(t.Context(), op); err != nil {
+		t.Fatalf("UpdateOperator: %v", err)
+	}
+
+	eventually(t, "the core under the new PLMN", func() bool {
+		c := srv.core.Load()
+		return c != nil && c != before
+	})
+
+	if srv.mcptt.Load() != named {
+		t.Fatal("the MCPTT AS restarted although its home domain stayed")
+	}
+
+	if !resolves("mcptt.ims.example.com") || !resolves("mcptt.ims.mnc003.mcc001.3gppnetwork.org") ||
+		resolves("mcptt.ims.mnc002.mcc001.3gppnetwork.org") {
+		t.Fatal("the derived name of MCPTT not moved to the new PLMN")
+	}
 }
 
 func TestMCPTTDisabled(t *testing.T) {

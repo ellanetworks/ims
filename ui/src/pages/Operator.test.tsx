@@ -7,6 +7,7 @@ import { json, readOnlyAuth, renderWithClient, stubApi } from "@/test/render";
 const operator: OperatorSettings = {
   mcc: "001",
   mnc: "01",
+  domain: "",
   numbering: {
     country_code: "1",
     national_prefix: "",
@@ -70,12 +71,9 @@ describe("Operator", () => {
     await loaded();
     expect(rows()).toEqual([
       "001 / 01",
-      "ims.mnc001.mcc001.3gppnetwork.org",
+      "Domainims.mnc001.mcc001.3gppnetwork.orgAlso AcceptedN/A",
       "Country Code1National PrefixN/AInternational PrefixN/AMinimum National Digits7",
     ]);
-    expect(
-      screen.queryByRole("button", { name: "Edit Home Network Domain" }),
-    ).not.toBeInTheDocument();
   });
 
   it("explains each setting on hover", async () => {
@@ -87,7 +85,7 @@ describe("Operator", () => {
     fireEvent.mouseOver(screen.getByText("Operator ID (MCC/MNC)"));
     expect(
       await screen.findByRole("tooltip", {
-        name: "Mobile Country Code and Mobile Network Code of your network. They set this IMS's home network domain, Diameter host and realm.",
+        name: "Mobile Country Code and Mobile Network Code of your network. They set this IMS's Diameter host and realm, and its home network domain unless you set one.",
       }),
     ).toBeInTheDocument();
   });
@@ -120,7 +118,7 @@ describe("Operator", () => {
     expect(bodies).toEqual([{ ...operator, mcc: "208", mnc: "10" }]);
     expect(rows().slice(0, 2)).toEqual([
       "208 / 10",
-      "ims.mnc010.mcc208.3gppnetwork.org",
+      "Domainims.mnc010.mcc208.3gppnetwork.orgAlso AcceptedN/A",
     ]);
   });
 
@@ -137,6 +135,65 @@ describe("Operator", () => {
 
     expect(screen.queryByText(/restart/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update" })).toBeEnabled();
+  });
+
+  it("sets the home network domain", async () => {
+    const bodies = serve((body) => json(200, { result: body }));
+
+    renderWithClient(<Operator />);
+    await loaded();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit Home Network Domain" }),
+    );
+
+    expect(screen.getByRole("textbox", { name: "Domain" })).toHaveAttribute(
+      "placeholder",
+      "ims.mnc001.mcc001.3gppnetwork.org",
+    );
+    expect(screen.queryByText(/restart/)).not.toBeInTheDocument();
+
+    fill("Domain", "localhost");
+    expect(
+      screen.getByText("At least two labels, like ims.example.com"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update" })).toBeDisabled();
+
+    fill("Domain", "IMS.Example.com.");
+    expect(screen.getByText(/restart/)).toHaveTextContent(
+      "The home network domain becomes ims.example.com, and the MCPTT and IP-SM-GW are renamed under it. Phones without an ISIM keep using ims.mnc001.mcc001.3gppnetwork.org. Diameter and SIP restart: phones re-register, and calls in progress lose their QoS.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(bodies).toEqual([{ ...operator, domain: "ims.example.com" }]);
+    expect(rows()[1]).toBe(
+      "Domainims.example.comAlso Acceptedims.mnc001.mcc001.3gppnetwork.org",
+    );
+  });
+
+  it("warns of the derived domain changing under a home network domain set", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        stubApi({
+          "/api/v1/operator": () =>
+            json(200, { result: { ...operator, domain: "ims.example.com" } }),
+        }),
+      ),
+    );
+
+    renderWithClient(<Operator />);
+    await loaded();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit Operator ID (MCC/MNC)" }),
+    );
+    fill("MNC", "02");
+
+    expect(screen.getByText(/restart/)).toHaveTextContent(
+      "The Diameter realm and the domain derived from the Operator ID become ims.mnc002.mcc001.3gppnetwork.org.",
+    );
   });
 
   it("updates the numbering plan", async () => {
@@ -167,6 +224,7 @@ describe("Operator", () => {
     expect(bodies[0]).toEqual({
       mcc: "001",
       mnc: "01",
+      domain: "",
       numbering: {
         country_code: "33",
         national_prefix: "0",

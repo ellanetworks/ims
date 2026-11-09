@@ -17,6 +17,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/diametertest"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/trust"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
@@ -395,12 +396,12 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 	}
 
 	h.ic = New(Config{
-		HomeDomain: homeDomain,
-		Layer:      layer,
-		Proxy:      proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Listeners: []netip.AddrPort{h.icscf}}),
-		Port:       h.icscf.Port(),
-		Trust:      trust.New([]netip.Addr{loopback}, nil),
-		Resolver:   &sip.Resolver{DNS: fakeDNS(o.hosts)},
+		Home:     homedomain.New(homeDomain),
+		Layer:    layer,
+		Proxy:    proxy.New(proxy.Config{Layer: layer, Logger: slog.New(slog.DiscardHandler), Listeners: []netip.AddrPort{h.icscf}}),
+		Port:     h.icscf.Port(),
+		Trust:    trust.New([]netip.Addr{loopback}, nil),
+		Resolver: &sip.Resolver{DNS: fakeDNS(o.hosts)},
 		PSISubdomain: func(host string) bool {
 			return slices.Contains(o.psiSubdomains, host)
 		},

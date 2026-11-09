@@ -4,7 +4,7 @@ description: RESTful API reference for managing the operator settings.
 
 # Operator
 
-The operator is the PLMN of the IMS, from which its home domain and Diameter identity derive, and the numbering plan that converts dial strings to E.164 numbers.
+The operator is the PLMN of the IMS, from which its Diameter identity derives, its home network domain, and the numbering plan that converts dial strings to E.164 numbers.
 
 ## Get the Operator
 
@@ -20,6 +20,7 @@ This path returns the operator settings.
 | -------------------------------- | ------ | ----------- |
 | `mcc`                            | string | Mobile Country Code. |
 | `mnc`                            | string | Mobile Network Code. |
+| `domain`                         | string | Home network domain name. Empty: `ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org`, with the MNC padded to 3 digits. |
 | `numbering`                      | object | Conversion of dial strings to E.164 numbers. |
 | `numbering.country_code`         | string | Country code. |
 | `numbering.national_prefix`      | string | National prefix. |
@@ -33,6 +34,7 @@ This path returns the operator settings.
     "result": {
         "mcc": "001",
         "mnc": "01",
+        "domain": "",
         "numbering": {
             "country_code": "1",
             "national_prefix": "1",
@@ -45,7 +47,9 @@ This path returns the operator settings.
 
 ## Update the Operator
 
-This path replaces the operator settings. A change of MCC or MNC changes the home domain, and the IMS restarts Diameter and SIP under the new names.
+This path replaces the operator settings. A change of MCC, MNC or domain restarts Diameter and SIP under the new names.
+
+The domain derived from the MCC and MNC stays a home domain when `domain` is set.
 
 | Method | Path               |
 | ------ | ------------------ |
@@ -57,6 +61,7 @@ This path replaces the operator settings. A change of MCC or MNC changes the hom
 | -------------------------------- | ------ | -------- | ----------- |
 | `mcc`                            | string | Yes      | 3 digits. |
 | `mnc`                            | string | Yes      | 2 or 3 digits. |
+| `domain`                         | string | No       | Domain name of at least two labels, up to 253 characters, stored in lowercase. Under `3gppnetwork.org`, only the domain derived from the MCC and MNC. Default empty: derived from the MCC and MNC. |
 | `numbering`                      | object | Yes      | |
 | `numbering.country_code`         | string | Yes      | 1 to 3 digits, not starting with 0. |
 | `numbering.national_prefix`      | string | Yes      | Up to 4 digits. Differs from `international_prefix` unless empty. |
@@ -69,6 +74,7 @@ This path replaces the operator settings. A change of MCC or MNC changes the hom
 {
     "mcc": "001",
     "mnc": "01",
+    "domain": "",
     "numbering": {
         "country_code": "1",
         "national_prefix": "1",
@@ -85,6 +91,7 @@ This path replaces the operator settings. A change of MCC or MNC changes the hom
     "result": {
         "mcc": "001",
         "mnc": "01",
+        "domain": "",
         "numbering": {
             "country_code": "1",
             "national_prefix": "1",

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/sbitls/sbitlstest"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -33,13 +34,13 @@ func TestConnectionsFromUnknownSource(t *testing.T) {
 	tc.Transport.MaxConnections = 4
 
 	b, err := launch(t, Config{
-		HomeDomain: home,
-		Internal:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		External:   []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
-		ICSCF:      []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
-		Trust:      trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
-		BGCF:       bgcf.New(get, nil),
-		Settings:   get,
+		Home:     homedomain.New(home),
+		Internal: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		External: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:0")},
+		ICSCF:    []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5999")},
+		Trust:    trust.New([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil),
+		BGCF:     bgcf.New(get, nil),
+		Settings: get,
 	}, tc, true)
 	if err != nil {
 		t.Fatal(err)

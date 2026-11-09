@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
-	"strings"
 
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -152,7 +151,7 @@ const acceptMMTel = `*;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmt
 func (b *IBCF) toIMS(in *sip.Request, t settings.Trunk, number string, local netip.AddrPort, fromTag string) (*sip.Request, error) {
 	trusted := t.Trusted
 
-	out := sip.NewRequest("INVITE", phoneURI(number, b.cfg.HomeDomain))
+	out := sip.NewRequest("INVITE", phoneURI(number, b.cfg.Home.Primary()))
 
 	from, err := in.Header.From()
 	if err != nil {
@@ -197,9 +196,7 @@ func (b *IBCF) toIMS(in *sip.Request, t settings.Trunk, number string, local net
 }
 
 func (b *IBCF) underHome(h string) bool {
-	h, home := strings.ToLower(strings.TrimSuffix(h, ".")), strings.ToLower(b.cfg.HomeDomain)
-
-	return h == home || strings.HasSuffix(h, "."+home)
+	return b.cfg.Home.Covers(h)
 }
 
 // RFC 3263 section 4.1

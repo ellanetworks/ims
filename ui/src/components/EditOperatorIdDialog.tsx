@@ -5,7 +5,7 @@ import DomainName from "@/components/DomainName";
 import EditDialog from "@/components/EditDialog";
 import { useSnackbar } from "@/contexts/SnackbarContext";
 import { type Operator, updateOperator } from "@/queries/operator";
-import { homeDomain } from "@/utils/operator";
+import { derivedDomain } from "@/utils/operator";
 import { RESTART_WARNING } from "@/utils/restart";
 
 export default function EditOperatorIdDialog({
@@ -35,7 +35,8 @@ export default function EditOperatorIdDialog({
   const mncError = /^\d{2,3}$/.test(mnc) ? undefined : "2 or 3 digits";
   const valid = mccError === undefined && mncError === undefined;
   const renamed =
-    valid && homeDomain(mcc, mnc) !== homeDomain(operator.mcc, operator.mnc);
+    valid &&
+    derivedDomain(mcc, mnc) !== derivedDomain(operator.mcc, operator.mnc);
 
   return (
     <EditDialog
@@ -66,8 +67,10 @@ export default function EditOperatorIdDialog({
       />
       {renamed && (
         <Alert severity="warning">
-          The home network domain becomes{" "}
-          <DomainName name={homeDomain(mcc, mnc)} />. {RESTART_WARNING}
+          {operator.domain
+            ? "The Diameter realm and the domain derived from the Operator ID become "
+            : "The home network domain becomes "}
+          <DomainName name={derivedDomain(mcc, mnc)} />. {RESTART_WARNING}
         </Alert>
       )}
     </EditDialog>

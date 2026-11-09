@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -29,6 +31,7 @@ type Settings struct {
 type Operator struct {
 	MCC       string
 	MNC       string
+	Domain    string
 	Numbering Numbering
 }
 
@@ -45,13 +48,34 @@ const (
 )
 
 // TS 23.003 clause 13.2
+func (o Operator) DerivedDomain() string {
+	return "ims.mnc" + o.mnc3() + ".mcc" + o.MCC + ".3gppnetwork.org"
+}
+
 func (o Operator) HomeDomain() string {
-	mnc := o.MNC
-	if len(mnc) == 2 {
-		mnc = "0" + mnc
+	if o.Domain != "" {
+		return o.Domain
 	}
 
-	return "ims.mnc" + mnc + ".mcc" + o.MCC + ".3gppnetwork.org"
+	return o.DerivedDomain()
+}
+
+// TS 23.003 clause 13.2
+// TS 24.229 clause 5.1.1.1A
+func (o Operator) HomeDomains() homedomain.Domains {
+	return homedomain.New(o.HomeDomain(), o.DerivedDomain())
+}
+
+func (o Operator) PLMN() string {
+	return o.MCC + o.mnc3()
+}
+
+func (o Operator) mnc3() string {
+	if len(o.MNC) == 2 {
+		return "0" + o.MNC
+	}
+
+	return o.MNC
 }
 
 const DefaultDiameterLabel = "ims"
@@ -61,10 +85,13 @@ func (o Operator) DiameterHost(label string) string {
 		label = DefaultDiameterLabel
 	}
 
-	return label + "." + o.HomeDomain()
+	return label + "." + o.DerivedDomain()
 }
 
-const maxLabelLength = 63
+const (
+	maxLabelLength  = 63
+	maxDomainLength = 253
+)
 
 // RFC 1035 section 2.3.1
 // RFC 1123 section 2.1
@@ -86,16 +113,54 @@ func ValidLabel(label string) error {
 	return nil
 }
 
+// RFC 1035 section 2.3.1
+// RFC 1035 section 2.3.4
+// RFC 1123 section 2.1
+func ValidDomain(domain string) error {
+	if len(domain) > maxDomainLength {
+		return fmt.Errorf("must be at most %d characters", maxDomainLength)
+	}
+
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 {
+		return errors.New("must have at least two labels")
+	}
+
+	for _, l := range labels {
+		if err := ValidLabel(l); err != nil {
+			return fmt.Errorf("label %q %w", l, err)
+		}
+	}
+
+	if isDigits(labels[len(labels)-1]) {
+		return errors.New("must be a domain name, not an IP address")
+	}
+
+	return nil
+}
+
+const interPLMNDomain = "3gppnetwork.org"
+
+// TS 23.003 clause 13.2
+// TS 23.003 annex D
+func (o Operator) ownDomain() error {
+	if (o.Domain == interPLMNDomain || strings.HasSuffix(o.Domain, "."+interPLMNDomain)) && o.Domain != o.DerivedDomain() {
+		return fmt.Errorf("under %s must be %s", interPLMNDomain, o.DerivedDomain())
+	}
+
+	return nil
+}
+
 func (o Operator) DiameterRealm() string {
-	return o.HomeDomain()
+	return o.DerivedDomain()
 }
 
 func (o Operator) PCSCFHost() string {
-	return "pcscf." + o.HomeDomain()
+	return "pcscf." + o.DerivedDomain()
 }
 
 func (o Operator) SCSCFHost() string {
-	return "scscf." + o.HomeDomain()
+	return "scscf." + o.DerivedDomain()
 }
 
 func (o Operator) SCSCFName(port int) string {
@@ -103,11 +168,11 @@ func (o Operator) SCSCFName(port int) string {
 }
 
 func (o Operator) SIPAliases() []string {
-	return []string{o.HomeDomain(), o.PCSCFHost(), o.SCSCFHost()}
+	return append(slices.Clone(o.HomeDomains()), o.PCSCFHost(), o.SCSCFHost())
 }
 
 func (o Operator) SameIdentity(p Operator) bool {
-	return o.HomeDomain() == p.HomeDomain()
+	return slices.Equal(o.HomeDomains(), p.HomeDomains())
 }
 
 func (s Settings) SameCore(t Settings) bool {
@@ -160,6 +225,16 @@ func (o Operator) Validate() error {
 		return invalidf("mcc must be 3 digits")
 	case !isDigits(o.MNC) || len(o.MNC) < 2 || len(o.MNC) > 3:
 		return invalidf("mnc must be 2 or 3 digits")
+	}
+
+	if o.Domain != "" {
+		if err := ValidDomain(o.Domain); err != nil {
+			return invalidf("domain %s", err)
+		}
+
+		if err := o.ownDomain(); err != nil {
+			return invalidf("domain %s", err)
+		}
 	}
 
 	return o.Numbering.Validate()

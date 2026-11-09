@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/core/diameter/cx"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -148,7 +149,7 @@ func TestAnnexCTriggerPoint(t *testing.T) {
 			t.Fatalf("%s: %v", form.name, err)
 		}
 
-		p, ok := serviceProfile(sub, sip.URI{Scheme: "sip", User: "IMPU2", Host: "homedomain.com"}, "homedomain.com")
+		p, ok := serviceProfile(sub, sip.URI{Scheme: "sip", User: "IMPU2", Host: "homedomain.com"}, homedomain.New("homedomain.com"))
 		if !ok {
 			t.Fatalf("%s: no service profile for IMPU2", form.name)
 		}
@@ -343,7 +344,7 @@ func TestWildcardedPSI(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, got := serviceProfile(sub, u, "homedomain.com"); got != tt.want {
+		if _, got := serviceProfile(sub, u, homedomain.New("homedomain.com")); got != tt.want {
 			t.Errorf("%s matches = %v, want %v", tt.uri, got, tt.want)
 		}
 	}
@@ -352,7 +353,7 @@ func TestWildcardedPSI(t *testing.T) {
 	sub.ServiceProfiles = append(sub.ServiceProfiles, other)
 
 	u, _ := sip.ParseURI("sip:chatlist1@example.com")
-	if p, ok := serviceProfileOf(sub, u, "sip:group!.*!@example.com", "homedomain.com"); !ok || p.PublicIdentities[0].Identity != other.PublicIdentities[0].Identity {
+	if p, ok := serviceProfileOf(sub, u, "sip:group!.*!@example.com", homedomain.New("homedomain.com")); !ok || p.PublicIdentities[0].Identity != other.PublicIdentities[0].Identity {
 		t.Errorf("profile %+v, %v, want the one of the wildcarded identity of the HSS", p, ok)
 	}
 }

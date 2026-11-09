@@ -1,12 +1,14 @@
 package scscf
 
 import (
+	"cmp"
 	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -76,7 +78,7 @@ func globalNumber(u sip.URI) (string, bool) {
 
 // RFC 3966 section 5.1.5
 // RFC 3966 section 5.4
-func (n Numbering) normalise(u sip.URI, homeDomain string) (out sip.URI, onNet, ok bool) {
+func (n Numbering) normalise(u sip.URI, homeDomains homedomain.Domains) (out sip.URI, onNet, ok bool) {
 	if n.CountryCode == "" {
 		return u, false, false
 	}
@@ -84,7 +86,7 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (out sip.URI, onNet, 
 	number, context, params, ok := telephoneNumber(u)
 	digits := withoutSeparators(number)
 
-	if !ok || !isDigits(digits) || !n.homeContext(context, homeDomain) {
+	if !ok || !isDigits(digits) || !n.homeContext(context, homeDomains) {
 		return u, false, false
 	}
 
@@ -108,24 +110,22 @@ func (n Numbering) normalise(u sip.URI, homeDomain string) (out sip.URI, onNet, 
 }
 
 // TS 24.229 clause 5.4.3.2
-func localNumber(u sip.URI, homeDomain string) bool {
+func localNumber(u sip.URI, homeDomains homedomain.Domains) bool {
 	number, _, _, ok := telephoneNumber(u)
 	if !ok || strings.HasPrefix(number, "+") {
 		return false
 	}
 
-	host := strings.ToLower(strings.TrimSuffix(u.Host, "."))
-
-	return u.IsTel() || host == homeDomain || strings.HasSuffix(host, "."+homeDomain)
+	return u.IsTel() || homeDomains.Covers(u.Host)
 }
 
 // TS 24.229 clause 7.2A.10.3
 // RFC 3966
-func (n Numbering) homeContext(context, homeDomain string) bool {
+func (n Numbering) homeContext(context string, homeDomains homedomain.Domains) bool {
 	context = strings.ToLower(strings.TrimSuffix(context, "."))
 
 	switch {
-	case context == homeDomain || strings.HasSuffix(context, "."+homeDomain):
+	case homeDomains.Covers(context):
 		return true
 	case strings.HasPrefix(context, "+"):
 		return withoutSeparators(context) == "+"+n.CountryCode
@@ -188,7 +188,7 @@ func calledPartyID(u sip.URI) sip.URI {
 	return u
 }
 
-func identityKeys(u sip.URI, homeDomain string) []string {
+func identityKeys(u sip.URI, homeDomains homedomain.Domains) []string {
 	keys := []string{identityKey(u)}
 
 	add := func(k string) {
@@ -199,7 +199,10 @@ func identityKeys(u sip.URI, homeDomain string) []string {
 
 	if number, ok := globalNumber(u); ok {
 		add(identityKey(sip.URI{Scheme: "tel", User: number}))
-		add(identityKey(phoneURI(number, homeDomain)))
+
+		for _, d := range homeDomains {
+			add(identityKey(phoneURI(number, d)))
+		}
 
 		return keys
 	}
@@ -209,7 +212,10 @@ func identityKeys(u sip.URI, homeDomain string) []string {
 		tel.Params.Set("phone-context", context)
 
 		add(identityKey(tel))
-		add(identityKey(phoneURI(number+";phone-context="+context, homeDomain)))
+
+		for _, d := range homeDomains {
+			add(identityKey(phoneURI(number+";phone-context="+context, d)))
+		}
 	}
 
 	if u.IsTel() {
@@ -232,8 +238,8 @@ func localTelephoneNumber(u sip.URI) (number, context string, ok bool) {
 	return number, strings.ToLower(context), true
 }
 
-func phoneURI(number, homeDomain string) sip.URI {
-	u := sip.URI{Scheme: "sip", User: number, Host: homeDomain}
+func phoneURI(number, host string) sip.URI {
+	u := sip.URI{Scheme: "sip", User: number, Host: host}
 	u.Params.Set("user", "phone")
 
 	return u
@@ -241,12 +247,12 @@ func phoneURI(number, homeDomain string) sip.URI {
 
 // TS 24.229 clause 5.4.3.2
 // TS 24.229 clause 5.4.3.3
-func assertedAlias(asserted sip.Address, sub cx.IMSSubscription, homeDomain string) (sip.Address, bool) {
+func assertedAlias(asserted sip.Address, sub cx.IMSSubscription, homeDomains homedomain.Domains) (sip.Address, bool) {
 	number, global := globalNumber(asserted.URI)
 
 	switch {
 	case asserted.URI.IsTel() && global:
-		return sip.Address{Display: asserted.Display, URI: phoneURI(number, homeDomain)}, true
+		return sip.Address{Display: asserted.Display, URI: phoneURI(number, userHome(sub, homeDomains))}, true
 	case asserted.URI.IsTel() || !asserted.URI.IsSIP():
 		return sip.Address{}, false
 	case global:
@@ -344,4 +350,28 @@ func isDigits(s string) bool {
 	}
 
 	return s != ""
+}
+
+// TS 24.229 clause 5.4.3.2
+func userHome(sub cx.IMSSubscription, homeDomains homedomain.Domains) string {
+	host := ""
+
+	for _, p := range sub.ServiceProfiles {
+		for _, id := range p.PublicIdentities {
+			u, err := sip.ParseURI(id.Identity)
+			if err != nil || !u.IsSIP() || !homeDomains.Has(u.Host) {
+				continue
+			}
+
+			if !id.Barred {
+				return strings.ToLower(u.Host)
+			}
+
+			if host == "" {
+				host = strings.ToLower(u.Host)
+			}
+		}
+	}
+
+	return cmp.Or(host, homeDomains.Primary())
 }

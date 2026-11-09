@@ -1640,7 +1640,7 @@ func TestSubscribedKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keys := identityKeys(sipForm, homeDomain)
+	keys := identityKeys(sipForm, homeDomains)
 	if len(keys) < 2 {
 		t.Fatalf("keys = %v, want the tel URI too", keys)
 	}

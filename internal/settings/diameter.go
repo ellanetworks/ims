@@ -158,7 +158,7 @@ func (s Settings) Realm(app Application) string {
 		return s.Realm(ApplicationCx)
 	}
 
-	return s.Operator.HomeDomain()
+	return s.Operator.DiameterRealm()
 }
 
 func (s Settings) Serving(app Application) []Peer {

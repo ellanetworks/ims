@@ -595,7 +595,7 @@ func (m *media) refuse(err error) error {
 	case errors.Is(err, errFamily), errors.Is(err, trgw.ErrFamily):
 		rp := ua.Reply{Code: 488}
 
-		if w, werr := sip.NewWarning(sip.WarnIncompatibleAddressFormats, m.c.b.cfg.HomeDomain); werr == nil {
+		if w, werr := sip.NewWarning(sip.WarnIncompatibleAddressFormats, m.c.b.cfg.Home.Primary()); werr == nil {
 			rp.Header.Add("Warning", w.String())
 		}
 

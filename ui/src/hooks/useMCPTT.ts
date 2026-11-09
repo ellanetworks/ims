@@ -51,9 +51,7 @@ export function useMCPTTSettings(enabled = true) {
     users,
     groups,
     domain: config.data?.domain ?? "",
-    homeDomain: operator.data
-      ? homeDomain(operator.data.mcc, operator.data.mnc)
-      : "",
+    homeDomain: operator.data ? homeDomain(operator.data) : "",
   };
 }
 

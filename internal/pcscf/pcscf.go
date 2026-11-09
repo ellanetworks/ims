@@ -1,6 +1,7 @@
 package pcscf
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -47,6 +48,7 @@ type Config struct {
 	Port       uint16
 	ICSCFPort  uint16
 	HomeDomain string
+	NetworkID  string
 	SCSCF      SCSCF
 	IPsec      IPsec
 	Policy     Policy
@@ -361,8 +363,8 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 	out.Header.Prepend("Path", "<"+pathURI(r.token, r.local, p.cfg.Port).String()+">")
 	addRequestOptionTag(out, "Require", "path")
 
-	if p.cfg.HomeDomain != "" {
-		out.Header.Set("P-Visited-Network-ID", p.cfg.HomeDomain)
+	if id := cmp.Or(p.cfg.NetworkID, p.cfg.HomeDomain); id != "" {
+		out.Header.Set("P-Visited-Network-ID", id)
 	}
 
 	p.newChargingVector(req.Flow.Local.Addr()).set(out)

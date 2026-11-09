@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/bgcf"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -330,13 +331,13 @@ func newTracedScene(t *testing.T, trusted bool, tp trace.TracerProvider, configu
 	}
 
 	cfg := Config{
-		HomeDomain: home,
-		Internal:   []netip.AddrPort{internalAddr},
-		External:   []netip.AddrPort{externalAddr},
-		ICSCF:      []netip.AddrPort{imsAddr},
-		Trust:      trust.New([]netip.Addr{imsAddr.Addr()}, nil),
-		BGCF:       bgcf.New(s.settings, nil),
-		Settings:   s.settings,
+		Home:     homedomain.New(home),
+		Internal: []netip.AddrPort{internalAddr},
+		External: []netip.AddrPort{externalAddr},
+		ICSCF:    []netip.AddrPort{imsAddr},
+		Trust:    trust.New([]netip.Addr{imsAddr.Addr()}, nil),
+		BGCF:     bgcf.New(s.settings, nil),
+		Settings: s.settings,
 	}
 
 	if configure != nil {

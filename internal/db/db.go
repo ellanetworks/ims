@@ -193,9 +193,10 @@ var migrations = []string{
 		country_code TEXT NOT NULL,
 		national_prefix TEXT NOT NULL,
 		international_prefix TEXT NOT NULL,
-		min_national_digits INTEGER NOT NULL CHECK (min_national_digits BETWEEN 0 AND 15)
+		min_national_digits INTEGER NOT NULL CHECK (min_national_digits BETWEEN 0 AND 15),
+		domain TEXT NOT NULL DEFAULT '' CHECK (domain = lower(domain))
 	);
-	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011', 7);
+	INSERT INTO operator VALUES (1, '001', '01', '1', '1', '011', 7, '');
 	CREATE TABLE diameter_peers (
 		id TEXT PRIMARY KEY,
 		host TEXT NOT NULL COLLATE NOCASE,

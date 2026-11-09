@@ -155,6 +155,29 @@ func TestUpdateOperatorMinNationalDigits(t *testing.T) {
 	}
 }
 
+func TestUpdateOperatorDomain(t *testing.T) {
+	s := newFakeSettings()
+
+	code, body := serve(t, Config{Settings: s}, http.MethodPut, "/api/v1/operator",
+		strings.Replace(validOperator, `"mnc": "10"`, `"mnc": "10", "domain": "IMS.Example.com."`, 1))
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", code, body)
+	}
+
+	if got := decodeResult[Operator](t, body).Domain; got != "ims.example.com" || s.Get().Operator.Domain != "ims.example.com" {
+		t.Fatalf("domain = %q, want ims.example.com stored", got)
+	}
+
+	code, body = serve(t, Config{Settings: s}, http.MethodPut, "/api/v1/operator", validOperator)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", code, body)
+	}
+
+	if got := s.Get().Operator.Domain; got != "" {
+		t.Fatalf("domain = %q after a PUT without one, want it cleared", got)
+	}
+}
+
 func TestUpdateOperatorWithoutPrefixes(t *testing.T) {
 	code, body := serve(t, Config{Settings: newFakeSettings()}, http.MethodPut, "/api/v1/operator",
 		`{"mcc": "208", "mnc": "10", "numbering": {"country_code": "33", "national_prefix": "", "international_prefix": ""}}`)
@@ -179,6 +202,8 @@ func TestUpdateOperatorRejected(t *testing.T) {
 			"numbering.min_national_digits must be between 0 and 15",
 		},
 		{"same prefixes", strings.Replace(validOperator, `"national_prefix": "0"`, `"national_prefix": "00"`, 1), "numbering.national_prefix and numbering.international_prefix must differ"},
+		{"one-label domain", strings.Replace(validOperator, `"mnc": "10"`, `"mnc": "10", "domain": "localhost"`, 1), "domain must have at least two labels"},
+		{"IP address domain", strings.Replace(validOperator, `"mnc": "10"`, `"mnc": "10", "domain": "192.0.2.1"`, 1), "domain must be a domain name, not an IP address"},
 	}
 
 	for _, tt := range tests {

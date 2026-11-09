@@ -41,7 +41,7 @@ func TestUpdateOperator(t *testing.T) {
 	d := openTestDB(t)
 
 	o := settings.Operator{
-		MCC: "208", MNC: "10",
+		MCC: "208", MNC: "10", Domain: "ims.example.com",
 		Numbering: settings.Numbering{CountryCode: "33", NationalPrefix: "0", InternationalPrefix: "00", MinNationalDigits: 9},
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -113,7 +114,7 @@ func (r *Registrar) storePushed(ctx context.Context, impi string, sub cx.IMSSubs
 	next.Identities, next.UserData = ids, data
 
 	if u := set.Unregistered; u != nil {
-		if id, err := sip.ParseURI(u.Identity); err != nil || !servesUnregistered(sub, id, u.Wildcard, r.cfg.HomeDomain) {
+		if id, err := sip.ParseURI(u.Identity); err != nil || !servesUnregistered(sub, id, u.Wildcard, r.cfg.Home) {
 			if err := r.cfg.DB.DeleteSet(ctx, set.ID); err != nil && !errors.Is(err, db.ErrNotFound) {
 				return nil, false, err
 			}
@@ -214,7 +215,7 @@ func profileNames(sub cx.IMSSubscription) map[string]bool {
 	return names
 }
 
-func servesUnregistered(sub cx.IMSSubscription, u sip.URI, wildcard, homeDomain string) bool {
-	_, ok := serviceProfileOf(sub, u, wildcard, homeDomain)
+func servesUnregistered(sub cx.IMSSubscription, u sip.URI, wildcard string, homeDomains homedomain.Domains) bool {
+	_, ok := serviceProfileOf(sub, u, wildcard, homeDomains)
 	return ok
 }

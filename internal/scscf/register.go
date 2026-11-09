@@ -264,7 +264,7 @@ func (r *Registrar) parse(req *sip.Request) (*registerRequest, *sip.Response) {
 		}
 	}
 
-	if rr.creds, err = parseAuthorization(req.Header, r.cfg.HomeDomain); err != nil {
+	if rr.creds, err = parseAuthorization(req.Header, r.cfg.Home); err != nil {
 		return nil, sip.NewResponse(req, 400, "Bad Authorization")
 	}
 
@@ -386,7 +386,10 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 
 	nonce := akaNonce(v)
 
+	realm := r.cfg.Home.Primary()
+
 	r.putChallenge(rr.authKey(), &challenge{
+		realm:   realm,
 		callID:  rr.callID,
 		impu:    rr.impu,
 		impuKey: rr.impuKey,
@@ -402,7 +405,7 @@ func (r *Registrar) challenge(ctx context.Context, rr *registerRequest, resync *
 		slog.Bool("resync", resync != nil))
 
 	res := sip.NewResponse(rr.req, 401, "")
-	res.Header.Add("WWW-Authenticate", wwwAuthenticate(r.cfg.HomeDomain, nonce, v))
+	res.Header.Add("WWW-Authenticate", wwwAuthenticate(realm, nonce, v))
 
 	if rr.flows() && rr.outbound {
 		res.Header.Add("Require", "outbound")
@@ -587,6 +590,11 @@ func (r *Registrar) assign(ctx context.Context, rr *registerRequest, st *state, 
 
 		sub = &s
 		reg.Identities = implicitSet(s)
+
+		if foreign, ok := r.foreignIdentity(s); rr.initial && ok {
+			r.log.WarnContext(ctx, "the HSS returned a public identity outside the home domains: the home domain may not match the HSS",
+				slog.String("impi", rr.impi), slog.String("impu", foreign), slog.Any("home_domains", []string(r.cfg.Home)))
+		}
 	case !registered:
 		r.log.WarnContext(ctx, "SAA without User-Data", slog.String("impi", rr.impi))
 		return sip.NewResponse(rr.req, 500, "")
@@ -1058,4 +1066,20 @@ func retryLater(req *sip.Request) *sip.Response {
 	res.Header.Add("Retry-After", strconv.Itoa(retryAfter))
 
 	return res
+}
+
+func (r *Registrar) foreignIdentity(s cx.IMSSubscription) (string, bool) {
+	for _, p := range s.ServiceProfiles {
+		for _, id := range p.PublicIdentities {
+			if id.Barred || wildcarded(id) {
+				continue
+			}
+
+			if u, err := sip.ParseURI(id.Identity); err == nil && u.IsSIP() && !r.cfg.Home.Covers(u.Host) {
+				return id.Identity, true
+			}
+		}
+	}
+
+	return "", false
 }

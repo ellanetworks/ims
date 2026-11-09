@@ -229,7 +229,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	out.Header.Del("P-Asserted-Identity")
 	out.Header.Add("P-Asserted-Identity", served.String())
 
-	if alias, ok := assertedAlias(served, sub, s.r.cfg.HomeDomain); ok {
+	if alias, ok := assertedAlias(served, sub, s.r.cfg.Home); ok {
 		out.Header.Add("P-Asserted-Identity", alias.String())
 	}
 
@@ -244,7 +244,7 @@ func (s *Sessions) originating(ctx context.Context, tx *transaction.ServerTransa
 	}
 
 	if err == nil {
-		p, ok := serviceProfile(sub, served.URI, s.r.cfg.HomeDomain)
+		p, ok := serviceProfile(sub, served.URI, s.r.cfg.Home)
 		if !ok {
 			s.log.WarnContext(ctx, "no service profile holds the identity: no service", slog.String("impu", served.URI.String()))
 		}
@@ -287,7 +287,7 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 	s.assertService(out, c.served, true)
 
 	if asserted, err := out.Header.Addresses("P-Asserted-Identity"); err == nil && len(asserted) == 1 {
-		if alias, ok := assertedAlias(asserted[0], c.sub, s.r.cfg.HomeDomain); ok {
+		if alias, ok := assertedAlias(asserted[0], c.sub, s.r.cfg.Home); ok {
 			out.Header.Add("P-Asserted-Identity", alias.String())
 		}
 	}
@@ -305,7 +305,7 @@ func (s *Sessions) onBehalf(ctx context.Context, tx *transaction.ServerTransacti
 func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI, registered, unregistered cx.SessionCase,
 	refused int,
 ) (*chain, *sip.Response) {
-	regs, barred, err := Recipients(ctx, s.r.cfg.DB, u, s.r.cfg.HomeDomain)
+	regs, barred, err := Recipients(ctx, s.r.cfg.DB, u, s.r.cfg.Home)
 
 	switch {
 	case err != nil:
@@ -328,7 +328,7 @@ func (s *Sessions) servedChain(ctx context.Context, req *sip.Request, u sip.URI,
 	case err != nil:
 		s.log.WarnContext(ctx, "failed to get the service profile", slog.String("impu", u.String()), slog.Any("error", err))
 		return nil, sip.NewResponse(req, 480, "")
-	case barredIn(p, u, s.r.cfg.HomeDomain):
+	case barredIn(p, u, s.r.cfg.Home):
 		s.log.DebugContext(ctx, "request of a barred identity", slog.String("impu", u.String()))
 		return nil, sip.NewResponse(req, refused, "")
 	}
@@ -358,14 +358,14 @@ func (s *Sessions) routeOnward(ctx context.Context, tx *transaction.ServerTransa
 	out.Header.Del("P-Served-User")
 	withoutRegistrationToken(&out.Header)
 
-	u, onNet, ok := s.numbering().normalise(out.URI, s.r.cfg.HomeDomain)
+	u, onNet, ok := s.numbering().normalise(out.URI, s.r.cfg.Home)
 	if ok {
 		s.log.DebugContext(ctx, "home-local number normalised", slog.String("dialled", out.URI.String()), slog.String("number", u.String()),
 			slog.Bool("on-net", onNet))
 		out.URI = u
 	}
 
-	if localNumber(out.URI, s.r.cfg.HomeDomain) {
+	if localNumber(out.URI, s.r.cfg.Home) {
 		s.log.DebugContext(ctx, "local number not translated to a global number", slog.String("impu", c.served.URI.String()),
 			slog.String("dialled", out.URI.String()))
 		s.answer(ctx, tx, sip.NewResponse(req, 404, ""))
@@ -406,7 +406,7 @@ func (s *Sessions) routeOnward(ctx context.Context, tx *transaction.ServerTransa
 
 	opts := s.initialOptions(r, rr, first)
 	if opts.Dialog != nil && c.binding != 0 {
-		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.HomeDomain))
+		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.Home))
 	}
 
 	if r.Method == "INVITE" && c.originating() {
@@ -504,7 +504,7 @@ func (s *Sessions) servedUser(ctx context.Context, req *sip.Request, asserted []
 	now := s.r.clock.Now()
 
 	for _, a := range asserted {
-		for _, key := range identityKeys(a.URI, s.r.cfg.HomeDomain) {
+		for _, key := range identityKeys(a.URI, s.r.cfg.Home) {
 			regs, err := s.r.cfg.DB.ListRegistrationsByIdentity(ctx, key)
 			if err != nil {
 				s.log.WarnContext(ctx, "failed to read the registrations", slog.String("impu", a.URI.String()), slog.Any("error", err))
@@ -551,7 +551,7 @@ func (s *Sessions) terminating(ctx context.Context, tx *transaction.ServerTransa
 	req := tx.Request()
 
 	if out.Header.Has("Route") {
-		regs, barred, err := Recipients(ctx, s.r.cfg.DB, out.URI, s.r.cfg.HomeDomain)
+		regs, barred, err := Recipients(ctx, s.r.cfg.DB, out.URI, s.r.cfg.Home)
 
 		switch {
 		case err != nil:
@@ -626,7 +626,7 @@ func (s *Sessions) deliver(ctx context.Context, tx *transaction.ServerTransactio
 
 			if opts.Dialog != nil {
 				for _, r := range append([]proxy.Branch{b}, b.Retry...) {
-					s.r.calls.add(opts.Dialog, r.Key.(bindingKey), proxy.Callee, c.servedKeys(s.r.cfg.HomeDomain))
+					s.r.calls.add(opts.Dialog, r.Key.(bindingKey), proxy.Callee, c.servedKeys(s.r.cfg.Home))
 				}
 			}
 
@@ -792,7 +792,7 @@ func (s *Sessions) assertAlias(res *sip.Response, sub func() cx.IMSSubscription)
 		return
 	}
 
-	if alias, ok := assertedAlias(asserted[0], sub(), s.r.cfg.HomeDomain); ok {
+	if alias, ok := assertedAlias(asserted[0], sub(), s.r.cfg.Home); ok {
 		res.Header.Add("P-Asserted-Identity", alias.String())
 	}
 }

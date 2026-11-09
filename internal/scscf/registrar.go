@@ -15,6 +15,7 @@ import (
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/callrecords"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/regmetrics"
 	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/ellanetworks/ims/internal/trust"
@@ -71,7 +72,7 @@ type Resolver interface {
 }
 
 type Config struct {
-	HomeDomain string
+	Home       homedomain.Domains
 	Name       sip.URI
 	MinExpires time.Duration
 	MaxExpires time.Duration
@@ -132,6 +133,7 @@ type challenge struct {
 	callID  string
 	impu    string
 	impuKey string
+	realm   string
 	nonce   string
 	vector  authVector
 	resyncs int

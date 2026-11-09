@@ -155,3 +155,79 @@ func TestRegisterToSCSCFFromOutsideTheTrustDomain(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+func TestRegisterUnderAConfiguredDomain(t *testing.T) {
+	const (
+		domain = "ims.example.com"
+		impi   = testIMSI + "@" + domain
+		impu   = "sip:+15551230001@" + domain
+	)
+
+	hss := hsstest.New(t, hsstest.Config{Realm: imsRealm, IMSHost: imsHost})
+	hss.Add(hsstest.Subscriber{
+		IMPI: impi, IMSI: testIMSI, K: testK, OPc: testOPc, SQN: 32,
+		IMPUs: []cx.ProfileIdentity{{Identity: impu}},
+	})
+
+	peer := settings.Peer{
+		ID: "hss", Host: hss.Host(), Address: hss.Addr().Addr().String(), Port: int(hss.Addr().Port()),
+		Transport: settings.TransportTCP, Applications: []settings.Application{settings.ApplicationCx},
+	}
+
+	cfg := testConfig(t)
+	cfg.SIP.Addresses = []netip.Addr{loopback}
+	cfg.Peers = seedPeers(peer)
+
+	srv := startIMSWith(t, cfg, ipsectest.NewKernel())
+	waitOpen(t, srv, peer.ID)
+
+	before := srv.core.Load()
+	op := srv.settings.Get().Operator
+	op.Domain = domain
+
+	if err := srv.settings.UpdateOperator(t.Context(), op); err != nil {
+		t.Fatalf("UpdateOperator: %v", err)
+	}
+
+	eventually(t, "the core under the configured domain", func() bool {
+		c := srv.core.Load()
+		return c != nil && c != before
+	})
+	waitOpen(t, srv, peer.ID)
+
+	pcscf := sipListener(t, srv, rolePCSCF, loopback)
+	scscf := sipListener(t, srv, roleSCSCF, loopback)
+	ue := siptest.NewSocket(t, netip.AddrPortFrom(loopback, 0))
+
+	register := siptest.NewRequest("REGISTER", "sip:"+domain, sip.UDP, ue.Addr())
+	register.Header.Set("To", "<"+impu+">")
+	register.Header.Set("From", "<"+impu+">;tag="+sip.NewTag())
+	register.Header.Add("Authorization", `Digest username="`+impi+`", realm="`+domain+`", uri="sip:`+domain+
+		`", nonce="", response=""`)
+	register.Header.Add("Expires", "600")
+	register.Header.Add("Security-Client", "ipsec-3gpp;prot=esp;mod=trans;spi-c=25656;spi-s=25657;port-c=6301;"+
+		"port-s=6300;alg=hmac-sha-1-96;ealg=null")
+	register.Header.Add("Require", "sec-agree")
+	register.Header.Add("Proxy-Require", "sec-agree")
+	ue.Send(sip.UDP, pcscf, register)
+
+	uar := hss.Next(t).UAR
+	if uar == nil || uar.PrivateIdentity != impi || uar.PublicIdentity != impu || uar.VisitedNetwork != imsRealm {
+		t.Fatalf("UAR = %+v, want Visited-Network-Identifier %s", uar, imsRealm)
+	}
+
+	mar := hss.Next(t).MAR
+	if want := "sip:scscf." + imsRealm + ":" + strconv.Itoa(int(scscf.Port())); mar == nil || mar.ServerName != want ||
+		mar.PrivateIdentity != impi {
+		t.Fatalf("MAR = %+v, want Server-Name %s", mar, want)
+	}
+
+	a, err := sip.ParseAuth(wantResponse(t, ue, 401, "REGISTER").Header.Get("WWW-Authenticate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if realm, _ := a.Params.Get("realm"); sip.Unquote(realm) != domain {
+		t.Fatalf("challenge realm = %s, want %s", realm, domain)
+	}
+}

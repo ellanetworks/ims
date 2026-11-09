@@ -13,6 +13,7 @@ import (
 
 	"github.com/ellanetworks/core/diameter/cx"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/sip"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/transaction"
@@ -58,8 +59,8 @@ func (c *chain) originating() bool {
 	return false
 }
 
-func (c *chain) servedKeys(homeDomain string) []string {
-	return identityKeys(c.served.URI, homeDomain)
+func (c *chain) servedKeys(homeDomains homedomain.Domains) []string {
+	return identityKeys(c.served.URI, homeDomains)
 }
 
 const (
@@ -134,7 +135,7 @@ func (s *Sessions) resume(ctx context.Context, tx *transaction.ServerTransaction
 
 	c := h.c
 
-	if !c.originating() && !sameTarget(out.URI, c.ruri, s.r.cfg.HomeDomain) {
+	if !c.originating() && !sameTarget(out.URI, c.ruri, s.r.cfg.Home) {
 		s.log.DebugContext(ctx, "request retargeted by an AS", slog.String("from", c.ruri.String()), slog.String("to", out.URI.String()))
 		s.routeOnward(ctx, tx, out, c, false)
 
@@ -145,7 +146,7 @@ func (s *Sessions) resume(ctx context.Context, tx *transaction.ServerTransaction
 }
 
 // TS 24.229 clause 5.4.3.3
-func sameTarget(u, saved sip.URI, homeDomain string) bool {
+func sameTarget(u, saved sip.URI, homeDomains homedomain.Domains) bool {
 	canonical := func(u sip.URI) string {
 		u = u.Clone()
 		u.Params, u.Headers = nil, ""
@@ -157,9 +158,9 @@ func sameTarget(u, saved sip.URI, homeDomain string) bool {
 		return true
 	}
 
-	keys := identityKeys(saved, homeDomain)
+	keys := identityKeys(saved, homeDomains)
 
-	return slices.ContainsFunc(identityKeys(u, homeDomain), func(k string) bool { return slices.Contains(keys, k) })
+	return slices.ContainsFunc(identityKeys(u, homeDomains), func(k string) bool { return slices.Contains(keys, k) })
 }
 
 // TS 24.229 clause 5.4.3.2
@@ -247,7 +248,7 @@ func (s *Sessions) toAS(ctx context.Context, tx *transaction.ServerTransaction, 
 	}
 
 	if opts.Dialog != nil && c.binding != 0 {
-		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.HomeDomain))
+		s.r.calls.add(opts.Dialog, bindingKey(c.binding), proxy.Caller, c.servedKeys(s.r.cfg.Home))
 	}
 
 	s.log.DebugContext(ctx, "request sent to an AS", slog.String("request", out.StartLine()), slog.String("as", as.ServerName),
@@ -429,7 +430,7 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 			return cx.ServiceProfile{}, cx.IMSSubscription{}, false, err
 		}
 
-		p, ok := serviceProfile(sub, u, r.cfg.HomeDomain)
+		p, ok := serviceProfile(sub, u, r.cfg.Home)
 		if !ok {
 			r.log.WarnContext(ctx, "no service profile holds the identity: no service", slog.String("impu", u.String()))
 		}
@@ -442,7 +443,7 @@ func (r *Registrar) profileOf(ctx context.Context, u sip.URI, regs []db.Registra
 		return cx.ServiceProfile{}, cx.IMSSubscription{}, false, err
 	}
 
-	p, ok := serviceProfileOf(sub, u, set.Unregistered.Wildcard, r.cfg.HomeDomain)
+	p, ok := serviceProfileOf(sub, u, set.Unregistered.Wildcard, r.cfg.Home)
 	if !ok {
 		r.log.WarnContext(ctx, "no service profile of the HSS holds the identity: no service", slog.String("impu", u.String()))
 	}
@@ -464,8 +465,8 @@ func (r *Registrar) criteria(p cx.ServiceProfile, registered bool) []cx.InitialF
 }
 
 // TS 29.228 clause B.2.1
-func barredIn(p cx.ServiceProfile, u sip.URI, homeDomain string) bool {
-	keys := identityKeys(u, homeDomain)
+func barredIn(p cx.ServiceProfile, u sip.URI, homeDomains homedomain.Domains) bool {
+	keys := identityKeys(u, homeDomains)
 
 	for _, id := range p.PublicIdentities {
 		if id.Barred && slices.Contains(keys, identityKeyOf(id.Identity)) {

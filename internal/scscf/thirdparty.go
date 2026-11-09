@@ -442,7 +442,7 @@ func (r *Registrar) deregistered(ctx context.Context, rm removal) {
 		return
 	}
 
-	req := sip.NewRequest("REGISTER", sip.URI{Scheme: "sip", Host: r.cfg.HomeDomain})
+	req := sip.NewRequest("REGISTER", sip.URI{Scheme: "sip", Host: r.cfg.Home.Primary()})
 	req.Header = nil
 	req.Header.Add("From", "<"+impu.String()+">")
 	req.Header.Add("To", "<"+impu.String()+">")

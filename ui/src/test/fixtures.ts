@@ -12,6 +12,7 @@ import type { SIPStatus } from "@/queries/sip";
 export const operator: Operator = {
   mcc: "001",
   mnc: "01",
+  domain: "",
   numbering: {
     country_code: "1",
     national_prefix: "",

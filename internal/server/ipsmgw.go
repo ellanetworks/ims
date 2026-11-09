@@ -13,6 +13,7 @@ import (
 	"github.com/ellanetworks/core/diameter/sh"
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/scscf"
 	"github.com/ellanetworks/ims/internal/settings"
@@ -21,9 +22,11 @@ import (
 
 var errNoCore = errors.New("the IMS core is restarting")
 
-func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
+func (s *Server) startIPSMGW(ctx context.Context, op settings.Operator) error {
+	homeDomain := op.HomeDomain()
+
 	a, err := ipsmgw.Start(ctx, ipsmgw.Config{
-		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain,
+		Addresses: s.Config.SIP.Addresses, Transaction: transaction.Config{Network: s.ases.network, TracerProvider: s.tracerProvider}, HomeDomain: homeDomain, PLMN: op.PLMN(),
 		Store:   s.database,
 		Metrics: s.metrics.ipsmgw,
 		HSS:     shClient{s}, SMSCs: smscClient{s}, Router: s6cClient{s}, Nodes: nodesClient{s}, Number: func() string { return s.settings.Get().IPSMGW.Number }, Logger: s.Logger,
@@ -32,9 +35,9 @@ func (s *Server) startIPSMGW(ctx context.Context, homeDomain string) error {
 		return err
 	}
 
-	s.ases.resolver.Set(ipsmgw.Host(homeDomain), a.Servers())
-	s.ipsmgwHomeDomain = homeDomain
+	s.ipsmgwHomeDomain, s.ipsmgwPLMN = homeDomain, op.PLMN()
 	s.ipsmgw.Store(a)
+	s.routeIPSMGW(op.HomeDomains())
 
 	return nil
 }
@@ -45,10 +48,16 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 		return
 	}
 
-	s.ases.resolver.Set(ipsmgw.Host(s.ipsmgwHomeDomain), nil)
+	s.ipsmgwHosts = s.ases.route(s.ipsmgwHosts, nil, nil)
 
 	if err := a.Shutdown(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
+	}
+}
+
+func (s *Server) routeIPSMGW(domains homedomain.Domains) {
+	if a := s.ipsmgw.Load(); a != nil {
+		s.ipsmgwHosts = s.ases.route(s.ipsmgwHosts, asHosts(domains, ipsmgw.Host), a.Servers())
 	}
 }
 

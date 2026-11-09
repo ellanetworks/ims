@@ -11,6 +11,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/homedomain"
 )
 
 const (
@@ -229,7 +230,7 @@ func TestRegisteredWith(t *testing.T) {
 		{IMPI: "desk", ImplicitRegistrationSets: set(api.RegisteredIdentity{URI: "tel:+15551230002"})},
 	}
 
-	if err := (coreView{&Server{database: d}}).registeredWith(t.Context(), page, listDomain, listNow); err != nil {
+	if err := (coreView{&Server{database: d}}).registeredWith(t.Context(), page, homedomain.New(listDomain), listNow); err != nil {
 		t.Fatal(err)
 	}
 

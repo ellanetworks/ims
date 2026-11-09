@@ -10,6 +10,7 @@ export interface Numbering {
 export interface Operator {
   mcc: string;
   mnc: string;
+  domain: string;
   numbering: Numbering;
 }
 

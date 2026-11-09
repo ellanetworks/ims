@@ -1,6 +1,7 @@
 package icscf
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -65,7 +66,7 @@ func (i *ICSCF) parseRegister(tx *transaction.ServerTransaction, req *sip.Reques
 		AuthorizationType: authType,
 	}}
 
-	if a, ok := credentials(req.Header, i.cfg.HomeDomain); ok {
+	if a, ok := credentials(req.Header, i.cfg.Home); ok {
 		if username := authParam(a, "username"); username != "" {
 			reg.uar.PrivateIdentity = username
 		}
@@ -76,7 +77,7 @@ func (i *ICSCF) parseRegister(tx *transaction.ServerTransaction, req *sip.Reques
 	}
 
 	if reg.uar.VisitedNetwork == "" {
-		reg.uar.VisitedNetwork = i.cfg.HomeDomain
+		reg.uar.VisitedNetwork = cmp.Or(i.cfg.NetworkID, i.cfg.Home.Primary())
 	}
 
 	return reg, nil

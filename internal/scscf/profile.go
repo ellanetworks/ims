@@ -285,7 +285,7 @@ func (r *Registrar) profileNotice(ctx context.Context, impi string, pc profileCh
 			return false
 		}
 
-		keys := identityKeys(u, r.cfg.HomeDomain)
+		keys := identityKeys(u, r.cfg.Home)
 		i := slices.IndexFunc(keys, func(key string) bool { return holds(pc.before, key) })
 
 		return i >= 0 && holds(dropped, keys[i])
