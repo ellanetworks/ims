@@ -891,3 +891,25 @@ func (s *testStore) SaveCallRecords(ctx context.Context, records []*db.CallRecor
 
 	return errs, err
 }
+
+func TestRecorderCloseOrphans(t *testing.T) {
+	d := openDB(t)
+
+	if errs, err := d.SaveCallRecords(t.Context(), []*db.CallRecord{new(attempted("LEFT"))}, nil); err != nil || errs != nil {
+		t.Fatalf("SaveCallRecords = %v, %v", errs, err)
+	}
+
+	r := newTestRecorder(t, d)
+
+	r.Attempt(attempt("LIVE"))
+	r.Answered("LIVE", 200)
+	eventually(t, func() bool { return records(t, d)["LIVE"].Outcome == db.OutcomeAnswered })
+
+	r.CloseOrphans()
+
+	eventually(t, func() bool { return records(t, d)["LEFT"].Incomplete })
+
+	if records(t, d)["LIVE"].Incomplete {
+		t.Fatal("a call in progress was closed")
+	}
+}

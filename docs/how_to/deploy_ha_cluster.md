@@ -38,7 +38,7 @@ Ella IMS can be deployed as a high-availability cluster to provide redundancy an
 
     ## 6. Verify
 
-    On the **Cluster** page, all three nodes appear as **Healthy**.
+    On the leader's **Cluster** page, all three nodes appear as **Healthy**.
 
 === "Kubernetes"
 
@@ -73,4 +73,4 @@ Ella IMS can be deployed as a high-availability cluster to provide redundancy an
 
     ## 4. Verify
 
-    On the **Cluster** page, all three nodes appear as **Healthy**.
+    On the leader's **Cluster** page, all three nodes appear as **Healthy**.

@@ -349,6 +349,19 @@ func (r *Recorder) Ended(icid string, e End) {
 	})
 }
 
+func (r *Recorder) CloseOrphans() {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.closed {
+		r.orphanedLocked()
+	}
+}
+
 func (r *Recorder) CloseOpen() {
 	if r == nil {
 		return
@@ -481,7 +494,7 @@ func (r *Recorder) write() {
 				continue
 			}
 
-			r.log.Error("saving call records failed", slog.Any("error", err))
+			r.log.Warn("saving call records failed, retrying", slog.Any("error", err))
 
 			select {
 			case <-time.After(retry):

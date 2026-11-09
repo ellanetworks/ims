@@ -420,14 +420,7 @@ func (s *Server) finish(ctx context.Context) error {
 		return checkSettings(ctx, cfg, st)
 	})
 
-	closed, err := database.CloseOpenCallRecords(ctx, node.ID(), nil)
-	if err != nil {
-		return err
-	}
-
-	if closed > 0 {
-		s.Logger.InfoContext(ctx, "closed the call records of calls lost when the IMS stopped", slog.Int64("records", closed))
-	}
+	s.records.CloseOrphans()
 
 	s.settings = live
 	s.sipFailed = make(chan struct{}, 1)

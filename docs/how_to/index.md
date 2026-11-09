@@ -6,6 +6,7 @@ These how-to guides cover key operations and common tasks in Ella IMS.
 - [Upgrade](upgrade.md)
 - [Deploy a High Availability Cluster](deploy_ha_cluster.md)
 - [Scale a High Availability Cluster](scale_ha_cluster.md)
+- [Perform a Rolling Upgrade](rolling_upgrade.md)
 - [Integrate with Ella Core](integrate_with_ella_core.md)
 - [Connect a Core at Another Site](connect_a_core_at_another_site.md)
 - [Integrate with an Application Server](integrate_with_application_server.md)

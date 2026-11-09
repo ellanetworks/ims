@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/config"
@@ -31,6 +32,8 @@ type testIMS struct {
 	SMSRoutes      []settings.SMSRoute
 	Policy         settings.Policy
 	TracerProvider trace.TracerProvider
+
+	MCPTTOrphanAfter time.Duration
 }
 
 func testConfig(t *testing.T) testIMS {

@@ -56,7 +56,10 @@ func startNode(t *testing.T, cfg testIMS) *clusterNode {
 
 	cfg.seed(t)
 
-	srv := &Server{Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel()}
+	srv := &Server{
+		Config: cfg.Config, Logger: slog.New(slog.DiscardHandler), BcryptCost: bcrypt.MinCost, IPsec: ipsectest.NewKernel(),
+		MCPTTOrphanAfter: cfg.MCPTTOrphanAfter,
+	}
 
 	started := make(chan error, 1)
 
@@ -625,4 +628,40 @@ func TestDiameterStaysClosedUntilTheClusterRecordsTheLabel(t *testing.T) {
 	if got := getDiameter(t, b.srv).Host; got != "ims-new."+imsRealm {
 		t.Fatalf("Diameter host = %s", got)
 	}
+}
+
+func TestRestartedLeaderRejoins(t *testing.T) {
+	a := startNode(t, clusterConfig(t, "ims-a"))
+	a.waitStarted(t)
+
+	var joined []*clusterNode
+
+	for _, label := range []string{"ims-b", "ims-c"} {
+		token := a.mintToken(t)
+
+		n := startNode(t, joinerConfig(t, label))
+		n.waitStarted(t)
+
+		if code := n.join(t, token); code != http.StatusOK {
+			t.Fatalf("POST /api/v1/cluster/join = %d", code)
+		}
+
+		joined = append(joined, n)
+	}
+
+	for _, n := range joined {
+		eventuallyFor(t, "a voter of the joined node", func() bool {
+			m, ok := a.member(t, n.srv.node.ID())
+			return ok && m.Suffrage == "voter"
+		})
+	}
+
+	a.cfg.Peers = nil
+	a = a.restart(t)
+	a.waitStarted(t)
+
+	eventuallyFor(t, "the restarted node to be ready", func() bool {
+		code, _ := a.readyz(t)
+		return code == http.StatusOK
+	})
 }

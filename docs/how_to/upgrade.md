@@ -47,34 +47,4 @@ Check the running version in the UI's top bar.
 
 ## Upgrade a cluster
 
-Upgrade one node at a time.
-
-=== "Snap"
-
-    Repeat these steps for each node:
-
-    1. Refresh the snap:
-
-        ```shell
-        sudo snap refresh ella-ims
-        ```
-
-    2. Wait until the node is ready, when this answers `200`:
-
-        ```shell
-        curl http://<node>:5020/api/v1/readyz
-        ```
-
-=== "Kubernetes"
-
-    1. Set the new image:
-
-        ```shell
-        kubectl set image statefulset/ella-ims -n ella ims=ghcr.io/ellanetworks/ella-ims:<version>
-        ```
-
-    2. Wait for the rollout, which replaces one pod at a time:
-
-        ```shell
-        kubectl rollout status statefulset/ella-ims -n ella
-        ```
+See [Perform a Rolling Upgrade](rolling_upgrade.md).

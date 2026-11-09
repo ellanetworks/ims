@@ -58,13 +58,14 @@ nav:
   - Tutorials:
     - tutorials/index.md
     - Make Your First Voice Call: tutorials/first_voice_call.md
-    - Run Ella IMS on GKE: tutorials/ims_on_gke.md
+    - Run a High Availability Cluster on GKE: tutorials/ha_cluster_on_gke.md
   - How-to Guides:
     - how_to/index.md
     - Install: how_to/install.md
     - Upgrade: how_to/upgrade.md
     - Deploy a High Availability Cluster: how_to/deploy_ha_cluster.md
     - Scale a High Availability Cluster: how_to/scale_ha_cluster.md
+    - Perform a Rolling Upgrade: how_to/rolling_upgrade.md
     - Integrate with Ella Core: how_to/integrate_with_ella_core.md
     - Connect a Core at Another Site: how_to/connect_a_core_at_another_site.md
     - Integrate with an Application Server: how_to/integrate_with_application_server.md

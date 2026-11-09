@@ -99,6 +99,15 @@ func newCallScene(t *testing.T, numbering *settings.Numbering) *callScene {
 func registerAtSCSCF(t *testing.T, scscf netip.AddrPort, pcscf *siptest.Peer, impi, contact string) string {
 	t.Helper()
 
+	return registerThrough(t, scscf, pcscf, impi, func(r *sip.Request) {
+		r.Header.Set("Contact", "<"+contact+">;+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\"")
+		r.Header.Add("Path", "<sip:term@"+pcscf.Addr().String()+";lr>")
+	})
+}
+
+func registerThrough(t *testing.T, scscf netip.AddrPort, pcscf *siptest.Peer, impi string, fill func(*sip.Request)) string {
+	t.Helper()
+
 	impu := "sip:" + impi
 	callID := sip.NewTag() + "@" + loopback.String()
 	cseq := 0
@@ -111,9 +120,8 @@ func registerAtSCSCF(t *testing.T, scscf netip.AddrPort, pcscf *siptest.Peer, im
 		r.Header.Set("From", "<"+impu+">;tag="+sip.NewTag())
 		r.Header.Set("Call-ID", callID)
 		r.Header.Set("CSeq", strconv.Itoa(cseq)+" REGISTER")
-		r.Header.Set("Contact", "<"+contact+">;+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\"")
+		fill(r)
 		r.Header.Add("Expires", "600")
-		r.Header.Add("Path", "<sip:term@"+pcscf.Addr().String()+";lr>")
 		r.Header.Add("Authorization", auth)
 		pcscf.Send(sip.UDP, scscf, r)
 

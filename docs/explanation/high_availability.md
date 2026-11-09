@@ -61,5 +61,5 @@ Upgrades proceed one node at a time. A restarted node keeps its registrations, s
 
 - [Deploy a High Availability Cluster](../how_to/deploy_ha_cluster.md)
 - [Scale a High Availability Cluster](../how_to/scale_ha_cluster.md)
-- [Upgrade](../how_to/upgrade.md#upgrade-a-cluster)
+- [Perform a Rolling Upgrade](../how_to/rolling_upgrade.md)
 - [Cluster API](../reference/api/cluster.md)
