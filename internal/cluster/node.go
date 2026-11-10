@@ -65,9 +65,7 @@ type Config struct {
 	transport       func(raft.Transport) raft.Transport
 	logStore        func(raft.LogStore) raft.LogStore
 	logStoreTimeout time.Duration
-	readyLag        uint64
 	removalAfter    time.Duration
-	hashCheck       func(func() *db.HashCheck) func() *db.HashCheck
 }
 
 func (c Config) clustered() bool {
@@ -75,15 +73,14 @@ func (c Config) clustered() bool {
 }
 
 type Node struct {
-	cfg          Config
-	leaderCommit atomic.Uint64
-	scscf        atomic.Pointer[[]string]
-	mcptt        atomic.Pointer[[]string]
-	id           string
-	label        string
-	generated    bool
-	db           *db.DB
-	certs        *certs
+	cfg       Config
+	scscf     atomic.Pointer[[]string]
+	mcptt     atomic.Pointer[[]string]
+	id        string
+	label     string
+	generated bool
+	db        *db.DB
+	certs     *certs
 
 	metrics *metrics
 	ln      *listener.Listener
@@ -358,8 +355,6 @@ func (n *Node) startRaft(ctx context.Context) error {
 		})
 		addr = raft.ServerAddress(n.cfg.Advertise)
 
-		transport = watchCommits(transport, &n.leaderCommit)
-
 		if n.cfg.transport != nil {
 			transport = n.cfg.transport(transport)
 		}
@@ -412,12 +407,7 @@ func (n *Node) startRaft(ctx context.Context) error {
 
 	n.raft, n.store, n.transport = r, store, transport
 
-	check := n.db.Check
-	if n.cfg.hashCheck != nil {
-		check = n.cfg.hashCheck(check)
-	}
-
-	n.batcher = newBatcher(r, n.cfg.Now, n.db.LeaderTime, check)
+	n.batcher = newBatcher(r, n.cfg.Now, n.db.LeaderTime)
 
 	return nil
 }

@@ -90,10 +90,8 @@ This path returns whether the node is ready to receive traffic, and the result o
 | `initialized`    | The node has no `cluster` block, or a user exists. |
 | `diameter_label` | The cluster recorded this node's Diameter host label. |
 | `drain`          | The node is not draining or drained. |
-| `consistent`     | The node's database matches the leader's, at the hashes the leader puts in the log. |
 | `database`       | The database answers. |
 | `leader`         | The node leads, or heard from the leader within twice the election timeout. |
-| `caught_up`      | The node knows the leader, and is at most 1000 log entries behind the leader's commit index. |
 | `cluster`        | The node leads, and every voter is healthy. Only with `cluster=true`. |
 
 ### Response Fields
@@ -126,10 +124,8 @@ This path returns whether the node is ready to receive traffic, and the result o
             {"name": "initialized", "ok": true, "detail": ""},
             {"name": "diameter_label", "ok": true, "detail": ""},
             {"name": "drain", "ok": true, "detail": ""},
-            {"name": "consistent", "ok": true, "detail": ""},
             {"name": "database", "ok": true, "detail": ""},
-            {"name": "leader", "ok": false, "detail": "no contact with the cluster leader for 12s"},
-            {"name": "caught_up", "ok": true, "detail": ""}
+            {"name": "leader", "ok": false, "detail": "no contact with the cluster leader for 12s"}
         ]
     }
 }

@@ -17,7 +17,6 @@ export interface ClusterMember {
   drain_state: DrainState;
   suffrage: Suffrage;
   leader: boolean;
-  caught_up: boolean;
   healthy?: boolean;
   last_contact?: string;
 }

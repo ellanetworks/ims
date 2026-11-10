@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,28 +194,13 @@ func TestJoinReplicatesAndForwards(t *testing.T) {
 		})
 	}
 
-	hashes := map[string]bool{}
-
-	eventually(t, "equal hashes", func() error {
-		clear(hashes)
-
+	eventually(t, "every node at the leader's index", func() error {
 		index := c.leader().db.AppliedIndex()
 
 		for _, e := range c.nodes {
-			h, at, err := e.db.Hash(ctx)
-			if err != nil {
-				return err
-			}
-
-			if at != index {
+			if at := e.db.AppliedIndex(); at != index {
 				return fmt.Errorf("%s at %d, leader at %d", e.node.ID(), at, index)
 			}
-
-			hashes[string(h)] = true
-		}
-
-		if len(hashes) != 1 {
-			return fmt.Errorf("%d different hashes", len(hashes))
 		}
 
 		return nil
@@ -386,50 +370,6 @@ func TestUnreachableMember(t *testing.T) {
 	}
 }
 
-func corruptingChecks(t *testing.T, size int) (*testCluster, *atomic.Bool) {
-	var corrupt atomic.Bool
-
-	c := newClusterWith(t, size, func(_ int, dir, address string) *env {
-		return openWith(t, dir, address, func(cfg *Config) {
-			cfg.hashCheck = func(check func() *db.HashCheck) func() *db.HashCheck {
-				return func() *db.HashCheck {
-					h := check()
-					if h == nil || !corrupt.Load() {
-						return h
-					}
-
-					return &db.HashCheck{Index: h.Index, Hash: []byte("not the leader's hash")}
-				}
-			}
-		})
-	})
-
-	return c, &corrupt
-}
-
-func TestFollowerNoticesItDiverged(t *testing.T) {
-	c, corrupt := corruptingChecks(t, 2)
-	leader, follower := c.leader(), c.follower()
-
-	write(t, leader, "before")
-
-	if follower.db.Diverged() {
-		t.Fatal("the follower diverged before any corruption")
-	}
-
-	corrupt.Store(true)
-	write(t, leader, "first")
-	write(t, leader, "second")
-
-	eventually(t, "the follower to notice it diverged", func() error {
-		if !follower.db.Diverged() {
-			return errors.New("not diverged yet")
-		}
-
-		return nil
-	})
-}
-
 func TestJoinRetriesAfterAHalfCompletedAdmission(t *testing.T) {
 	c := newCluster(t, 1)
 	leader := c.leader()
@@ -477,12 +417,4 @@ func TestJoinRetriesAfterAHalfCompletedAdmission(t *testing.T) {
 
 	waitMember(t, joiner, joiner.node.ID())
 	waitMember(t, joiner, leader.node.ID())
-}
-
-func write(t testing.TB, e *env, name string) {
-	t.Helper()
-
-	if _, err := e.db.CreateUser(timeout(t), db.NewUser{Email: name + "@example.com", Role: db.RoleAdmin}, 100); err != nil {
-		t.Fatal(err)
-	}
 }

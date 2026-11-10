@@ -142,7 +142,7 @@ func TestReadinessOfASingleNode(t *testing.T) {
 		names = append(names, c.Name)
 	}
 
-	want := "shutdown,member,initialized,diameter_label,drain,consistent,database,leader,caught_up,cluster"
+	want := "shutdown,member,initialized,diameter_label,drain,database,leader,cluster"
 	if got := strings.Join(names, ","); got != want {
 		t.Fatalf("checks = %s, want %s", got, want)
 	}
@@ -232,51 +232,6 @@ func TestFrozenLeaderLeavesTheOthersReady(t *testing.T) {
 
 	leader.thaw()
 	leader.waitReady("")
-}
-
-func TestRestartedNodeIsUnreadyUntilCaughtUp(t *testing.T) {
-	cl := newCluster(t)
-	leader := cl.leader()
-	n := cl.followers(leader)[0]
-
-	n.stop()
-
-	for i := range 50 {
-		leader.must(http.MethodPut, "/api/v1/cluster/members/"+leader.id,
-			map[string]string{"display_name": fmt.Sprintf("leader-%d", i)}, nil)
-	}
-
-	n.launch()
-
-	var (
-		first    string
-		answered bool
-	)
-
-	for deadline := time.Now().Add(waitTimeout); ; time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s not ready after its restart", n.name)
-		}
-
-		code, r, err := n.readyz("")
-		if err != nil {
-			continue
-		}
-
-		if !answered {
-			answered, first = true, r.failing()
-
-			if code == http.StatusOK {
-				t.Fatal("the restarted node was ready from its first answer")
-			}
-		}
-
-		if code == http.StatusOK {
-			break
-		}
-	}
-
-	t.Logf("first answer after the restart: %s", first)
 }
 
 func TestClusterCheckWithAVoterDown(t *testing.T) {

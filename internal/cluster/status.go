@@ -15,8 +15,6 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-const readyLag = 1000
-
 type MemberStatus struct {
 	NodeID        string    `json:"node_id"`
 	Address       string    `json:"address"`
@@ -31,7 +29,6 @@ type MemberStatus struct {
 	Leader        bool      `json:"leader"`
 	Healthy       *bool     `json:"healthy,omitempty"`
 	LastContact   string    `json:"last_contact,omitempty"`
-	CaughtUp      bool      `json:"caught_up"`
 	APIAddress    string    `json:"api_address,omitempty"`
 }
 
@@ -102,7 +99,7 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 		ms := MemberStatus{
 			NodeID: m.NodeID, Address: m.Address, DiameterLabel: m.DiameterLabel,
 			DiameterHost: s.Operator.DiameterHost(m.DiameterLabel), Generated: m.LabelGenerated, DisplayName: m.DisplayName,
-			Version: m.Version, CaughtUp: m.CaughtUp, APIAddress: m.APIAddress,
+			Version: m.Version, APIAddress: m.APIAddress,
 			JoinedAt: m.JoinedAt, DrainState: string(m.DrainState), Suffrage: "none", Leader: m.NodeID == string(leaderID),
 		}
 
@@ -129,10 +126,8 @@ const (
 	CheckInitialized = "initialized"
 	CheckLabel       = "diameter_label"
 	CheckDrain       = "drain"
-	CheckConsistent  = "consistent"
 	CheckDatabase    = "database"
 	CheckLeader      = "leader"
-	CheckCaughtUp    = "caught_up"
 	CheckCluster     = "cluster"
 )
 
@@ -161,8 +156,8 @@ func (n *Node) Readiness(ctx context.Context, withCluster bool) []Check {
 	}
 
 	checks := []Check{
-		n.checkMember(), n.checkInitialized(ctx), n.checkLabel(ctx), n.checkDrain(ctx), n.checkConsistent(), n.checkDatabase(ctx),
-		n.checkLeader(), n.checkCaughtUp(),
+		n.checkMember(), n.checkInitialized(ctx), n.checkLabel(ctx), n.checkDrain(ctx), n.checkDatabase(ctx),
+		n.checkLeader(),
 	}
 
 	if withCluster {
@@ -261,19 +256,6 @@ func (n *Node) checkDrain(ctx context.Context) Check {
 	return pass(CheckDrain)
 }
 
-func (n *Node) checkConsistent() Check {
-	if r, _ := n.current(); r.State() == raft.Leader {
-		return pass(CheckConsistent)
-	}
-
-	if n.db.Diverged() {
-		return fail(CheckConsistent, "this node's database differs from the leader's: remove the node, "+
-			"delete its data directory and join it again")
-	}
-
-	return pass(CheckConsistent)
-}
-
 func (n *Node) checkDatabase(ctx context.Context) Check {
 	if err := n.db.Ping(ctx); err != nil {
 		return fail(CheckDatabase, err.Error())
@@ -303,38 +285,6 @@ func (n *Node) checkLeader() Check {
 	}
 
 	return pass(CheckLeader)
-}
-
-func (n *Node) ApplyLag() (uint64, bool) {
-	applied := n.db.AppliedIndex()
-
-	r, _ := n.current()
-	if r == nil {
-		return 0, false
-	}
-
-	if r.State() != raft.Leader {
-		if _, id := r.LeaderWithID(); id == "" {
-			return 0, false
-		}
-	}
-
-	commit := max(r.CommitIndex(), n.leaderCommit.Load())
-
-	return commit - min(commit, applied), true
-}
-
-func (n *Node) checkCaughtUp() Check {
-	lag, known := n.ApplyLag()
-
-	switch {
-	case !known:
-		return fail(CheckCaughtUp, "no known cluster leader")
-	case lag > cmp.Or(n.cfg.readyLag, readyLag):
-		return fail(CheckCaughtUp, fmt.Sprintf("the database is %d entries behind the cluster leader", lag))
-	}
-
-	return pass(CheckCaughtUp)
 }
 
 func (n *Node) checkCluster() Check {

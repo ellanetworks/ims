@@ -38,11 +38,9 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_database_query_errors_total` | Counter | Failed database calls, by connection pool. |
 | `ellaims_database_storage_bytes` | Gauge | Size of the databases on disk, by file: `main`, `wal`, `node`, `node_wal`. |
 | `ellaims_cluster_failure_tolerance` | Gauge | Voters that can fail without stopping writes. Leader only. |
-| `ellaims_cluster_state_mismatches_total` | Counter | Times this node found its database differs from the leader's. |
-| `ellaims_cluster_apply_lag_entries` | Gauge | Log entries the leader has committed that this node has not yet applied to its database. Absent while the leader's commit index is unknown. |
 | `ellaims_cluster_foreign_peers` | Gauge | Nodes behind `cluster.join` that are members of another cluster. |
 | `ellaims_cluster_join_requests_total` | Counter | Join and hello requests from other nodes, by result: `admitted`, `rejected`, `unauthorized`, `rate_limited`, `unavailable`. |
-| `ellaims_ready_check` | Gauge | 1 when the readiness check passes, 0 when it fails, by [check](api/status.md#checks) (`shutdown`, `member`, `initialized`, `diameter_label`, `drain`, `consistent`, `database`, `leader`, `caught_up`). |
+| `ellaims_ready_check` | Gauge | 1 when the readiness check passes, 0 when it fails, by [check](api/status.md#checks) (`shutdown`, `member`, `initialized`, `diameter_label`, `drain`, `database`, `leader`). |
 | `go_*` | Gauge, Counter, Summary | Go runtime: goroutines, heap, garbage-collection pauses. |
 | `process_*` | Gauge, Counter | Process: memory, CPU, open file descriptors, start time. |
 | `raft_*` | Gauge, Counter, Summary | [hashicorp/raft](https://github.com/hashicorp/raft) metrics. |

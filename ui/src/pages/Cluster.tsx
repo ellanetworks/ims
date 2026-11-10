@@ -78,21 +78,6 @@ function DrainStateChip({ state }: { state: DrainState }) {
 
 function SuffrageChip({ member }: { member: ClusterMember }) {
   const voter = member.suffrage === "voter";
-  if (member.suffrage === "nonvoter" && !member.caught_up) {
-    return (
-      <Tooltip
-        title="This node has not applied the whole log yet. It becomes a voter once it catches up."
-        arrow
-      >
-        <Chip
-          label="Catching up"
-          size="small"
-          color="warning"
-          variant="outlined"
-        />
-      </Tooltip>
-    );
-  }
   return (
     <Chip
       label={

@@ -90,7 +90,7 @@ describe("Cluster", () => {
       "10.0.0.13:7000",
       "—",
       "ims-3b2e4f5a6b72.ims.mnc001.mcc001.3gppnetwork.orgGenerated",
-      "Catching up",
+      "Nonvoter",
       "Drained",
       "v0.1.0",
       "Unhealthy",

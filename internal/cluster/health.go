@@ -311,7 +311,6 @@ type cappedPromoter struct {
 	autopilot.StablePromoter
 
 	draining func(raft.ServerID) bool
-	caughtUp func(raft.ServerID) bool
 }
 
 func (p cappedPromoter) isDraining(id raft.ServerID) bool {
@@ -348,7 +347,7 @@ func (p cappedPromoter) CalculatePromotionsAndDemotions(c *autopilot.Config, s *
 		case srv.State == autopilot.RaftNonVoter && !draining:
 			nonvoters++
 
-			if srv.Health.IsStable(now, stable) && (p.caughtUp == nil || p.caughtUp(id)) {
+			if srv.Health.IsStable(now, stable) {
 				standbys = append(standbys, id)
 			}
 		}
@@ -399,7 +398,7 @@ func (n *Node) runAutopilot(ctx context.Context, _ uint64) {
 	tracking.Go(func() { n.health.track(ctx, r) })
 
 	ap := autopilot.New(r, &pilot{n: n, r: r}, autopilot.WithLogger(hclog.NewNullLogger()),
-		autopilot.WithPromoter(&cappedPromoter{draining: n.isDraining, caughtUp: n.caughtUp}),
+		autopilot.WithPromoter(&cappedPromoter{draining: n.isDraining}),
 		autopilot.WithReconcileInterval(time.Second), autopilot.WithUpdateInterval(time.Second))
 
 	ap.Start(ctx)
@@ -409,12 +408,6 @@ func (n *Node) runAutopilot(ctx context.Context, _ uint64) {
 	<-ap.Stop()
 
 	tracking.Wait()
-}
-
-func (n *Node) caughtUp(id raft.ServerID) bool {
-	m, err := n.db.Member(context.Background(), string(id))
-
-	return err == nil && m.CaughtUp
 }
 
 func (n *Node) isDraining(id raft.ServerID) bool {
@@ -432,12 +425,6 @@ func (n *Node) onEvents(ev db.Events) {
 		if n.ln != nil {
 			n.ln.Revalidate()
 		}
-	}
-
-	if ev.Diverged {
-		n.metrics.mismatches.Inc()
-		n.cfg.Logger.Error("this node's database differs from the leader's: remove the node, delete its data " +
-			"directory and join it again")
 	}
 
 	if slices.Contains(ev.Removed, n.id) {
@@ -530,8 +517,6 @@ func (n *Node) updateSelf() {
 
 	want := n.certs.member(n.cfg.Advertise, n.cfg.Version, n.label, n.generated)
 	want.APIAddress, want.SCSCFAddresses, want.MCPTTAddresses = n.cfg.APIAddress, n.scscfAddresses(), n.mcpttAddresses()
-	commit := max(r.CommitIndex(), n.leaderCommit.Load())
-	want.CaughtUp = have.CaughtUp || (commit > 0 && n.db.AppliedIndex() >= commit)
 
 	if sameMember(have, want) {
 		return
@@ -659,7 +644,7 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 	}
 
 	want := n.certs.member(address, n.cfg.Version, n.label, n.generated)
-	want.APIAddress, want.CaughtUp, want.SCSCFAddresses = n.cfg.APIAddress, true, n.scscfAddresses()
+	want.APIAddress, want.SCSCFAddresses = n.cfg.APIAddress, n.scscfAddresses()
 	want.MCPTTAddresses = n.mcpttAddresses()
 
 	have, err := n.db.Member(ctx, n.id)
@@ -677,7 +662,7 @@ func (n *Node) registerSelf(ctx context.Context, via db.Proposer) error {
 func sameMember(a, b db.Member) bool {
 	return a.Address == b.Address && a.Fingerprint == b.Fingerprint && a.SchemaVersion == b.SchemaVersion &&
 		a.Version == b.Version && a.DiameterLabel == b.DiameterLabel && a.LabelGenerated == b.LabelGenerated &&
-		a.APIAddress == b.APIAddress && a.CaughtUp == b.CaughtUp && slices.Equal(a.SCSCFAddresses, b.SCSCFAddresses) &&
+		a.APIAddress == b.APIAddress && slices.Equal(a.SCSCFAddresses, b.SCSCFAddresses) &&
 		slices.Equal(a.MCPTTAddresses, b.MCPTTAddresses)
 }
 

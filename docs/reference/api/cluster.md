@@ -40,9 +40,8 @@ This path returns the node that answered, its cluster, and every member.
 | `members[].version`           | string  | Version of the member. |
 | `members[].joined_at`         | string  | Time the member joined. |
 | `members[].drain_state`       | string  | `active`, `draining` or `drained`. See [Drain a Member](#drain-a-member). |
-| `members[].suffrage`          | string  | `voter`, `nonvoter` (catching up, or standby), or `none`. |
+| `members[].suffrage`          | string  | `voter`, `nonvoter` (joining, or standby), or `none`. |
 | `members[].leader`            | boolean | The member is the leader. |
-| `members[].caught_up`         | boolean | The member has applied the whole log at least once. Only a caught-up member becomes a voter. |
 | `members[].healthy`           | boolean | The member is healthy. Only from the leader. |
 | `members[].last_contact`      | string  | Time since the leader last heard from the member. Only from the leader. |
 
@@ -75,7 +74,6 @@ This path returns the node that answered, its cluster, and every member.
                 "drain_state": "active",
                 "suffrage": "voter",
                 "leader": true,
-                "caught_up": true,
                 "healthy": true
             },
             {
@@ -91,7 +89,6 @@ This path returns the node that answered, its cluster, and every member.
                 "drain_state": "active",
                 "suffrage": "voter",
                 "leader": false,
-                "caught_up": true,
                 "healthy": true,
                 "last_contact": "0s"
             }

@@ -31,7 +31,6 @@ type Member struct {
 	DiameterLabel  string     `json:"diameter_label,omitempty"`
 	LabelGenerated bool       `json:"label_generated,omitempty"`
 	APIAddress     string     `json:"api_address,omitempty"`
-	CaughtUp       bool       `json:"caught_up,omitempty"`
 	SCSCFAddresses []string   `json:"scscf_addresses,omitempty"`
 	MCPTTAddresses []string   `json:"mcptt_addresses,omitempty"`
 }
@@ -46,7 +45,7 @@ const (
 
 const (
 	memberColumns = `node_id, address, fingerprint, schema_version, version, joined_at, diameter_label, label_generated,
-		api_address, caught_up, scscf_addresses, mcptt_addresses`
+		api_address, scscf_addresses, mcptt_addresses`
 	memberReadColumns = memberColumns + `, drain_state, display_name`
 )
 
@@ -60,7 +59,7 @@ func scanMember(scan func(...any) error) (Member, error) {
 	)
 
 	if err := scan(&m.NodeID, &m.Address, &fingerprint, &m.SchemaVersion, &m.Version,
-		&joined, &m.DiameterLabel, &m.LabelGenerated, &m.APIAddress, &m.CaughtUp, &scscf, &mcptt, &m.DrainState,
+		&joined, &m.DiameterLabel, &m.LabelGenerated, &m.APIAddress, &scscf, &mcptt, &m.DrainState,
 		&m.DisplayName); err != nil {
 		return Member{}, err
 	}
@@ -190,12 +189,10 @@ func applyRegisterMember(a *applyCtx, m Member) (struct{}, error) {
 		}
 	}
 
-	m.CaughtUp = m.CaughtUp || existing.CaughtUp
-
 	if _, err := a.tx.ExecContext(a.ctx, `UPDATE cluster_members SET address = ?, fingerprint = ?,
-		schema_version = ?, version = ?, diameter_label = ?, label_generated = ?, api_address = ?, caught_up = ?,
+		schema_version = ?, version = ?, diameter_label = ?, label_generated = ?, api_address = ?,
 		scscf_addresses = ?, mcptt_addresses = ? WHERE node_id = ?`, m.Address, nullableString(m.Fingerprint), m.SchemaVersion,
-		m.Version, m.DiameterLabel, m.LabelGenerated, m.APIAddress, m.CaughtUp, strings.Join(m.SCSCFAddresses, ","),
+		m.Version, m.DiameterLabel, m.LabelGenerated, m.APIAddress, strings.Join(m.SCSCFAddresses, ","),
 		strings.Join(m.MCPTTAddresses, ","), m.NodeID); err != nil {
 		if isConstraint(err, sqlite3.ErrConstraintUnique) || isConstraint(err, sqlite3.ErrConstraintPrimaryKey) {
 			return struct{}{}, fmt.Errorf("%w: another member has the address %s or the certificate", settings.ErrConflict,
@@ -207,7 +204,7 @@ func applyRegisterMember(a *applyCtx, m Member) (struct{}, error) {
 
 	if existing.Fingerprint != m.Fingerprint || existing.Address != m.Address || relabeled ||
 		existing.LabelGenerated != m.LabelGenerated || existing.APIAddress != m.APIAddress ||
-		existing.CaughtUp != m.CaughtUp || !slices.Equal(existing.SCSCFAddresses, m.SCSCFAddresses) ||
+		!slices.Equal(existing.SCSCFAddresses, m.SCSCFAddresses) ||
 		!slices.Equal(existing.MCPTTAddresses, m.MCPTTAddresses) {
 		a.events.Members = true
 	}
@@ -228,9 +225,9 @@ func insertMember(a *applyCtx, m Member) error {
 		return err
 	}
 
-	if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO cluster_members (`+memberColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := a.tx.ExecContext(a.ctx, `INSERT INTO cluster_members (`+memberColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.NodeID, m.Address, nullableString(m.Fingerprint), m.SchemaVersion, m.Version,
-		a.leaderTime, m.DiameterLabel, m.LabelGenerated, m.APIAddress, m.CaughtUp,
+		a.leaderTime, m.DiameterLabel, m.LabelGenerated, m.APIAddress,
 		strings.Join(m.SCSCFAddresses, ","), strings.Join(m.MCPTTAddresses, ",")); err != nil {
 		if isConstraint(err, sqlite3.ErrConstraintUnique) || isConstraint(err, sqlite3.ErrConstraintPrimaryKey) {
 			return fmt.Errorf("%w: another member has the address %s or the certificate", settings.ErrConflict, m.Address)

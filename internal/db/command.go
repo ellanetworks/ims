@@ -90,14 +90,8 @@ type Command struct {
 }
 
 type Batch struct {
-	LeaderTime int64      `json:"l"`
-	Commands   []Command  `json:"c"`
-	Check      *HashCheck `json:"h,omitempty"`
-}
-
-type HashCheck struct {
-	Index uint64 `json:"i"`
-	Hash  []byte `json:"h"`
+	LeaderTime int64     `json:"l"`
+	Commands   []Command `json:"c"`
 }
 
 type Result struct {

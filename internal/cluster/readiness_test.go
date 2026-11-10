@@ -263,7 +263,7 @@ func TestReadinessOfASingleNode(t *testing.T) {
 		names = append(names, c.Name)
 	}
 
-	want := []string{CheckMember, CheckInitialized, CheckLabel, CheckDrain, CheckConsistent, CheckDatabase, CheckLeader, CheckCaughtUp, CheckCluster}
+	want := []string{CheckMember, CheckInitialized, CheckLabel, CheckDrain, CheckDatabase, CheckLeader, CheckCluster}
 	if !slices.Equal(names, want) {
 		t.Fatalf("checks = %v, want %v", names, want)
 	}
@@ -272,10 +272,6 @@ func TestReadinessOfASingleNode(t *testing.T) {
 		return c.Name == CheckCluster
 	}) {
 		t.Fatalf("checks without cluster = %+v", checks)
-	}
-
-	if lag, known := e.node.ApplyLag(); !known || lag != 0 {
-		t.Fatalf("ApplyLag = %d, %t", lag, known)
 	}
 
 	waitMember(t, e, e.node.ID())
@@ -298,61 +294,11 @@ func TestReadinessOfASingleNode(t *testing.T) {
 }
 
 func TestReadinessOfAFollower(t *testing.T) {
-	c, corrupt := corruptingChecks(t, 2)
+	c := newCluster(t, 2)
 	c.initialize()
 	leader, follower := c.leader(), c.follower()
 
 	waitReady(t, leader, true)
-	waitReady(t, follower, false)
-
-	corrupt.Store(true)
-	write(t, leader, "first")
-	write(t, leader, "second")
-
-	waitFailing(t, follower, CheckConsistent, "differs")
-
-	if c := checkOf(leader.node.Readiness(context.Background(), false), CheckConsistent); !c.OK {
-		t.Fatalf("the leader's consistent check = %+v", c)
-	}
-}
-
-func TestReadinessOfALaggingFollower(t *testing.T) {
-	lags := []*lag{{}, {}, {}}
-	c := newClusterWith(t, 3, func(i int, dir, address string) *env {
-		return openWith(t, dir, address, func(cfg *Config) {
-			cfg.transport, cfg.readyLag = lags[i].wrap, 5
-		})
-	})
-
-	c.initialize()
-
-	follower := c.follower()
-	i := slices.Index(c.nodes, follower)
-
-	waitReady(t, follower, false)
-
-	lags[i].on.Store(true)
-
-	ctx := timeout(t)
-
-	for n := range 20 {
-		if err := c.leader().node.SetDisplayName(ctx, c.leader().node.ID(), fmt.Sprintf("n%d", n)); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	waitFailing(t, follower, CheckCaughtUp, "behind")
-
-	if c := checkOf(follower.node.Readiness(ctx, false), CheckLeader); !c.OK {
-		t.Fatalf("the lagging follower's leader check = %+v, want heartbeats to keep it", c)
-	}
-
-	if lag, known := follower.node.ApplyLag(); !known || lag <= 5 {
-		t.Fatalf("ApplyLag = %d, %t", lag, known)
-	}
-
-	lags[i].on.Store(false)
-
 	waitReady(t, follower, false)
 }
 

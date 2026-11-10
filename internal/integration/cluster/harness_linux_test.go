@@ -583,7 +583,6 @@ type member struct {
 	APIAddress  string `json:"api_address"`
 	Suffrage    string `json:"suffrage"`
 	Leader      bool   `json:"leader"`
-	CaughtUp    bool   `json:"caught_up"`
 	Healthy     *bool  `json:"healthy"`
 	DrainState  string `json:"drain_state"`
 	DisplayName string `json:"display_name"`
