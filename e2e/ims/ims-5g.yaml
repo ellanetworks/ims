@@ -16,6 +16,7 @@ scscf:
   port: 5080
 diameter:
   address: 10.80.0.5
+  host_label: ims
 n5:
   notify:
     address: 10.80.0.5
