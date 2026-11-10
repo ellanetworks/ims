@@ -545,12 +545,28 @@ func (n *node) login(email, password string) (string, error) {
 	return login.Token, nil
 }
 
+const loginRetry = 3 * time.Second
+
 func (n *node) logIn() {
 	n.t.Helper()
+
+	eventually(n.t, n.name+" to have the admin", func() error {
+		_, r, err := n.readyz("")
+		if err != nil {
+			return err
+		}
+
+		if c, ok := r.check("initialized"); !ok || !c.OK {
+			return fmt.Errorf("not initialized: %s", c.Detail)
+		}
+
+		return nil
+	})
 
 	eventually(n.t, n.name+" to accept the admin", func() error {
 		token, err := n.login(adminEmail, adminPassword)
 		if err != nil {
+			time.Sleep(loginRetry)
 			return err
 		}
 
