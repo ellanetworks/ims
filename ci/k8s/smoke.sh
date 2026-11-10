@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+MODE="${MODE:-multus}"
 IMAGE="${IMAGE:-ella-ims:latest}"
 PREVIOUS_IMAGE="${PREVIOUS_IMAGE:-}"
 
@@ -22,6 +23,7 @@ CALL_SECS=30
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"
 WATCH_PID=""
+FORWARD_PID=""
 
 k() { kubectl -n "${NS}" "$@"; }
 
@@ -36,12 +38,15 @@ fail() {
 cleanup() {
   status=$?
   [ -n "${WATCH_PID}" ] && kill "${WATCH_PID}" 2>/dev/null || true
+  [ -n "${FORWARD_PID}" ] && kill "${FORWARD_PID}" 2>/dev/null || true
   if [ "${status}" -ne 0 ]; then
     echo "== Diagnostics"
-    k get all,pvc,network-attachment-definitions -o wide || true
-    k describe pod ella-ims-0 || true
-    k logs ella-ims-0 --tail=100 || true
-    k logs ella-ims-0 --previous --tail=100 2>/dev/null || true
+    k get all,pvc,pdb,networkpolicy,network-attachment-definitions -o wide || true
+    for pod in $(k get pods -o name 2>/dev/null); do
+      k describe "${pod}" || true
+      k logs "${pod}" --tail=100 || true
+      k logs "${pod}" --previous --tail=100 2>/dev/null || true
+    done
     kubectl -n kube-system logs -l app=multus --tail=50 || true
     grep -E 'load_linux_test|^(--- |PASS|FAIL|panic)' "${WORK}/load.log" 2>/dev/null | tail -40 || true
   fi
@@ -54,6 +59,11 @@ cleanup() {
   exit "${status}"
 }
 trap cleanup EXIT
+
+case "${MODE}" in
+multus | ha) ;;
+*) fail "MODE must be multus or ha, not ${MODE}" ;;
+esac
 
 SIP_ADDR="${N6}.5"
 CORE_ADDR="${N6}.2"
@@ -163,34 +173,198 @@ load() {
   [ "${failed}" = 0 ] || fail "${failed} calls failed"
 }
 
+PODS=(ella-ims-0 ella-ims-1 ella-ims-2)
+FORWARD_PORT=15020
+
+forward() {
+  if [ -n "${FORWARD_PID}" ]; then
+    kill "${FORWARD_PID}" 2>/dev/null || true
+    wait "${FORWARD_PID}" 2>/dev/null || true
+  fi
+  kubectl -n "${NS}" port-forward "pod/$1" "${FORWARD_PORT}:5020" >"${WORK}/forward.log" 2>&1 &
+  FORWARD_PID=$!
+  SIP_ADDR=127.0.0.1
+  API_PORT="${FORWARD_PORT}"
+  wait_api
+}
+
+wait_all_ready() {
+  k rollout status statefulset/ella-ims --timeout=300s
+  k wait --for=condition=Ready pod -l app.kubernetes.io/name=ella-ims --timeout=180s
+}
+
+initialize() {
+  local credentials code
+  credentials="$(jq -n --arg email "${ADMIN_EMAIL}" --arg password "${ADMIN_PASSWORD}" '{email: $email, password: $password}')"
+  for _ in $(seq 60); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' \
+      -d "${credentials}" "http://${SIP_ADDR}:${API_PORT}/api/v1/init" || true)"
+    case "${code}" in
+    201 | 403) return 0 ;;
+    esac
+    sleep 5
+  done
+  fail "cannot create the first admin on ella-ims-0, last answer ${code}"
+}
+
+forward_leader() {
+  local leader=""
+  forward ella-ims-0
+  for _ in $(seq 30); do
+    leader="$(api /cluster | jq -r '.result.members[] | select(.leader) | .diameter_label')"
+    [ -n "${leader}" ] && break
+    sleep 2
+  done
+  [ -n "${leader}" ] || fail "the cluster has no leader"
+  echo "leader ${leader}"
+  forward "${leader}"
+}
+
+check_members() {
+  local cluster healthy=false
+  for _ in $(seq 30); do
+    cluster="$(api /cluster)"
+    if echo "${cluster}" | jq -e '
+      .result.leader_id == .result.node_id and .result.healthy and
+      ([.result.members[] | select(.suffrage == "voter" and .healthy) | .diameter_label] | sort == ["ella-ims-0", "ella-ims-1", "ella-ims-2"])
+    ' >/dev/null; then
+      healthy=true
+      break
+    fi
+    sleep 2
+  done
+  echo "${cluster}" | jq -c '.result.members[] | {node_id, address, diameter_host, suffrage, leader, healthy}' >&2
+  [ "${healthy}" = true ] || fail "the cluster does not have the three pods as healthy voters"
+  echo "${cluster}" | jq -e '.result.members | length == 3 and all(.address | test("^ella-ims-[0-2]\\.ella-ims-internal\\.ella\\.svc\\.cluster\\.local:7000$"))' >/dev/null \
+    || fail "a member does not advertise its per-pod DNS name"
+  echo "${cluster}" | jq -r '[.result.members[] | .diameter_label + "=" + .node_id] | sort | join(" ")'
+}
+
+check_cluster_ready() {
+  for _ in $(seq 30); do
+    curl -fsS --max-time 10 "http://${SIP_ADDR}:${API_PORT}/api/v1/readyz?cluster=true" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  curl -sS --max-time 10 "http://${SIP_ADDR}:${API_PORT}/api/v1/readyz?cluster=true" || true
+  fail "the cluster is not ready"
+}
+
+check_sip_interface() {
+  local pod
+  for pod in "${PODS[@]}"; do
+    k logs "${pod}" | grep '"msg":"ims started"' | tail -n 1 | jq -e '.sip | any(startswith("pcscf 10.6.0."))' >/dev/null \
+      || fail "the P-CSCF of ${pod} does not listen on eth1"
+  done
+  echo "the P-CSCF of each pod listens on eth1"
+}
+
+ha_smoke() {
+  step "Deploy ${IMAGE}"
+  docker tag "${IMAGE}" ella-ims:ci
+  kind load docker-image ella-ims:ci --name "${CLUSTER}"
+  kubectl apply -k "${ROOT}/ci/k8s/namespace"
+  kubectl get namespace "${NS}" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -qx privileged \
+    || fail "the namespace does not allow privileged pods"
+  k create secret generic ella-ims-cluster --from-literal=secret="$(head -c 32 /dev/urandom | base64)"
+  kubectl apply -k "${ROOT}/ci/k8s/ha"
+  endstep
+
+  step "Form the cluster and create the first admin on ella-ims-0"
+  for _ in $(seq 60); do
+    [ "$(k get pods -l app.kubernetes.io/name=ella-ims -o name | wc -l)" = 3 ] && break
+    sleep 2
+  done
+  k wait --for=jsonpath='{.status.phase}'=Running pod -l app.kubernetes.io/name=ella-ims --timeout=180s
+  forward ella-ims-0
+  initialize
+  wait_all_ready
+  k get pods -o wide
+  [ "$(k get pods -l app.kubernetes.io/name=ella-ims -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u | wc -l)" = 3 ] \
+    || fail "the pods do not run on three nodes"
+  log_in
+  local cluster_id members
+  forward_leader
+  cluster_id="$(api /cluster | jq -er .result.cluster_id)"
+  members="$(check_members)"
+  echo "${members}"
+  check_cluster_ready
+  for pod in "${PODS[@]}"; do
+    forward "${pod}"
+    [ "$(api /cluster | jq -r .result.cluster_id)" = "${cluster_id}" ] || fail "${pod} is in another cluster"
+  done
+  check_sip_interface
+  endstep
+
+  step "Rolling restart"
+  k rollout restart statefulset/ella-ims
+  wait_all_ready
+  forward_leader
+  local after
+  after="$(check_members)"
+  echo "${after}"
+  [ "${after}" = "${members}" ] || fail "the members changed across the rolling restart"
+  [ "$(api /cluster | jq -r .result.cluster_id)" = "${cluster_id}" ] || fail "the cluster changed across the rolling restart"
+  check_cluster_ready
+  api /users/me >/dev/null || fail "the API token is gone after the rolling restart"
+  for pod in "${PODS[@]}"; do
+    restarts="$(k get pod "${pod}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+    [ "${restarts}" = 0 ] || fail "${pod} restarted ${restarts} times"
+  done
+  check_sip_interface
+  k get pods -o wide
+  endstep
+}
+
 step "Lint the manifests"
 version="$(cat "${ROOT}/version/VERSION")"
-for dir in k8s/base k8s/examples/multus k8s/examples/gke-netdevice ci/k8s/multus; do
+for dir in k8s/base k8s/ha k8s/examples/multus k8s/examples/gke-netdevice k8s/examples/gke-ha ci/k8s/multus ci/k8s/ha; do
   kubectl kustomize "${ROOT}/${dir}" | kubeconform -strict -summary -skip NetworkAttachmentDefinition,Network,GKENetworkParamSet
 done
 endstep
 
 step "Create the cluster"
-if ip -4 route show to match "${N6}.1" | grep -qv '^default'; then
-  fail "${N6}.0/24 is already routed on this host; set N6_NET to a free /24"
+if [ "${MODE}" = ha ]; then
+  cat >"${WORK}/kind.yaml" <<'KIND'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+- role: worker
+KIND
+  kind create cluster --name "${CLUSTER}" --config "${WORK}/kind.yaml" --wait 120s
+else
+  if ip -4 route show to match "${N6}.1" | grep -qv '^default'; then
+    fail "${N6}.0/24 is already routed on this host; set N6_NET to a free /24"
+  fi
+  docker network create "${NETWORK}" --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" >/dev/null
+  kind create cluster --name "${CLUSTER}" --wait 120s
+  docker network connect "${NETWORK}" "${NODE}"
+  docker exec "${NODE}" ip -br addr show eth1
+  NODE_N6_ADDR="$(docker inspect "${NODE}" -f "{{(index .NetworkSettings.Networks \"${NETWORK}\").IPAddress}}")"
 fi
-docker network create "${NETWORK}" --subnet "${N6}.0/24" --ip-range "${N6}.128/25" --gateway "${N6}.1" >/dev/null
-kind create cluster --name "${CLUSTER}" --wait 120s
-docker network connect "${NETWORK}" "${NODE}"
-docker exec "${NODE}" ip -br addr show eth1
-NODE_N6_ADDR="$(docker inspect "${NODE}" -f "{{(index .NetworkSettings.Networks \"${NETWORK}\").IPAddress}}")"
 endstep
 
 step "Install the CNI plugins and Multus"
 curl -fsSL "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz" \
-  | tar -xz -C "${WORK}" ./macvlan ./static
-docker cp "${WORK}/macvlan" "${NODE}:/opt/cni/bin/macvlan"
-docker cp "${WORK}/static" "${NODE}:/opt/cni/bin/static"
+  | tar -xz -C "${WORK}" ./macvlan ./static ./bridge ./host-local
+for node in $(kind get nodes --name "${CLUSTER}"); do
+  for plugin in macvlan static bridge host-local; do
+    docker cp "${WORK}/${plugin}" "${node}:/opt/cni/bin/${plugin}"
+  done
+done
 curl -fsSL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
   | sed "s|multus-cni:snapshot-thick|multus-cni:${MULTUS_VERSION}-thick|" \
   | kubectl apply -f -
 kubectl -n kube-system rollout status daemonset/kube-multus-ds --timeout=180s
 endstep
+
+if [ "${MODE}" = ha ]; then
+  ha_smoke
+  echo "Kubernetes smoke test passed"
+  exit 0
+fi
 
 step "Check the Pod Security of the pod"
 kubectl create namespace pss-check >/dev/null

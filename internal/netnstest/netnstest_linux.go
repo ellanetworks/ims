@@ -22,6 +22,10 @@ const env = "IMS_NETNS_TEST"
 
 var skip string
 
+func Inside() bool {
+	return os.Getenv(env) != ""
+}
+
 func Main(m *testing.M) {
 	if os.Getenv(env) == "" {
 		cmd := exec.CommandContext(context.Background(), os.Args[0], os.Args[1:]...)

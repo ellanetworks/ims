@@ -21,6 +21,7 @@ import (
 
 const (
 	selfInterval     = time.Second
+	announceTimeout  = 2 * time.Second
 	maintainInterval = 10 * time.Second
 	tokenCleanup     = time.Hour
 	maxVoters        = 5
@@ -515,6 +516,7 @@ func (n *Node) updateSelf() {
 	}
 
 	if _, id := r.LeaderWithID(); id == "" {
+		n.announceAddress(r)
 		return
 	}
 
@@ -538,6 +540,66 @@ func (n *Node) updateSelf() {
 	if err := n.db.RegisterMember(ctx, want); err != nil {
 		n.cfg.Logger.Warn("failed to update this node's member record", slog.Any("error", err))
 	}
+}
+
+func (n *Node) announceAddress(r *raft.Raft) {
+	if n.formation.current() != FormationMember {
+		return
+	}
+
+	future := r.GetConfiguration()
+	if future.Error() != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), announceTimeout)
+	defer cancel()
+
+	have, err := n.db.Member(ctx, n.id)
+	if err != nil || have.Address == "" || have.Address == n.cfg.Advertise {
+		return
+	}
+
+	want := have
+	want.Address = n.cfg.Advertise
+
+	for _, s := range future.Configuration().Servers {
+		if string(s.ID) == n.id {
+			continue
+		}
+
+		via := peerProposer{peers: n.peers, addr: string(s.Address), id: string(s.ID)}
+		if err := n.registerVia(via, want); err == nil {
+			n.cfg.Logger.Info("announced this node's new cluster address", slog.String("address", want.Address))
+			return
+		}
+	}
+}
+
+func (n *Node) registerVia(via db.Proposer, m db.Member) error {
+	ctx, cancel := context.WithTimeout(context.Background(), announceTimeout)
+	defer cancel()
+
+	return n.db.RegisterMemberVia(ctx, via, m)
+}
+
+type peerProposer struct {
+	peers    *peerClient
+	addr, id string
+}
+
+func (p peerProposer) Propose(ctx context.Context, cmds []db.Command) ([]db.Result, error) {
+	var reply proposeReply
+
+	if err := p.peers.callAt(ctx, p.addr, p.id, "/cluster/v1/propose", proposeRequest{Commands: cmds}, &reply); err != nil {
+		return nil, err
+	}
+
+	if reply.Busy {
+		return nil, db.ErrBusy
+	}
+
+	return reply.Results, nil
 }
 
 func (n *Node) reconcileAddresses() {

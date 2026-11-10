@@ -8,6 +8,10 @@ on:
 
 jobs:
   k8s-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [multus, ha]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
@@ -62,4 +66,5 @@ jobs:
       - name: Smoke test
         run: ci/k8s/smoke.sh
         env:
+          MODE: ${{ matrix.mode }}
           IMAGE: ella-ims:latest

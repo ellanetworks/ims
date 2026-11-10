@@ -42,3 +42,21 @@ jobs:
             (cd "$dir" && go test -race -cover ./...)
             echo "::endgroup::"
           done
+
+  go-integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "go.mod"
+
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Load kernel modules
+        run: sudo modprobe -a bridge veth xfrm_user esp4 esp6 authenc
+
+      - name: Cluster integration tests
+        run: go test -tags integration -count=1 -timeout 15m ./internal/integration/cluster
