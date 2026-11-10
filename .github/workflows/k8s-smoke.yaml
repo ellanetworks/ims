@@ -35,6 +35,9 @@ jobs:
       - name: Load kernel modules
         run: sudo modprobe -a sctp esp4 xfrm_user
 
+      - name: Raise the inotify limits
+        run: sudo sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
+
       - name: Install kind, kubectl and kubeconform
         run: |
           mkdir -p "${RUNNER_TEMP}/bin"
