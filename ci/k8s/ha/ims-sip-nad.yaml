@@ -1,0 +1,16 @@
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ims-sip
+spec:
+  config: '{
+    "cniVersion": "1.0.0",
+    "type": "bridge",
+    "bridge": "ims-sip",
+    "ipam": {
+      "type": "host-local",
+      "ranges": [
+        [{"subnet": "10.6.0.0/24"}]
+      ]
+    }
+  }'

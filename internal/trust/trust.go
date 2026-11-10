@@ -2,7 +2,9 @@ package trust
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ellanetworks/ims/sip"
 )
@@ -33,6 +35,7 @@ var boundary = []string{
 
 type Domain struct {
 	networks []netip.Prefix
+	peers    atomic.Pointer[[]netip.Addr]
 }
 
 func New(addresses []netip.Addr, networks []netip.Prefix) *Domain {
@@ -50,6 +53,15 @@ func New(addresses []netip.Addr, networks []netip.Prefix) *Domain {
 	return d
 }
 
+func (d *Domain) SetPeers(addrs []netip.Addr) {
+	peers := make([]netip.Addr, len(addrs))
+	for i, a := range addrs {
+		peers[i] = a.Unmap()
+	}
+
+	d.peers.Store(&peers)
+}
+
 func (d *Domain) Trusted(a netip.Addr) bool {
 	a = a.Unmap()
 
@@ -57,6 +69,10 @@ func (d *Domain) Trusted(a netip.Addr) bool {
 		if p.Contains(a) {
 			return true
 		}
+	}
+
+	if peers := d.peers.Load(); peers != nil {
+		return slices.Contains(*peers, a)
 	}
 
 	return false

@@ -152,7 +152,7 @@ Choose one of the installation methods below.
     | Example | Second interface, `eth1` | Files to edit |
     | ------- | ------------------------ | ------------- |
     | `ims/k8s/examples/multus` | [Multus](https://github.com/k8snetworkplumbingwg/multus-cni), with the `macvlan` and `static` CNI plugins on the nodes | `ims-sip-nad.yaml`: set `master` to the node's interface on the network phones reach Ella IMS on, the P-CSCF address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address. |
-    | `ims/k8s/examples/gke-netdevice` | [GKE multi-network](https://cloud.google.com/kubernetes-engine/docs/how-to/setup-multinetwork-support-for-pods) and an internal passthrough Network Load Balancer, set up as in [Run Ella IMS on GKE](../tutorials/ims_on_gke.md) | `ims-sip-network.yaml`: set `vpc`, `vpcSubnet`, and the phones' IP pool in `routes`. Keep the routes for Google Cloud's health check ranges.<br>`ims.yaml`: set `sip.addresses` to the load balancer's address.<br>`kustomization.yaml`: set the same address in the `pcscf-address` init container. |
+    | `ims/k8s/examples/gke-netdevice` | [GKE multi-network](https://cloud.google.com/kubernetes-engine/docs/how-to/setup-multinetwork-support-for-pods) and an internal passthrough Network Load Balancer | `ims-sip-network.yaml`: set `vpc`, `vpcSubnet`, and the phones' IP pool in `routes`. Keep the routes for Google Cloud's health check ranges.<br>`ims.yaml`: set `sip.addresses` to the load balancer's address.<br>`kustomization.yaml`: set the same address in the `pcscf-address` init container. |
 
     Give the pod its second interface, `eth1`, on the network phones reach Ella IMS on, as the example requires.
 

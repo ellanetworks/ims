@@ -42,7 +42,7 @@ const pcscfRegistrationColumns = `id, impi, instance_id, reg_id, flow_token, tra
 	signalling_lost`
 
 func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (_ PCSCFRegistration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	if !r.UEAddress.IsValid() || !r.PCSCFAddress.IsValid() {
 		return PCSCFRegistration{}, errors.New("save P-CSCF registration: invalid address")
@@ -77,7 +77,7 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (_ 
 		conflict = `ON CONFLICT (impi, ue_address, instance_id, reg_id) WHERE reg_id IS NOT NULL`
 	}
 
-	saved, err := scanPCSCFRegistration(d.conn.QueryRowContext(ctx,
+	saved, err := scanPCSCFRegistration(d.local.QueryRowContext(ctx,
 		`INSERT INTO pcscf_registrations (impi, instance_id, reg_id, flow_token, transport, protected, ue_address, ue_port,
 			pcscf_address, contacts, associated_uris, sets, service_route, expires_at, policy_endpoint, policy_session_id,
 			policy_ref, signalling_lost)
@@ -102,9 +102,9 @@ func (d *DB) SavePCSCFRegistration(ctx context.Context, r PCSCFRegistration) (_ 
 }
 
 func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id)
+	res, err := d.local.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete P-CSCF registration: %w", err)
 	}
@@ -117,7 +117,7 @@ func (d *DB) DeletePCSCFRegistration(ctx context.Context, id int64) (err error) 
 }
 
 func (d *DB) ListPCSCFRegistrations(ctx context.Context) (_ []PCSCFRegistration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	regs, bad, err := d.listPCSCFRegistrations(ctx)
 	if err != nil {
@@ -125,7 +125,7 @@ func (d *DB) ListPCSCFRegistrations(ctx context.Context) (_ []PCSCFRegistration,
 	}
 
 	for _, id := range bad {
-		if _, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id); err != nil {
+		if _, err := d.local.ExecContext(ctx, `DELETE FROM pcscf_registrations WHERE id = ?`, id); err != nil {
 			return nil, fmt.Errorf("list P-CSCF registrations: delete unparsable row %d: %w", id, err)
 		}
 	}
@@ -134,7 +134,7 @@ func (d *DB) ListPCSCFRegistrations(ctx context.Context) (_ []PCSCFRegistration,
 }
 
 func (d *DB) listPCSCFRegistrations(ctx context.Context) ([]PCSCFRegistration, []int64, error) {
-	rows, err := d.conn.QueryContext(ctx, `SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations ORDER BY id`)
+	rows, err := d.local.QueryContext(ctx, `SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations ORDER BY id`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -246,9 +246,9 @@ type PCSCFSubscription struct {
 const pcscfSubscriptionColumns = `id, impi, impu, call_id, local_tag, dialog, version, expires_at`
 
 func (d *DB) SavePCSCFSubscription(ctx context.Context, s PCSCFSubscription) (_ PCSCFSubscription, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	saved, err := scanPCSCFSubscription(d.conn.QueryRowContext(ctx,
+	saved, err := scanPCSCFSubscription(d.local.QueryRowContext(ctx,
 		`INSERT INTO pcscf_subscriptions (impi, impu, call_id, local_tag, dialog, version, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (impi) DO UPDATE SET impu = excluded.impu, call_id = excluded.call_id,
@@ -264,9 +264,9 @@ func (d *DB) SavePCSCFSubscription(ctx context.Context, s PCSCFSubscription) (_ 
 }
 
 func (d *DB) DeletePCSCFSubscription(ctx context.Context, impi string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM pcscf_subscriptions WHERE impi = ?`, impi)
+	res, err := d.local.ExecContext(ctx, `DELETE FROM pcscf_subscriptions WHERE impi = ?`, impi)
 	if err != nil {
 		return fmt.Errorf("delete P-CSCF subscription: %w", err)
 	}
@@ -279,9 +279,9 @@ func (d *DB) DeletePCSCFSubscription(ctx context.Context, impi string) (err erro
 }
 
 func (d *DB) ListPCSCFSubscriptions(ctx context.Context) (_ []PCSCFSubscription, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT `+pcscfSubscriptionColumns+` FROM pcscf_subscriptions ORDER BY id`)
+	rows, err := d.local.QueryContext(ctx, `SELECT `+pcscfSubscriptionColumns+` FROM pcscf_subscriptions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list P-CSCF subscriptions: %w", err)
 	}

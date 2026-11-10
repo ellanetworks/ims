@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/ellanetworks/core/diameter/tgpp"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/cluster"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
@@ -70,9 +72,9 @@ type metrics struct {
 	readiness    *readinessMetrics
 }
 
-func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]settings.Peer, []diameter.PeerStatus),
-	trunks func() []settings.Trunk,
-) *metrics {
+func newMetrics(database *db.DB, node *cluster.Node, records *callrecords.Recorder,
+	peers func() ([]settings.Peer, []diameter.PeerStatus), trunks func() []settings.Trunk,
+) (*metrics, error) {
 	m := &metrics{
 		registry:      prometheus.NewRegistry(),
 		registrations: regmetrics.New(),
@@ -146,6 +148,12 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 		m.peerRequests,
 		m.peerDuration,
 	)
+
+	if err := cluster.RegisterRaftMetrics(m.registry); err != nil {
+		return nil, fmt.Errorf("register raft metrics: %w", err)
+	}
+
+	m.registry.MustRegister(node.Collectors()...)
 	m.registry.MustRegister(database.Collectors()...)
 	m.registry.MustRegister(records.Collectors()...)
 	m.registry.MustRegister(m.registrations.Collectors()...)
@@ -156,7 +164,7 @@ func newMetrics(database *db.DB, records *callrecords.Recorder, peers func() ([]
 	m.registry.MustRegister(m.trunkMedia.Collectors()...)
 	m.registry.MustRegister(m.readiness.collectors()...)
 
-	return m
+	return m, nil
 }
 
 var trunkInfoDesc = prometheus.NewDesc(

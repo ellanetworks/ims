@@ -1,4 +1,5 @@
 import type { CallRecord } from "@/queries/callRecords";
+import type { ClusterMember, ClusterStatus } from "@/queries/cluster";
 import type { DiameterPeer, DiameterRoute } from "@/queries/diameter";
 import type { Operator } from "@/queries/operator";
 import type { PolicyWithStatus } from "@/queries/policy";
@@ -163,4 +164,65 @@ export const page = <T>(
   page: extra.page ?? 1,
   per_page: extra.per_page ?? 25,
   total_count: extra.total_count ?? items.length,
+});
+
+export const clusterMember = (
+  overrides: Partial<ClusterMember> = {},
+): ClusterMember => ({
+  node_id: "0b5c6a0e-1111-4c1e-9a55-1f0c2d3e4f50",
+  address: "10.0.0.11:7000",
+  api_address: "https://10.0.0.11:5020",
+  diameter_label: "ims-1f0c2d3e4f50",
+  diameter_host: "ims-1f0c2d3e4f50.ims.mnc001.mcc001.3gppnetwork.org",
+  label_generated: true,
+  display_name: "",
+  version: "v0.1.0",
+  joined_at: "2026-09-30T12:00:00.000Z",
+  drain_state: "active",
+  suffrage: "voter",
+  leader: false,
+  healthy: true,
+  last_contact: "12ms",
+  ...overrides,
+});
+
+export const clusterStatus = (
+  overrides: Partial<ClusterStatus> = {},
+): ClusterStatus => ({
+  node_id: "0b5c6a0e-1111-4c1e-9a55-1f0c2d3e4f50",
+  cluster_id: "9f1e2d3c-2222-4b5a-8c7d-6e5f4a3b2c1d",
+  clustered: true,
+  leader_id: "0b5c6a0e-1111-4c1e-9a55-1f0c2d3e4f50",
+  term: 3,
+  applied_index: 42,
+  commit_index: 42,
+  schema: 1,
+  healthy: true,
+  failure_tolerance: 1,
+  members: [
+    clusterMember({ leader: true, last_contact: "0s" }),
+    clusterMember({
+      node_id: "1c6d7b1f-3333-4d2f-8b66-2a1d3e4f5a61",
+      address: "10.0.0.12:7000",
+      api_address: "https://10.0.0.12:5020",
+      diameter_label: "ims-b",
+      diameter_host: "ims-b.ims.mnc001.mcc001.3gppnetwork.org",
+      label_generated: false,
+      display_name: "paris-2",
+      last_contact: "35ms",
+    }),
+    clusterMember({
+      node_id: "2d7e8c2a-4444-4e3a-9c77-3b2e4f5a6b72",
+      address: "10.0.0.13:7000",
+      api_address: "",
+      diameter_label: "ims-3b2e4f5a6b72",
+      diameter_host: "ims-3b2e4f5a6b72.ims.mnc001.mcc001.3gppnetwork.org",
+      label_generated: true,
+      suffrage: "nonvoter",
+      drain_state: "drained",
+      healthy: false,
+      last_contact: "9.5s",
+    }),
+  ],
+  ...overrides,
 });

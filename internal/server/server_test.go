@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ellanetworks/ims/internal/api/apitest"
 	"github.com/ellanetworks/ims/internal/config"
@@ -31,6 +32,8 @@ type testIMS struct {
 	SMSRoutes      []settings.SMSRoute
 	Policy         settings.Policy
 	TracerProvider trace.TracerProvider
+
+	MCPTTOrphanAfter time.Duration
 }
 
 func testConfig(t *testing.T) testIMS {
@@ -41,7 +44,7 @@ func testConfig(t *testing.T) testIMS {
 			DB:       config.DB{Path: filepath.Join(t.TempDir(), "ims.db")},
 			API:      config.API{Address: netip.MustParseAddr("127.0.0.1"), Port: 0},
 			SIP:      config.SIP{Addresses: []netip.Addr{loopback, loopback6}},
-			Diameter: config.Diameter{Address: loopback},
+			Diameter: config.Diameter{Address: loopback, HostLabel: settings.DefaultDiameterLabel},
 		},
 		Peers: []settings.Peer{{
 			ID: "hss", Host: "hss.ims.mnc001.mcc001.3gppnetwork.org",
@@ -194,7 +197,7 @@ func TestServerStartShutdown(t *testing.T) {
 
 	srv.draining.Store(true)
 
-	if checks := srv.readiness.checks(ctx); checks[0].Name != CheckShutdown || checks[0].OK {
+	if checks := srv.readiness.checks(ctx, false); checks[0].Name != CheckShutdown || checks[0].OK {
 		t.Fatalf("checks while shutting down = %+v", checks)
 	}
 }

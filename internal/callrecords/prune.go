@@ -21,6 +21,7 @@ type PruneConfig struct {
 	Retention  func() time.Duration
 	MaxRecords int
 	Interval   time.Duration
+	Active     func() bool
 	Clock      Clock
 	Logger     *slog.Logger
 }
@@ -46,13 +47,15 @@ func Prune(ctx context.Context, cfg PruneConfig) {
 	defer ticker.Stop()
 
 	for {
-		n, err := cfg.Store.PruneCallRecords(ctx, cfg.Clock.Now().Add(-cfg.Retention()), cfg.MaxRecords)
+		if cfg.Active == nil || cfg.Active() {
+			n, err := cfg.Store.PruneCallRecords(ctx, cfg.Clock.Now().Add(-cfg.Retention()), cfg.MaxRecords)
 
-		switch {
-		case err != nil && ctx.Err() == nil:
-			cfg.Logger.ErrorContext(ctx, "pruning call records failed", slog.Any("error", err))
-		case n > 0:
-			cfg.Logger.InfoContext(ctx, "pruned call records", slog.Int64("records", n))
+			switch {
+			case err != nil && ctx.Err() == nil:
+				cfg.Logger.ErrorContext(ctx, "pruning call records failed", slog.Any("error", err))
+			case n > 0:
+				cfg.Logger.InfoContext(ctx, "pruned call records", slog.Int64("records", n))
+			}
 		}
 
 		select {

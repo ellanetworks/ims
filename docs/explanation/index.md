@@ -8,3 +8,4 @@ These explanations provide context on how Ella IMS works.
 - [Push-to-Talk](push_to_talk.md)
 - [SMS over IP](sms_over_ip.md)
 - [SIP Trunks](sip_trunks.md)
+- [High Availability](high_availability.md)

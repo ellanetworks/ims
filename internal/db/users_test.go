@@ -284,7 +284,7 @@ func TestUserWithoutPassword(t *testing.T) {
 	}
 
 	var nulls int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE password_hash IS NULL`).Scan(&nulls); err != nil || nulls != 1 {
+	if err := d.writer.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE password_hash IS NULL`).Scan(&nulls); err != nil || nulls != 1 {
 		t.Fatalf("users with a NULL password hash = %d, %v, want 1", nulls, err)
 	}
 }

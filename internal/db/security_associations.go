@@ -41,7 +41,7 @@ const securityAssociationColumns = `id, impi, state, pcscf_address, ue_address, 
 	pcscf_port_c, pcscf_port_s, ue_port_c, ue_port_s, spi_pc, spi_ps, spi_uc, spi_us, alg, ealg, expires_at`
 
 func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation) (_ SecurityAssociation, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	args := []any{
 		sa.IMPI, sa.State, sa.PCSCFAddress.String(), sa.UEAddress.String(), nullableString(sa.Instance), nullableInt(sa.RegID),
@@ -52,13 +52,13 @@ func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation
 	var saved SecurityAssociation
 
 	if sa.ID == 0 {
-		saved, err = scanSecurityAssociation(d.conn.QueryRowContext(ctx,
+		saved, err = scanSecurityAssociation(d.local.QueryRowContext(ctx,
 			`INSERT INTO security_associations (impi, state, pcscf_address, ue_address, instance_id, reg_id,
 				pcscf_port_c, pcscf_port_s, ue_port_c, ue_port_s, spi_pc, spi_ps, spi_uc, spi_us, alg, ealg, expires_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING `+securityAssociationColumns, args...))
 	} else {
-		saved, err = scanSecurityAssociation(d.conn.QueryRowContext(ctx,
+		saved, err = scanSecurityAssociation(d.local.QueryRowContext(ctx,
 			`UPDATE security_associations SET impi = ?, state = ?, pcscf_address = ?, ue_address = ?, instance_id = ?, reg_id = ?,
 				pcscf_port_c = ?, pcscf_port_s = ?, ue_port_c = ?, ue_port_s = ?, spi_pc = ?, spi_ps = ?, spi_uc = ?, spi_us = ?,
 				alg = ?, ealg = ?, expires_at = ?
@@ -78,9 +78,9 @@ func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation
 }
 
 func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM security_associations WHERE id = ?`, id)
+	res, err := d.local.ExecContext(ctx, `DELETE FROM security_associations WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete security association %d: %w", id, err)
 	}
@@ -93,9 +93,9 @@ func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) (err error
 }
 
 func (d *DB) ListSecurityAssociations(ctx context.Context) (_ []SecurityAssociation, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT `+securityAssociationColumns+` FROM security_associations ORDER BY id`)
+	rows, err := d.local.QueryContext(ctx, `SELECT `+securityAssociationColumns+` FROM security_associations ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list security associations: %w", err)
 	}

@@ -21,7 +21,7 @@ func testHandler(t *testing.T, cfg Config) http.Handler {
 	}
 
 	if cfg.JWTSecret == nil {
-		cfg.JWTSecret = []byte("0123456789abcdef0123456789abcdef")
+		cfg.JWTSecret = func() []byte { return []byte("0123456789abcdef0123456789abcdef") }
 	}
 
 	if cfg.Logger == nil {

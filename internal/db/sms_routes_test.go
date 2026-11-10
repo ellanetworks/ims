@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/ellanetworks/ims/internal/settings"
-	"github.com/mattn/go-sqlite3"
 )
 
 func testSMSCs(t *testing.T, d *DB) (settings.Peer, settings.Peer) {
@@ -97,7 +96,7 @@ func TestSMSRoutePeerForeignKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := d.DeletePeer(t.Context(), smsc.ID); !isConstraint(err, sqlite3.ErrConstraintForeignKey) {
+	if err := d.DeletePeer(t.Context(), smsc.ID); !errors.Is(err, ErrConstraintForeignKey) {
 		t.Fatalf("DeletePeer in use = %v, want a foreign key failure", err)
 	}
 

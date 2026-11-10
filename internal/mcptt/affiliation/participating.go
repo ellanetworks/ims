@@ -41,7 +41,7 @@ var ErrTooManyAffiliations = errors.New("affiliation: N2 affiliations reached")
 // TS 24.379 clause 9.2.2.2.6
 // TS 24.379 clause 9.2.2.2.7
 type Owner interface {
-	Publish(now time.Time, group, user sip.URI, clients []string) ([]string, error)
+	Publish(ctx context.Context, now time.Time, group, user sip.URI, clients []string) ([]string, error)
 }
 
 // TS 24.379 clause 9.2.2.2.2
@@ -128,8 +128,6 @@ type Record struct {
 func (p *Participating) SetStore(life context.Context, store Store) { p.store, p.life = store, life }
 
 func (p *Participating) Restore(ctx context.Context, now time.Time, records []Record, bound func(id sip.URI, client string) bool) {
-	var jobs []job
-
 	p.mu.Lock()
 
 	for _, r := range records {
@@ -166,6 +164,27 @@ func (p *Participating) Restore(ctx context.Context, now time.Time, records []Re
 		p.touch(u, r.ClientID)
 	}
 
+	jobs := p.everyJob(now)
+
+	p.mu.Unlock()
+
+	p.flush(ctx, now, jobs)
+	p.persist(ctx, now)
+}
+
+// TS 24.379 clause 9.2.2.2.6
+func (p *Participating) Republish(ctx context.Context, now time.Time) {
+	p.mu.Lock()
+	jobs := p.everyJob(now)
+	p.mu.Unlock()
+
+	p.flush(ctx, now, jobs)
+	p.persist(ctx, now)
+}
+
+func (p *Participating) everyJob(now time.Time) []job {
+	var jobs []job
+
 	for _, u := range p.users {
 		groups := map[string]sip.URI{}
 
@@ -180,10 +199,7 @@ func (p *Participating) Restore(ctx context.Context, now time.Time, records []Re
 		}
 	}
 
-	p.mu.Unlock()
-
-	p.flush(ctx, now, jobs)
-	p.persist(ctx, now)
+	return jobs
 }
 
 // TS 24.379 clause 9.2.2.3.8
@@ -691,7 +707,7 @@ func (p *Participating) flush(ctx context.Context, now time.Time, jobs []job) {
 		j := jobs[0]
 		jobs = jobs[1:]
 
-		held, err := p.owner.Publish(now, j.group, j.user, j.clients)
+		held, err := p.owner.Publish(ctx, now, j.group, j.user, j.clients)
 		if err != nil {
 			p.log.DebugContext(ctx, "affiliation refused by the server owning the group", slog.String("mcptt_id", j.user.String()),
 				slog.String("group", j.group.String()), slog.Any("error", err))

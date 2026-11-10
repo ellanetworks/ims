@@ -41,7 +41,7 @@ type pending struct {
 	published []string
 }
 
-func (o *pending) Publish(_ time.Time, group, _ sip.URI, clients []string) ([]string, error) {
+func (o *pending) Publish(_ context.Context, _ time.Time, group, _ sip.URI, clients []string) ([]string, error) {
 	o.published = append(o.published, group.User)
 
 	if o.refuse {
@@ -212,7 +212,7 @@ func TestControllingExpiry(t *testing.T) {
 	now := time.Unix(1000, 0)
 	g := u(t, "sip:g1@example.com")
 
-	if _, err := c.Publish(now, g, a.ID(), []string{"c1"}); err != nil {
+	if _, err := c.Publish(t.Context(), now, g, a.ID(), []string{"c1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,7 +220,7 @@ func TestControllingExpiry(t *testing.T) {
 		t.Error("expiration")
 	}
 
-	if _, err := c.Publish(now, g, u(t, "sip:x@example.com"), []string{"c1"}); !errors.Is(err, ErrForbidden) {
+	if _, err := c.Publish(t.Context(), now, g, u(t, "sip:x@example.com"), []string{"c1"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("non-member: %v", err)
 	}
 }
@@ -267,7 +267,7 @@ type interleaving struct {
 	calls  [][]string
 }
 
-func (o *interleaving) Publish(now time.Time, group, user sip.URI, clients []string) ([]string, error) {
+func (o *interleaving) Publish(ctx context.Context, now time.Time, group, user sip.URI, clients []string) ([]string, error) {
 	o.calls = append(o.calls, clients)
 
 	if f := o.during; f != nil {
@@ -276,7 +276,7 @@ func (o *interleaving) Publish(now time.Time, group, user sip.URI, clients []str
 		f()
 	}
 
-	return o.Controlling.Publish(now, group, user, clients)
+	return o.Controlling.Publish(ctx, now, group, user, clients)
 }
 
 // TS 24.379 clause 9.2.2.2.6

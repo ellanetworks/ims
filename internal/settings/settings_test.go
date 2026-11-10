@@ -144,7 +144,7 @@ func TestDerivedNames(t *testing.T) {
 		{"Diameter host", o.DiameterHost(""), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
 		{"labelled Diameter host", o.DiameterHost("ims-1"), "ims-1.ims.mnc410.mcc310.3gppnetwork.org"},
 		{"Diameter realm", o.DiameterRealm(), "ims.mnc410.mcc310.3gppnetwork.org"},
-		{"S-CSCF name", o.SCSCFName(5082), "sip:scscf.ims.mnc410.mcc310.3gppnetwork.org:5082"},
+		{"S-CSCF name", o.SCSCFName("ims-1", 5082), "sip:scscf-ims-1.ims.mnc410.mcc310.3gppnetwork.org:5082"},
 	} {
 		if tt.got != tt.want {
 			t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
@@ -152,9 +152,9 @@ func TestDerivedNames(t *testing.T) {
 	}
 
 	want := []string{
-		"ims.mnc410.mcc310.3gppnetwork.org", "pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.ims.mnc410.mcc310.3gppnetwork.org",
+		"ims.mnc410.mcc310.3gppnetwork.org", "pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf-ims-1.ims.mnc410.mcc310.3gppnetwork.org",
 	}
-	if got := o.SIPAliases(); !reflect.DeepEqual(got, want) {
+	if got := o.SIPAliases("ims-1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("SIPAliases = %v, want %v", got, want)
 	}
 }
@@ -179,7 +179,7 @@ func TestConfiguredDomain(t *testing.T) {
 		{"derived domain", o.DerivedDomain(), "ims.mnc410.mcc310.3gppnetwork.org"},
 		{"Diameter host", o.DiameterHost(""), "ims.ims.mnc410.mcc310.3gppnetwork.org"},
 		{"Diameter realm", o.DiameterRealm(), "ims.mnc410.mcc310.3gppnetwork.org"},
-		{"S-CSCF name", o.SCSCFName(5082), "sip:scscf.ims.mnc410.mcc310.3gppnetwork.org:5082"},
+		{"S-CSCF name", o.SCSCFName("ims-1", 5082), "sip:scscf-ims-1.ims.mnc410.mcc310.3gppnetwork.org:5082"},
 		{"PLMN", o.PLMN(), "310410"},
 	} {
 		if tt.got != tt.want {
@@ -193,9 +193,9 @@ func TestConfiguredDomain(t *testing.T) {
 
 	want := []string{
 		"ims.example.com", "ims.mnc410.mcc310.3gppnetwork.org",
-		"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf.ims.mnc410.mcc310.3gppnetwork.org",
+		"pcscf.ims.mnc410.mcc310.3gppnetwork.org", "scscf-ims-1.ims.mnc410.mcc310.3gppnetwork.org",
 	}
-	if got := o.SIPAliases(); !reflect.DeepEqual(got, want) {
+	if got := o.SIPAliases("ims-1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("SIPAliases = %v, want %v", got, want)
 	}
 
@@ -943,5 +943,30 @@ func TestLiveChangeContext(t *testing.T) {
 
 	if _, causes := live.Take(); len(causes) != 0 {
 		t.Fatalf("second Take causes %v, want none", causes)
+	}
+}
+
+func TestReloadOfTheSameSettingsSignalsNoChange(t *testing.T) {
+	live := NewLive(&fakeStore{}, Settings{Operator: Operator{MCC: "001", MNC: "01"}}, nil)
+	changed := live.Changed()
+
+	live.Reload(Settings{Operator: Operator{MCC: "001", MNC: "01"}, Peers: []Peer{}, Trunks: []Trunk{}})
+
+	select {
+	case <-changed:
+		t.Fatal("reloading the same settings signalled a change")
+	default:
+	}
+
+	live.Reload(Settings{Operator: Operator{MCC: "001", MNC: "02"}})
+
+	select {
+	case <-changed:
+	default:
+		t.Fatal("reloading other settings signalled no change")
+	}
+
+	if got := live.Get().Operator.MNC; got != "02" {
+		t.Fatalf("MNC after a reload = %s, want 02", got)
 	}
 }

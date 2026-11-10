@@ -11,19 +11,21 @@ import (
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ellanetworks/core/diameter"
 	"github.com/ellanetworks/ims/internal/api"
 	"github.com/ellanetworks/ims/internal/as"
-	"github.com/ellanetworks/ims/internal/backup"
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/cluster"
 	"github.com/ellanetworks/ims/internal/config"
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/ibcf"
 	"github.com/ellanetworks/ims/internal/ipsmgw"
 	"github.com/ellanetworks/ims/internal/mcptt"
+	mcpttserver "github.com/ellanetworks/ims/internal/mcptt/server"
 	"github.com/ellanetworks/ims/internal/oidc"
 	"github.com/ellanetworks/ims/internal/pcscf"
 	"github.com/ellanetworks/ims/internal/scscf"
@@ -76,30 +78,49 @@ type Server struct {
 	TrunkMediaTimeout      time.Duration
 	TrunkKeepaliveFailures int
 
-	ASTimeout      time.Duration
-	PruneInterval  time.Duration
-	BcryptCost     int
-	TracerProvider trace.TracerProvider
+	ASTimeout        time.Duration
+	PruneInterval    time.Duration
+	MCPTTOrphanAfter time.Duration
+	BcryptCost       int
+	TracerProvider   trace.TracerProvider
 
 	tracerProvider  trace.TracerProvider
 	shutdownTracing func(context.Context) error
 	detached        tracing.Detached
 
 	database    *db.DB
+	node        *cluster.Node
 	draining    atomic.Bool
 	records     *callrecords.Recorder
 	metrics     *metrics
 	stopPrune   context.CancelFunc
 	pruneDone   chan struct{}
+	stopSweep   context.CancelFunc
+	sweepDone   chan struct{}
 	readiness   *readiness
 	stopReady   context.CancelFunc
+	stopEvents  func()
 	readyDone   chan struct{}
 	settings    *settings.Live
 	apiServer   *http.Server
 	apiListener net.Listener
+	apiTLS      *tls.Config
+	handler     atomic.Pointer[http.Handler]
+	errs        chan error
+	stopForming context.CancelFunc
+	forming     sync.WaitGroup
+	drain       *drainer
+	stopDrain   context.CancelFunc
+	drainDone   chan struct{}
+	refusing    atomic.Bool
+
+	mu      sync.Mutex
+	running bool
 
 	mcptt           atomic.Pointer[mcptt.AS]
+	mcpttCluster    *mcpttCluster
 	ases            builtinASs
+	peers           *peerDirectory
 	mcpttHomeDomain string
 	mcpttHosts      []string
 
@@ -128,6 +149,18 @@ type core struct {
 	failed *atomic.Bool
 }
 
+func (s *Server) Err() <-chan error {
+	return s.errs
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	(*s.handler.Load()).ServeHTTP(w, r)
+}
+
+func (s *Server) setHandler(h http.Handler) {
+	s.handler.Store(&h)
+}
+
 func (s *Server) Start(ctx context.Context) error {
 	if s.apiServer != nil {
 		return ErrAlreadyStarted
@@ -150,45 +183,236 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.detached = tracing.NewDetached(s.tracerProvider, tracerName, roleIMS)
 
-	database, err := db.Open(ctx, cfg.DB.Path)
+	var apiLC net.ListenConfig
+
+	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
 	if err != nil {
 		s.stopTracing(ctx)
+		return fmt.Errorf("listen for the API: %w", err)
+	}
+
+	database, err := db.Open(ctx, cfg.DB.Path)
+	if err != nil {
+		_ = apiLn.Close()
+
+		s.stopTracing(ctx)
+
 		return err
 	}
+
+	clusterCfg := cluster.Config{
+		Dir: filepath.Join(filepath.Dir(cfg.DB.Path), "raft"), Version: version.Get().Version, Now: time.Now,
+		Logger: s.Logger, DiameterLabel: cfg.Diameter.HostLabel,
+	}
+
+	if c := cfg.Cluster; c != nil {
+		clusterCfg.Address = netip.AddrPortFrom(c.Address, uint16(c.Port)).String()
+		clusterCfg.Advertise = c.AdvertiseAddress()
+		clusterCfg.Join = c.JoinAddresses()
+		clusterCfg.BootstrapExpect = c.BootstrapExpect
+		clusterCfg.SecretFile = c.SecretFile
+		clusterCfg.APIAddress = apiAddress(cfg, apiLn.Addr())
+	}
+
+	node, err := cluster.Open(ctx, clusterCfg, database)
+	if err != nil {
+		_ = apiLn.Close()
+		_ = database.Close()
+
+		s.stopTracing(ctx)
+
+		return err
+	}
+
+	s.Config.Diameter.HostLabel = node.DiameterLabel()
+
+	closeStore := func() {
+		if err := errors.Join(node.Close(), database.Close()); err != nil {
+			s.Logger.ErrorContext(ctx, "failed to close the database", slog.Any("error", err))
+		}
+	}
+
+	s.database, s.node = database, node
+	s.records = callrecords.New(callrecords.Config{Store: database, NodeID: node.ID(), Logger: s.Logger})
+
+	s.metrics, err = newMetrics(database, node, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
+		if s.settings == nil {
+			return nil, nil
+		}
+
+		return s.settings.Get().Peers, coreView{s}.Peers()
+	}, func() []settings.Trunk {
+		if s.settings == nil {
+			return nil
+		}
+
+		return s.settings.Get().Trunks
+	})
+	if err != nil {
+		_ = apiLn.Close()
+		_ = s.records.Close(ctx)
+
+		closeStore()
+
+		s.stopTracing(ctx)
+
+		return err
+	}
+
+	s.readiness = &readiness{node: node, stopping: s.draining.Load, metrics: s.metrics.readiness, logger: s.Logger}
+
+	readyCtx, stopReady := context.WithCancel(context.WithoutCancel(ctx))
+	s.stopReady, s.readyDone = stopReady, make(chan struct{})
+
+	go func() {
+		defer close(s.readyDone)
+
+		s.readiness.run(readyCtx)
+	}()
+
+	s.apiListener, s.apiTLS = apiLn, tlsConfig
+	s.apiServer = &http.Server{
+		Handler:           s,
+		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       time.Minute,
+		WriteTimeout:      time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		TLSConfig:         tlsConfig,
+	}
+
+	s.errs = make(chan error, 1)
+	s.stopForming = func() {}
+
+	s.setHandler(api.NewLimitedHandler(s.baseAPIConfig(), s.unavailable))
+
+	formed := node.Formed()
+	if cfg.Cluster != nil {
+		formed = nil
+	}
+
+	select {
+	case <-node.Removed():
+		s.serveAPI()
+		s.Logger.WarnContext(ctx, "ims started fenced: this node was removed from the cluster; delete its data "+
+			"directory to join it again", slog.String("api", apiLn.Addr().String()))
+
+		return nil
+	case <-formed:
+		if err := s.finish(ctx); err != nil {
+			stopReady()
+			<-s.readyDone
+
+			_ = apiLn.Close()
+			_ = s.records.Close(ctx)
+
+			closeStore()
+
+			s.stopTracing(ctx)
+
+			s.apiServer, s.apiListener = nil, nil
+
+			return err
+		}
+
+		s.serveAPI()
+
+		return nil
+	default:
+	}
+
+	s.serveAPI()
+
+	formCtx, stopForming := context.WithCancel(context.WithoutCancel(ctx))
+	s.stopForming = stopForming
+
+	s.Logger.InfoContext(ctx, "ims waiting for the cluster", slog.String("api", apiLn.Addr().String()),
+		slog.Int("expected", clusterCfg.BootstrapExpect))
+
+	s.forming.Go(func() {
+		select {
+		case <-formCtx.Done():
+			return
+		case <-node.Formed():
+		}
+
+		err := s.finish(formCtx)
+
+		switch {
+		case err == nil, formCtx.Err() != nil:
+		case errors.Is(err, cluster.ErrRemoved):
+			s.Logger.WarnContext(formCtx, "this node was removed from the cluster: delete its data directory to join it again")
+		default:
+			s.Logger.ErrorContext(formCtx, "failed to start after the cluster formed", slog.Any("error", err))
+
+			s.errs <- err
+		}
+	})
+
+	return nil
+}
+
+func (s *Server) baseAPIConfig() api.Config {
+	return api.Config{
+		Backups:        s.node,
+		Cluster:        s.node,
+		Frontend:       ui.FS(),
+		Ready:          s.readiness.checks,
+		Metrics:        s.metrics.registry,
+		Requests:       s.metrics.requests,
+		Auth:           s.database,
+		SecureCookie:   s.apiTLS != nil,
+		TracerProvider: s.tracerProvider,
+		Now:            time.Now,
+		Logger:         s.Logger,
+	}
+}
+
+func (s *Server) unavailable() (int, string) {
+	f := s.node.Formation()
+
+	switch f.State {
+	case cluster.FormationRemoved:
+		return http.StatusGone, cluster.ErrRemoved.Error()
+	case cluster.FormationMember:
+		return http.StatusServiceUnavailable, "The node is starting: see /readyz"
+	}
+
+	message := "The cluster is forming"
+	if f.Expected > 0 {
+		message += fmt.Sprintf(": found %d of %d nodes", f.Found, f.Expected)
+	}
+
+	if f.Detail != "" {
+		message += " (" + f.Detail + ")"
+	}
+
+	return http.StatusServiceUnavailable, message
+}
+
+func (s *Server) serveAPI() {
+	if s.apiTLS != nil {
+		go func() { _ = s.apiServer.ServeTLS(s.apiListener, "", "") }()
+	} else {
+		go func() { _ = s.apiServer.Serve(s.apiListener) }()
+	}
+}
+
+func (s *Server) finish(ctx context.Context) error {
+	cfg, database, node := s.Config, s.database, s.node
 
 	initial, err := database.GetSettings(ctx)
 	if err != nil {
-		_ = database.Close()
-
-		s.stopTracing(ctx)
-
 		return err
 	}
 
-	jwtSecret, err := database.JWTSecret(ctx)
+	secrets, err := newSecrets(ctx, database)
 	if err != nil {
-		_ = database.Close()
-
-		s.stopTracing(ctx)
-
 		return err
 	}
 
 	oidcSettings, err := database.GetOIDC(ctx)
 	if err != nil {
-		_ = database.Close()
-
-		s.stopTracing(ctx)
-
-		return err
-	}
-
-	oidcCookieKey, err := database.OIDCCookieKey(ctx)
-	if err != nil {
-		_ = database.Close()
-
-		s.stopTracing(ctx)
-
 		return err
 	}
 
@@ -196,43 +420,16 @@ func (s *Server) Start(ctx context.Context) error {
 		return checkSettings(ctx, cfg, st)
 	})
 
-	closed, err := database.CloseOpenCallRecords(ctx, nil)
-	if err != nil {
-		_ = database.Close()
+	s.records.CloseOrphans()
 
-		s.stopTracing(ctx)
-
-		return err
-	}
-
-	if closed > 0 {
-		s.Logger.InfoContext(ctx, "closed the call records of calls lost when the IMS stopped", slog.Int64("records", closed))
-	}
-
-	var apiLC net.ListenConfig
-
-	apiLn, err := apiLC.Listen(ctx, "tcp", netip.AddrPortFrom(cfg.API.Address, uint16(cfg.API.Port)).String())
-	if err != nil {
-		_ = database.Close()
-
-		s.stopTracing(ctx)
-
-		return fmt.Errorf("listen for the API: %w", err)
-	}
-
-	s.database = database
 	s.settings = live
 	s.sipFailed = make(chan struct{}, 1)
-	s.records = callrecords.New(callrecords.Config{Store: database, Logger: s.Logger})
-	s.metrics = newMetrics(database, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
-		return live.Get().Peers, coreView{s}.Peers()
-	}, func() []settings.Trunk { return live.Get().Trunks })
-
-	s.readiness = &readiness{
-		ping: database.Ping, stopping: s.draining.Load, metrics: s.metrics.readiness, logger: s.Logger,
-	}
-
 	s.ases = builtinASs{network: transaction.NewNetwork(), resolver: &as.Resolver{DNS: &sip.Resolver{}}}
+	s.peers = &peerDirectory{
+		self: node.ID(), database: database, operator: func() settings.Operator { return live.Get().Operator },
+		fallback: s.ases.resolver, logger: s.Logger,
+	}
+	s.peers.refresh(ctx)
 
 	s.guardTrunks(ctx, live)
 
@@ -245,36 +442,28 @@ func (s *Server) Start(ctx context.Context) error {
 			Failures: s.TrunkKeepaliveFailures,
 			Logger:   s.Logger,
 		}); err != nil {
-			_ = s.records.Close(ctx)
-			_ = apiLn.Close()
-			_ = database.Close()
-
-			s.stopTracing(ctx)
-
 			return err
 		}
 	}
 
 	if cfg.MCPTT != nil {
 		if err := s.startMCPTT(ctx, initial.Operator.HomeDomains()); err != nil {
-			_ = s.records.Close(ctx)
-			_ = apiLn.Close()
-			_ = database.Close()
-
-			s.stopTracing(ctx)
-
+			s.stopTrunks(ctx)
 			return err
 		}
 	}
 
 	if err := s.startIPSMGW(ctx, initial.Operator); err != nil {
 		s.stopMCPTT(ctx)
+		s.stopTrunks(ctx)
 
-		_ = s.records.Close(ctx)
-		_ = apiLn.Close()
-		_ = database.Close()
+		return err
+	}
 
-		s.stopTracing(ctx)
+	if err := s.waitForLabel(ctx); err != nil {
+		s.stopIPSMGW(ctx)
+		s.stopMCPTT(ctx)
+		s.stopTrunks(ctx)
 
 		return err
 	}
@@ -283,12 +472,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		s.stopIPSMGW(ctx)
 		s.stopMCPTT(ctx)
-
-		_ = s.records.Close(ctx)
-		_ = apiLn.Close()
-		_ = database.Close()
-
-		s.stopTracing(ctx)
+		s.stopTrunks(ctx)
 
 		return err
 	}
@@ -298,32 +482,25 @@ func (s *Server) Start(ctx context.Context) error {
 	s.resubscribeIPSMGW(ctx)
 	s.reprobeTrunks()
 
-	view := coreView{s}
+	base := context.WithoutCancel(ctx)
 
-	apiCfg := api.Config{
-		Settings:       live,
-		Diameter:       view,
-		DiameterLabel:  s.Config.Diameter.HostLabel,
-		SIP:            view,
-		Registrations:  view,
-		Policy:         view,
-		CallRecords:    database,
-		Backups:        &backup.Backups{DB: database, Dir: filepath.Dir(cfg.DB.Path), Now: time.Now},
-		SIPTrunks:      s.trunkStates(),
-		Frontend:       ui.FS(),
-		Ready:          s.readiness.checks,
-		Metrics:        s.metrics.registry,
-		Requests:       s.metrics.requests,
-		Auth:           database,
-		OIDC:           oidc.NewLive(database, oidcSettings),
-		JWTSecret:      jwtSecret,
-		OIDCCookieKey:  oidcCookieKey,
-		BcryptCost:     s.BcryptCost,
-		SecureCookie:   tlsConfig != nil,
-		TracerProvider: s.tracerProvider,
-		Now:            time.Now,
-		Logger:         s.Logger,
-	}
+	view := coreView{s}
+	oidcLive := oidc.NewLive(database, oidcSettings)
+	s.stopEvents = s.followEvents(base, database, oidcLive, secrets)
+
+	apiCfg := s.baseAPIConfig()
+	apiCfg.Settings = live
+	apiCfg.Diameter = view
+	apiCfg.DiameterLabel = s.Config.Diameter.HostLabel
+	apiCfg.SIP = view
+	apiCfg.Registrations = view
+	apiCfg.Policy = view
+	apiCfg.CallRecords = database
+	apiCfg.SIPTrunks = s.trunkStates()
+	apiCfg.OIDC = oidcLive
+	apiCfg.JWTSecret = secrets.jwt
+	apiCfg.OIDCCookieKey = secrets.cookieKey
+	apiCfg.BcryptCost = s.BcryptCost
 
 	if cfg.MCPTT != nil {
 		apiCfg.MCPTT = mcpttView{s}
@@ -331,29 +508,12 @@ func (s *Server) Start(ctx context.Context) error {
 		apiCfg.MCPTTStatus = mcpttView{s}.Status
 	}
 
-	s.apiListener = apiLn
-	s.apiServer = &http.Server{
-		Handler:           api.NewHandler(apiCfg),
-		ErrorLog:          slog.NewLogLogger(s.Logger.Handler(), slog.LevelWarn),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       time.Minute,
-		WriteTimeout:      time.Minute,
-		IdleTimeout:       2 * time.Minute,
-		TLSConfig:         tlsConfig,
-	}
-
-	if tlsConfig != nil {
-		go func() { _ = s.apiServer.ServeTLS(apiLn, "", "") }()
-	} else {
-		go func() { _ = s.apiServer.Serve(apiLn) }()
-	}
-
-	followCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	followCtx, stop := context.WithCancel(base)
 	s.stopFollow, s.followDone = stop, make(chan struct{})
 
 	go s.follow(followCtx)
 
-	pruneCtx, stopPrune := context.WithCancel(context.WithoutCancel(ctx))
+	pruneCtx, stopPrune := context.WithCancel(base)
 	s.stopPrune, s.pruneDone = stopPrune, make(chan struct{})
 
 	go func() {
@@ -362,22 +522,49 @@ func (s *Server) Start(ctx context.Context) error {
 		callrecords.Prune(pruneCtx, callrecords.PruneConfig{
 			Store: database, Retention: func() time.Duration { return live.Get().CallRecords.Retention() },
 			Interval: s.PruneInterval, Logger: s.Logger,
+			Active: func() bool {
+				leading, _ := node.Leader()
+				return leading
+			},
 		})
 	}()
 
-	readyCtx, stopReady := context.WithCancel(context.WithoutCancel(ctx))
-	s.stopReady, s.readyDone = stopReady, make(chan struct{})
+	sweepCtx, stopSweep := context.WithCancel(base)
+	s.stopSweep, s.sweepDone = stopSweep, make(chan struct{})
 
 	go func() {
-		defer close(s.readyDone)
+		defer close(s.sweepDone)
 
-		s.readiness.run(readyCtx)
+		if cfg.MCPTT != nil && cfg.Cluster != nil {
+			mcpttSweep{
+				database: database, node: node, after: cmp.Or(s.MCPTTOrphanAfter, mcpttserver.DefaultSessionInterval), logger: s.Logger,
+			}.run(sweepCtx)
+		}
 	}()
+
+	drainCtx, stopDrain := context.WithCancel(base)
+	s.drain = &drainer{node: node, store: database, refusing: &s.refusing, logger: s.Logger, wake: make(chan struct{}, 1)}
+	s.stopDrain, s.drainDone = stopDrain, make(chan struct{})
+
+	go func() {
+		defer close(s.drainDone)
+
+		s.drain.run(drainCtx)
+	}()
+
+	s.setHandler(api.NewHandler(apiCfg))
+
+	s.mu.Lock()
+	s.running = true
+	s.mu.Unlock()
+
+	go s.fenceOnRemoval(base, node)
 
 	v := version.Get()
 	attrs := []any{
-		slog.String("version", v.Version), slog.String("revision", v.Revision), slog.String("api", apiLn.Addr().String()),
-		slog.Bool("tls", tlsConfig != nil),
+		slog.String("version", v.Version), slog.String("revision", v.Revision),
+		slog.String("api", s.apiListener.Addr().String()), slog.Bool("tls", s.apiTLS != nil),
+		slog.String("node", node.ID()), slog.Bool("clustered", node.Clustered()),
 	}
 	s.Logger.InfoContext(ctx, "ims started", append(attrs, c.attrs()...)...)
 
@@ -430,7 +617,7 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	sipServer, err := startSIP(ctx, cfg, st, s.settings.Runtime, s.settings.Changed, s.trunkStates(), s.numbering, s.timers(), node, rlm, cxh, rxh, pf, s.database, s.records,
-		s.metrics, s.IPsec, sipFailed, s.ases, s.tracerProvider, s.Logger)
+		s.metrics, s.IPsec, s.refusing.Load, sipFailed, s.ases, s.peers, s.tracerProvider, s.Logger)
 	if err != nil {
 		_ = pf.close(ctx)
 		_ = node.Shutdown(ctx)
@@ -439,6 +626,8 @@ func (s *Server) startCore(ctx context.Context, st settings.Settings) (*core, er
 	}
 
 	pf.serve(s.Logger)
+
+	s.node.SetSCSCFAddresses(sipServer.bound(roleSCSCF))
 
 	return &core{settings: st, node: node, diameterLns: diameterLns, realms: rlm, policy: pf, sip: sipServer, failed: failed}, nil
 }
@@ -680,28 +869,25 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	s.draining.Store(true)
 
+	s.stopForming()
+	s.forming.Wait()
+
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+
+	if running {
+		if err := s.node.HandOver(); err != nil {
+			s.Logger.WarnContext(ctx, "failed to hand the leadership over", slog.Any("error", err))
+		}
+	}
+
 	if err := s.apiServer.Shutdown(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to stop the API cleanly", slog.Any("error", err))
 	}
 
-	s.stopFollow()
-	<-s.followDone
-
-	if s.trunks != nil {
-		if err := s.trunks.Shutdown(ctx); err != nil {
-			s.Logger.WarnContext(ctx, "failed to stop the SIP trunk monitor cleanly", slog.Any("error", err))
-		}
-	}
-
-	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
-	s.stopMCPTT(mcpttCtx)
-	s.stopIPSMGW(mcpttCtx)
-	cancel()
-
-	if c := s.core.Swap(nil); c != nil {
-		coreCtx, cancel := before(ctx, recordsFlushTime+tracesFlushTime)
-		c.shutdown(coreCtx, s.Logger)
-		cancel()
+	if running {
+		s.stopRunning(ctx)
 	}
 
 	recordsCtx, cancel := before(ctx, tracesFlushTime)
@@ -711,17 +897,55 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	cancel()
 
-	s.stopPrune()
-	<-s.pruneDone
-
 	s.stopReady()
 	<-s.readyDone
 
-	if err := s.database.Close(); err != nil {
+	if err := errors.Join(s.node.Close(), s.database.Close()); err != nil {
 		s.Logger.WarnContext(ctx, "failed to close the database", slog.Any("error", err))
 	}
 
 	s.stopTracing(ctx)
+}
+
+func (s *Server) stopRunning(ctx context.Context) {
+	s.stopDrain()
+	<-s.drainDone
+
+	s.stopFollow()
+	<-s.followDone
+
+	s.stopEvents()
+
+	s.stopTrunks(ctx)
+
+	leaving := s.leaving(ctx)
+
+	mcpttCtx, cancel := before(ctx, ShutdownTimeout-mcpttStopTime)
+	s.stopMCPTT(mcpttCtx)
+	s.stopIPSMGWAs(mcpttCtx, leaving)
+	cancel()
+
+	if c := s.core.Swap(nil); c != nil {
+		coreCtx, cancel := before(ctx, recordsFlushTime+tracesFlushTime)
+		c.shutdown(coreCtx, s.Logger)
+		cancel()
+	}
+
+	s.stopPrune()
+	<-s.pruneDone
+
+	s.stopSweep()
+	<-s.sweepDone
+}
+
+func (s *Server) stopTrunks(ctx context.Context) {
+	if s.trunks == nil {
+		return
+	}
+
+	if err := s.trunks.Shutdown(ctx); err != nil {
+		s.Logger.WarnContext(ctx, "failed to stop the SIP trunk monitor cleanly", slog.Any("error", err))
+	}
 }
 
 func (s *Server) startTracing(ctx context.Context) error {

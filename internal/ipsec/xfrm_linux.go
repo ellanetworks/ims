@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
@@ -278,10 +280,30 @@ func (e *NetlinkError) Unwrap() error {
 }
 
 type XFRM struct {
-	mu  sync.Mutex
-	fd  int
-	seq uint32
-	buf []byte
+	mu     sync.Mutex
+	fd     int
+	seq    uint32
+	buf    []byte
+	locals []xfrmAddress
+	log    *slog.Logger
+}
+
+func (x *XFRM) Own(locals []netip.Addr, log *slog.Logger) {
+	x.locals = x.locals[:0]
+
+	for _, a := range locals {
+		x.locals = append(x.locals, address(a.Unmap()))
+	}
+
+	x.log = log
+}
+
+func (x *XFRM) local(addrs ...xfrmAddress) bool {
+	if len(x.locals) == 0 {
+		return true
+	}
+
+	return slices.ContainsFunc(addrs, func(a xfrmAddress) bool { return slices.Contains(x.locals, a) })
 }
 
 func Open() (*XFRM, error) {
@@ -402,9 +424,16 @@ func (x *XFRM) Reconcile(keep []Set) ([]Set, error) {
 	}
 
 	installedSAs := make(map[saKey]bool)
+	foreign := 0
 
 	for _, b := range sas {
-		if v, ok := decode[xfrmUsersaInfo](b); ok && v.sel.user == owner {
+		v, ok := decode[xfrmUsersaInfo](b)
+
+		switch {
+		case !ok || v.sel.user != owner:
+		case !x.local(v.saddr, v.id.daddr):
+			foreign++
+		default:
 			installedSAs[saKey{family: v.family, daddr: v.id.daddr, spi: be32(v.id.spi)}] = true
 		}
 	}
@@ -412,9 +441,20 @@ func (x *XFRM) Reconcile(keep []Set) ([]Set, error) {
 	installedPolicies := make(map[policyKey]bool)
 
 	for _, b := range policies {
-		if v, ok := decode[xfrmUserpolicyInfo](b); ok && v.sel.user == owner {
+		v, ok := decode[xfrmUserpolicyInfo](b)
+
+		switch {
+		case !ok || v.sel.user != owner:
+		case !x.local(v.sel.saddr, v.sel.daddr):
+			foreign++
+		default:
 			installedPolicies[policyKey{sel: v.sel, dir: v.dir}] = true
 		}
+	}
+
+	if foreign > 0 && x.log != nil {
+		x.log.Warn("Ella IPsec security associations of other addresses are in this network namespace: left in place. "+
+			"Two Ella IMS nodes must not share a network namespace", slog.Int("entries", foreign))
 	}
 
 	var missing []Set

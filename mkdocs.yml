@@ -58,11 +58,14 @@ nav:
   - Tutorials:
     - tutorials/index.md
     - Make Your First Voice Call: tutorials/first_voice_call.md
-    - Run Ella IMS on GKE: tutorials/ims_on_gke.md
+    - Run a High Availability Cluster on GKE: tutorials/ha_cluster_on_gke.md
   - How-to Guides:
     - how_to/index.md
     - Install: how_to/install.md
     - Upgrade: how_to/upgrade.md
+    - Deploy a High Availability Cluster: how_to/deploy_ha_cluster.md
+    - Scale a High Availability Cluster: how_to/scale_ha_cluster.md
+    - Perform a Rolling Upgrade: how_to/rolling_upgrade.md
     - Integrate with Ella Core: how_to/integrate_with_ella_core.md
     - Connect a Core at Another Site: how_to/connect_a_core_at_another_site.md
     - Integrate with an Application Server: how_to/integrate_with_application_server.md
@@ -72,7 +75,7 @@ nav:
     - Enable Push-to-Talk: how_to/enable_push_to_talk.md
     - Enable SMS over IP: how_to/enable_sms_over_ip.md
     - Connect to a SIP Trunk: how_to/connect_to_a_sip_trunk.md
-    - Back Up: how_to/back_up_and_restore.md
+    - Back Up and Restore: how_to/back_up_and_restore.md
   - Reference:
     - reference/index.md
     - API:
@@ -89,6 +92,7 @@ nav:
       - Registrations: reference/api/registrations.md
       - Call Records: reference/api/call_records.md
       - IP-SM-GW: reference/api/ip_sm_gw.md
+      - Cluster: reference/api/cluster.md
       - Backup: reference/api/backup.md
       - MCPTT Service Configuration: reference/api/mcptt_service_configuration.md
       - MCPTT Users: reference/api/mcptt_users.md
@@ -112,6 +116,7 @@ nav:
     - Push-to-Talk: explanation/push_to_talk.md
     - SMS over IP: explanation/sms_over_ip.md
     - SIP Trunks: explanation/sip_trunks.md
+    - High Availability: explanation/high_availability.md
 plugins:
   - search
   - glightbox

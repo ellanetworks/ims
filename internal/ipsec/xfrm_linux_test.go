@@ -408,3 +408,32 @@ func TestAckError(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileLeavesOtherAddressesAlone(t *testing.T) {
+	l := newLab(t)
+	other := l.set(t, false, HMACSHA196, EncryptionNull)
+	ours := l.set(t, true, HMACSHA196, EncryptionNull)
+
+	for _, s := range []Set{other, ours} {
+		if err := l.px.Install(s, l.keys); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	l.px.Own([]netip.Addr{l.p6}, nil)
+
+	if missing, err := l.px.Reconcile(nil); err != nil || missing != nil {
+		t.Fatalf("Reconcile = %v, %v", missing, err)
+	}
+
+	packets, policies := l.px.owned(t)
+	if len(packets) != 4 || policies != 4 {
+		t.Fatalf("after Reconcile: %d SAs and %d policies, want the 4 and 4 of the other address", len(packets), policies)
+	}
+
+	for _, spi := range []uint32{other.Local.SPIC, other.Local.SPIS, other.Remote.SPIC, other.Remote.SPIS} {
+		if _, ok := packets[spi]; !ok {
+			t.Errorf("SA %d of another address deleted", spi)
+		}
+	}
+}

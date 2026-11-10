@@ -19,18 +19,6 @@ func (i *ICSCF) ours(name string) bool {
 	return err == nil && i.cfg.SCSCF.Name.Equivalent(u)
 }
 
-func (i *ICSCF) assigned(name, impu string) sip.URI {
-	if i.ours(name) {
-		u, _ := sip.ParseURI(name)
-		return u
-	}
-
-	i.log.Warn("the HSS names another S-CSCF; forwarding to ours", slog.String("impu", impu),
-		slog.String("server-name", name), slog.String("scscf", i.cfg.SCSCF.Name.String()))
-
-	return i.cfg.SCSCF.Name
-}
-
 func (i *ICSCF) capable(caps *cx.ServerCapabilities) bool {
 	if caps == nil {
 		return true
@@ -78,6 +66,19 @@ func (i *ICSCF) target(in sip.Flow, u sip.URI) (proxy.Target, bool) {
 		Local:     netip.AddrPortFrom(in.Local.Addr(), i.cfg.Port),
 		Remote:    remote,
 	}}, true
+}
+
+func (i *ICSCF) scscfTarget(ctx context.Context, in sip.Flow, name sip.URI) (proxy.Target, error) {
+	if !i.cfg.SCSCF.Name.Equivalent(name) {
+		return i.serverTarget(ctx, in, name)
+	}
+
+	to, ok := i.target(in, name)
+	if !ok {
+		return proxy.Target{}, fmt.Errorf("no listener for the S-CSCF %s", name)
+	}
+
+	return to, nil
 }
 
 // RFC 3263 section 4

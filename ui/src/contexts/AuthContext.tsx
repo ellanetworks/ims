@@ -39,7 +39,9 @@ export type Permission =
   | "mcptt:update"
   | "user:admin"
   | "oidc:read"
-  | "oidc:update";
+  | "oidc:update"
+  | "cluster:read"
+  | "cluster:manage";
 
 const readPermissions: Permission[] = [
   "operator:read",
@@ -52,6 +54,7 @@ const readPermissions: Permission[] = [
   "call_record:read_retention",
   "ip_sm_gw:read",
   "mcptt:read",
+  "cluster:read",
 ];
 
 const operatePermissions: Permission[] = [
@@ -72,6 +75,7 @@ const permissions: Record<RoleID, Permission[]> = {
     "user:admin",
     "oidc:read",
     "oidc:update",
+    "cluster:manage",
   ],
   [RoleID.ReadOnly]: readPermissions,
   [RoleID.NetworkManager]: [...readPermissions, ...operatePermissions],

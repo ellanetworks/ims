@@ -40,8 +40,8 @@ func testConfig(t *testing.T, store *db.DB) api.Config {
 	return api.Config{
 		Auth:          store,
 		OIDC:          testOIDC(t, store),
-		JWTSecret:     testJWTSecret,
-		OIDCCookieKey: []byte("fedcba9876543210fedcba9876543210"),
+		JWTSecret:     func() []byte { return testJWTSecret },
+		OIDCCookieKey: func() []byte { return []byte("fedcba9876543210fedcba9876543210") },
 		BcryptCost:    bcrypt.MinCost,
 		Now:           func() time.Time { return testNow },
 		Logger:        slog.New(slog.DiscardHandler),

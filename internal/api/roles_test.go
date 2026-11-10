@@ -80,6 +80,13 @@ func TestRoles(t *testing.T) {
 		"PUT /api/v1/ip-sm-gw/routes/{id}":                          operator,
 		"DELETE /api/v1/ip-sm-gw/routes/{id}":                       operator,
 		"GET /api/v1/backup":                                        admin,
+		"POST /api/v1/restore":                                      admin,
+		"GET /api/v1/cluster":                                       all,
+		"POST /api/v1/cluster/tokens":                               admin,
+		"PUT /api/v1/cluster/members/{node_id}":                     admin,
+		"DELETE /api/v1/cluster/members/{node_id}":                  admin,
+		"POST /api/v1/cluster/members/{node_id}/drain":              admin,
+		"POST /api/v1/cluster/members/{node_id}/resume":             admin,
 		"GET /api/v1/oidc":                                          admin,
 		"PUT /api/v1/oidc":                                          admin,
 		"POST /api/v1/oidc/discovery":                               admin,
@@ -114,7 +121,7 @@ func TestRoles(t *testing.T) {
 
 	store := openAuthStore(t)
 	cfg := Config{
-		Auth: store, JWTSecret: []byte("0123456789abcdef0123456789abcdef"), BcryptCost: bcrypt.MinCost,
+		Auth: store, JWTSecret: func() []byte { return []byte("0123456789abcdef0123456789abcdef") }, BcryptCost: bcrypt.MinCost,
 		Now: time.Now, Logger: slog.New(slog.DiscardHandler),
 	}
 	a := newAuth(cfg)
@@ -170,7 +177,7 @@ func TestRoles(t *testing.T) {
 	}
 
 	path := strings.NewReplacer("{id}", "1", "{application}", "cx", "{impi}", "i", "{mcptt_id}", "m",
-		"{group_id}", "g", "{call_id}", "c", "{email}", "nobody@example.com")
+		"{group_id}", "g", "{call_id}", "c", "{email}", "nobody@example.com", "{node_id}", "n")
 
 	for route, allowedRoles := range want {
 		method, pattern, _ := strings.Cut(route, " ")

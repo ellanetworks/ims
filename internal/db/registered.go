@@ -12,17 +12,17 @@ const registeredWhere = `FROM registrations r JOIN bindings b ON b.registration_
 		SELECT 1 FROM set_identities i WHERE i.set_id = r.set_id AND i.uri LIKE ? ESCAPE '\'))`
 
 func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Time, page, perPage int) (_ []string, _ int, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	like := "%" + escapeLike(search) + "%"
 	args := []any{now.UTC().UnixNano(), search, like, like}
 
 	var total int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere, args...).Scan(&total); err != nil {
+	if err := d.local.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("list registered private identities: %w", err)
 	}
 
-	rows, err := d.conn.QueryContext(ctx, `SELECT DISTINCT r.impi `+registeredWhere+` ORDER BY r.impi LIMIT ? OFFSET ?`,
+	rows, err := d.local.QueryContext(ctx, `SELECT DISTINCT r.impi `+registeredWhere+` ORDER BY r.impi LIMIT ? OFFSET ?`,
 		append(args, perPage, (page-1)*perPage)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list registered private identities: %w", err)
@@ -49,10 +49,10 @@ func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Ti
 }
 
 func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
 	var n int
-	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere,
+	if err := d.localRead.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere,
 		now.UTC().UnixNano(), "", "", "").Scan(&n); err != nil {
 		return 0, fmt.Errorf("count registered private identities: %w", err)
 	}
@@ -61,9 +61,9 @@ func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, er
 }
 
 func (d *DB) ListPCSCFRegistrationsByIMPI(ctx context.Context, impi string) (_ []PCSCFRegistration, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.conn.QueryContext(ctx,
+	rows, err := d.local.QueryContext(ctx,
 		`SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations WHERE impi = ? ORDER BY id`, impi)
 	if err != nil {
 		return nil, fmt.Errorf("list P-CSCF registrations of %s: %w", impi, err)

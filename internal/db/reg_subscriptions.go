@@ -42,9 +42,9 @@ const regSubscriptionColumns = `id, impi, impu, subscriber, call_id, local_tag, 
 	dialog, version, expires_at, icid, term_ioi`
 
 func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx,
+	res, err := d.local.ExecContext(ctx,
 		`INSERT INTO reg_subscriptions (impi, impu, subscriber, call_id, local_tag, remote_tag, remote_target,
 			dialog, version, expires_at, icid, term_ioi)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -67,9 +67,9 @@ func (d *DB) PutRegSubscription(ctx context.Context, s RegSubscription) (_ int64
 }
 
 func (d *DB) UpdateRegSubscription(ctx context.Context, s RegSubscription) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx,
+	res, err := d.local.ExecContext(ctx,
 		`UPDATE reg_subscriptions SET remote_target = ?, dialog = ?, version = ?, expires_at = ?, term_ioi = ? WHERE id = ?`,
 		s.RemoteTarget, s.Dialog, s.Version, s.ExpiresAt.UTC().UnixNano(), s.TermIOI, s.ID)
 	if err != nil {
@@ -84,9 +84,9 @@ func (d *DB) UpdateRegSubscription(ctx context.Context, s RegSubscription) (err 
 }
 
 func (d *DB) GetRegSubscription(ctx context.Context, callID, localTag, remoteTag string) (_ RegSubscription, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	s, err := scanRegSubscription(d.read.QueryRowContext(ctx,
+	s, err := scanRegSubscription(d.localRead.QueryRowContext(ctx,
 		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE call_id = ? AND local_tag = ? AND remote_tag = ?`,
 		callID, localTag, remoteTag))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -101,9 +101,9 @@ func (d *DB) GetRegSubscription(ctx context.Context, callID, localTag, remoteTag
 }
 
 func (d *DB) GetRegSubscriptionByID(ctx context.Context, id int64) (_ RegSubscription, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	s, err := scanRegSubscription(d.read.QueryRowContext(ctx,
+	s, err := scanRegSubscription(d.localRead.QueryRowContext(ctx,
 		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
@@ -117,9 +117,9 @@ func (d *DB) GetRegSubscriptionByID(ctx context.Context, id int64) (_ RegSubscri
 }
 
 func (d *DB) ListRegSubscriptions(ctx context.Context, impi string) (_ []RegSubscription, err error) {
-	defer d.observe(poolRead, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	rows, err := d.read.QueryContext(ctx,
+	rows, err := d.localRead.QueryContext(ctx,
 		`SELECT `+regSubscriptionColumns+` FROM reg_subscriptions WHERE impi = ? ORDER BY id`, impi)
 	if err != nil {
 		return nil, fmt.Errorf("list reg subscriptions: %w", err)
@@ -146,9 +146,9 @@ func (d *DB) ListRegSubscriptions(ctx context.Context, impi string) (_ []RegSubs
 }
 
 func (d *DB) DeleteRegSubscription(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolLocal, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `DELETE FROM reg_subscriptions WHERE id = ?`, id)
+	res, err := d.local.ExecContext(ctx, `DELETE FROM reg_subscriptions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete reg subscription: %w", err)
 	}

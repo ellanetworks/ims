@@ -27,7 +27,7 @@ const (
 
 type Store interface {
 	SaveCallRecords(ctx context.Context, records []*db.CallRecord, deleted []int64) ([]error, error)
-	CloseOpenCallRecords(ctx context.Context, live []string) (int64, error)
+	CloseOpenCallRecords(ctx context.Context, nodeID string, live []string) (int64, error)
 }
 
 type Clock interface {
@@ -40,6 +40,7 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 type Config struct {
 	Store      Store
+	NodeID     string
 	MaxUnsaved int
 	Clock      Clock
 	Logger     *slog.Logger
@@ -76,6 +77,7 @@ type End struct {
 
 type Recorder struct {
 	store      Store
+	nodeID     string
 	clock      Clock
 	log        *slog.Logger
 	maxUnsaved int
@@ -122,7 +124,7 @@ func New(cfg Config) *Recorder {
 
 	r := &Recorder{
 		ctx: ctx, cancel: cancel,
-		store: cfg.Store, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
+		store: cfg.Store, nodeID: cfg.NodeID, clock: cfg.Clock, log: cfg.Logger, maxUnsaved: cfg.MaxUnsaved,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		calls: map[string]*call{}, sessions: map[string]*call{}, metrics: newMetrics(),
 	}
@@ -153,6 +155,13 @@ func (r *Recorder) Close(ctx context.Context) error {
 
 	if !r.closed {
 		r.closed = true
+
+		for _, c := range r.calls {
+			if c.rec.ID == 0 && !c.ended {
+				r.changeLocked(c)
+			}
+		}
+
 		close(r.stop)
 	}
 
@@ -193,6 +202,7 @@ func (r *Recorder) Attempt(a Attempt) {
 	c := &call{rec: db.CallRecord{
 		ICID: a.ICID, SessionID: a.CallID, CallingParty: slices.Clone(a.Asserted), CallerIMPI: a.IMPI,
 		RequestedParty: a.RequestURI, RequestedAt: r.clock.Now(), InTrunk: a.InTrunk, InTrunkName: trunkName(a.InTrunk, a.InName),
+		NodeID: r.nodeID,
 	}}
 	r.calls[a.ICID] = c
 	r.metrics.active.Inc()
@@ -208,7 +218,6 @@ func (r *Recorder) Attempt(a Attempt) {
 	}
 
 	r.sessions[key] = c
-	r.changeLocked(c)
 }
 
 func sessionKey(impi, callID string) string {
@@ -220,10 +229,12 @@ func (r *Recorder) Rejecting(icid string, code int, tag string) {
 }
 
 func (r *Recorder) reject(icid string, j rejection) {
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		if !slices.Contains(c.rejecting, j) {
 			c.rejecting = append(c.rejecting, j)
 		}
+
+		return false
 	})
 }
 
@@ -243,9 +254,11 @@ func (r *Recorder) RejectingRequest(req *sip.Request, code int, tag string) {
 func (r *Recorder) Routed(icid string, rt Routing) {
 	asserted := slices.Clone(rt.Asserted)
 
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		c.rec.CallingParty = asserted
 		c.rec.CalledParty = rt.RequestURI
+
+		return false
 	})
 }
 
@@ -256,13 +269,15 @@ func (r *Recorder) Trunk(icid string, side TrunkSide, id, name string) {
 
 	name = trunkName(id, name)
 
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		switch side {
 		case Inbound:
 			c.rec.InTrunk, c.rec.InTrunkName = id, name
 		case Outbound:
 			c.rec.OutTrunk, c.rec.OutTrunkName = id, name
 		}
+
+		return false
 	})
 }
 
@@ -275,43 +290,52 @@ func trunkName(id, name string) string {
 }
 
 func (r *Recorder) Reached(icid string, impi string) {
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		c.rec.CalleeIMPI = impi
+		return false
 	})
 }
 
 func (r *Recorder) Alerted(icid string) {
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		c.rec.Alerted = true
+		return false
 	})
 }
 
 func (r *Recorder) Answered(icid string, code int) {
-	r.update(icid, func(c *call, now time.Time) {
-		if c.rec.SIPStatus == 0 {
-			c.rec.SIPStatus, c.rec.Outcome, c.rec.DeliveryStartAt = code, db.OutcomeAnswered, now
+	r.update(icid, func(c *call, now time.Time) bool {
+		if c.rec.SIPStatus != 0 {
+			return false
 		}
+
+		c.rec.SIPStatus, c.rec.Outcome, c.rec.DeliveryStartAt = code, db.OutcomeAnswered, now
+
+		return true
 	})
 }
 
 func (r *Recorder) Media(icid string, types []string) {
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		for _, t := range types {
 			if !slices.Contains(c.rec.Media, t) {
 				c.rec.Media = append(c.rec.Media, t)
 			}
 		}
+
+		return false
 	})
 }
 
 func (r *Recorder) Released(icid string) {
-	r.update(icid, func(c *call, _ time.Time) {
+	r.update(icid, func(c *call, _ time.Time) bool {
 		c.network = true
+		return false
 	})
 }
 
 func (r *Recorder) Ended(icid string, e End) {
-	r.update(icid, func(c *call, now time.Time) {
+	r.update(icid, func(c *call, now time.Time) bool {
 		by := EndedBy(e.Cause, e.By)
 		if c.network || c.rec.SIPStatus == 0 && slices.ContainsFunc(c.rejecting, func(j rejection) bool {
 			return j.matches(e.Code, e.Tag)
@@ -320,7 +344,22 @@ func (r *Recorder) Ended(icid string, e End) {
 		}
 
 		r.endLocked(c, e.Code, by, now)
+
+		return true
 	})
+}
+
+func (r *Recorder) CloseOrphans() {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.closed {
+		r.orphanedLocked()
+	}
 }
 
 func (r *Recorder) CloseOpen() {
@@ -341,7 +380,7 @@ func (r *Recorder) CloseOpen() {
 	}
 }
 
-func (r *Recorder) update(icid string, change func(c *call, now time.Time)) {
+func (r *Recorder) update(icid string, change func(c *call, now time.Time) bool) {
 	if r == nil {
 		return
 	}
@@ -354,9 +393,7 @@ func (r *Recorder) update(icid string, change func(c *call, now time.Time)) {
 		return
 	}
 
-	change(c, r.clock.Now())
-
-	if r.calls[icid] == c {
+	if milestone := change(c, r.clock.Now()); milestone && r.calls[icid] == c {
 		r.changeLocked(c)
 	}
 }
@@ -457,7 +494,7 @@ func (r *Recorder) write() {
 				continue
 			}
 
-			r.log.Error("saving call records failed", slog.Any("error", err))
+			r.log.Warn("saving call records failed, retrying", slog.Any("error", err))
 
 			select {
 			case <-time.After(retry):
@@ -506,7 +543,7 @@ func (r *Recorder) closeOrphans() error {
 	r.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.ctx, writeTimeout)
-	n, err := r.store.CloseOpenCallRecords(ctx, live)
+	n, err := r.store.CloseOpenCallRecords(ctx, r.nodeID, live)
 
 	cancel()
 

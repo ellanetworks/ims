@@ -7,13 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ellanetworks/ims/internal/api"
+	"github.com/ellanetworks/ims/internal/cluster"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
 	CheckShutdown = "shutdown"
-	CheckDatabase = "database"
 
 	readinessTick = time.Second
 )
@@ -36,7 +35,7 @@ func (m *readinessMetrics) collectors() []prometheus.Collector {
 }
 
 type readiness struct {
-	ping     func(context.Context) error
+	node     *cluster.Node
 	stopping func() bool
 	metrics  *readinessMetrics
 	logger   *slog.Logger
@@ -46,18 +45,13 @@ type readiness struct {
 	observed bool
 }
 
-func (r *readiness) checks(ctx context.Context) []api.Check {
-	shutdown := api.Check{Name: CheckShutdown, OK: true}
+func (r *readiness) checks(ctx context.Context, withCluster bool) []cluster.Check {
+	shutdown := cluster.Check{Name: CheckShutdown, OK: true}
 	if r.stopping() {
-		shutdown = api.Check{Name: CheckShutdown, Detail: "the IMS is shutting down"}
+		shutdown = cluster.Check{Name: CheckShutdown, Detail: "the IMS is shutting down"}
 	}
 
-	database := api.Check{Name: CheckDatabase, OK: true}
-	if err := r.ping(ctx); err != nil {
-		database = api.Check{Name: CheckDatabase, Detail: err.Error()}
-	}
-
-	return []api.Check{shutdown, database}
+	return append([]cluster.Check{shutdown}, r.node.Readiness(ctx, withCluster)...)
 }
 
 func (r *readiness) run(ctx context.Context) {
@@ -65,7 +59,7 @@ func (r *readiness) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
-		r.observe(ctx, r.checks(ctx))
+		r.observe(ctx, r.checks(ctx, false))
 
 		select {
 		case <-ctx.Done():
@@ -75,7 +69,7 @@ func (r *readiness) run(ctx context.Context) {
 	}
 }
 
-func (r *readiness) observe(ctx context.Context, checks []api.Check) {
+func (r *readiness) observe(ctx context.Context, checks []cluster.Check) {
 	var failing, details []string
 
 	for _, c := range checks {

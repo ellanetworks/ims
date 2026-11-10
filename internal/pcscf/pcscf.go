@@ -62,6 +62,8 @@ type Config struct {
 
 	Trust *trust.Domain
 
+	RefusingRegistrations func() bool
+
 	Fallback transaction.Handler
 	Clock    Clock
 	Logger   *slog.Logger
@@ -309,6 +311,11 @@ func (p *PCSCF) HandleRequest(ctx context.Context, tx *transaction.ServerTransac
 
 	if res := p.cfg.Proxy.Check(req); res != nil {
 		p.respond(ctx, tx, res)
+		return
+	}
+
+	if p.cfg.RefusingRegistrations != nil && p.cfg.RefusingRegistrations() {
+		p.respond(ctx, tx, sip.NewResponse(req, 305, "Use Proxy"))
 		return
 	}
 

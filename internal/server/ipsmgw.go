@@ -43,6 +43,10 @@ func (s *Server) startIPSMGW(ctx context.Context, op settings.Operator) error {
 }
 
 func (s *Server) stopIPSMGW(ctx context.Context) {
+	s.stopIPSMGWAs(ctx, true)
+}
+
+func (s *Server) stopIPSMGWAs(ctx context.Context, deregister bool) {
 	a := s.ipsmgw.Swap(nil)
 	if a == nil {
 		return
@@ -50,7 +54,12 @@ func (s *Server) stopIPSMGW(ctx context.Context) {
 
 	s.ipsmgwHosts = s.ases.route(s.ipsmgwHosts, nil, nil)
 
-	if err := a.Shutdown(ctx); err != nil {
+	stop := a.Suspend
+	if deregister {
+		stop = a.Shutdown
+	}
+
+	if err := stop(ctx); err != nil {
 		s.Logger.WarnContext(ctx, "failed to stop the IP-SM-GW cleanly", slog.Any("error", err))
 	}
 }
@@ -300,4 +309,20 @@ func (h ipsmgwHandler) forwardShortMessage(ctx context.Context, c *diameter.Conn
 	}
 
 	return a.ForwardShortMessage(ctx, c.LocalIdentity(), req)
+}
+
+func (s *Server) leaving(ctx context.Context) bool {
+	if !s.node.Clustered() {
+		return true
+	}
+
+	select {
+	case <-s.node.Removed():
+		return true
+	default:
+	}
+
+	m, err := s.database.Member(ctx, s.node.ID())
+
+	return err != nil || m.DrainState == db.DrainDrained
 }

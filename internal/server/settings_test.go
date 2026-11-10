@@ -42,7 +42,7 @@ func TestOperatorChangeRenamesTheIMS(t *testing.T) {
 		t.Fatal("no SIP listeners after the restart")
 	}
 
-	for _, alias := range []string{"ims.mnc002.mcc001.3gppnetwork.org", "scscf.ims.mnc002.mcc001.3gppnetwork.org"} {
+	for _, alias := range []string{"ims.mnc002.mcc001.3gppnetwork.org", "scscf-ims.ims.mnc002.mcc001.3gppnetwork.org"} {
 		if !c.sip.placeholder.aliases[alias] {
 			t.Fatalf("SIP aliases %v without %s", c.sip.placeholder.aliases, alias)
 		}

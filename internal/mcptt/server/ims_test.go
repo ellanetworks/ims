@@ -525,7 +525,19 @@ func newIMSWorld(t *testing.T) *imsWorld {
 	t.Helper()
 
 	n := siptest.NewNet(t)
-	w := &imsWorld{t: t, n: n, m: mediatest.New(n.Scheduler()), addr: n.Addr(), users: map[string]*imsUser{}}
+	w := newIMSNode(t, n, mediatest.New(n.Scheduler()), 100, nil)
+
+	w.user("alice", 1, "tel:+15555550101", false)
+	w.user("bob", 2, "", true)
+	w.user("carol", 3, "", false)
+
+	return w
+}
+
+func newIMSNode(t *testing.T, n *siptest.Net, m *mediatest.Net, host byte, cluster server.Cluster) *imsWorld {
+	t.Helper()
+
+	w := &imsWorld{t: t, n: n, m: m, addr: n.Addr(), users: map[string]*imsUser{}}
 	w.core = newCore(t, n)
 	w.core.as = w.addr
 	w.core.hosts[domain] = w.addr
@@ -536,7 +548,7 @@ func newIMSWorld(t *testing.T) *imsWorld {
 	}
 
 	relay, err := media.New(media.Config{
-		Network: w.m, Clock: n.Clock(), Addr: netip.AddrFrom4([4]byte{192, 0, 2, 100}),
+		Network: w.m, Clock: n.Clock(), Addr: netip.AddrFrom4([4]byte{192, 0, 2, host}),
 		MinPort: 20000, MaxPort: 20999, ControlPort: 21000,
 	})
 	if err != nil {
@@ -553,6 +565,7 @@ func newIMSWorld(t *testing.T) *imsWorld {
 		Mode:            registrar.ThroughIMS,
 		TrustedNetworks: []netip.Prefix{netip.PrefixFrom(w.core.addr.Addr(), w.core.addr.Addr().BitLen())},
 		Media:           relay,
+		Cluster:         cluster,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -565,10 +578,6 @@ func newIMSWorld(t *testing.T) *imsWorld {
 	t.Cleanup(func() {
 		n.Await(func() { _ = w.s.Shutdown(context.Background()) }, 2*64*transaction.DefaultT1)
 	})
-
-	w.user("alice", 1, "tel:+15555550101", false)
-	w.user("bob", 2, "", true)
-	w.user("carol", 3, "", false)
 
 	return w
 }
@@ -597,7 +606,13 @@ func (w *imsWorld) user(name string, i int, alias string, kamailio bool) {
 
 			return nil
 		},
-		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler { return u.OnInvite(r) },
+		OnInvite: func(_ context.Context, r *ua.Request) ua.Handler {
+			if u.onInvite != nil {
+				return u.onInvite(r)
+			}
+
+			return u.OnInvite(r)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

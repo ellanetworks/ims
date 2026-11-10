@@ -225,7 +225,7 @@ func newPolicyScene(t *testing.T, iface string, configure func(*server.Server)) 
 		},
 		ICSCF:    config.ICSCF{Port: 5070},
 		SCSCF:    config.SCSCF{Port: 5080},
-		Diameter: config.Diameter{Address: s.hss.Addr().Addr()},
+		Diameter: config.Diameter{Address: s.hss.Addr().Addr(), HostLabel: settings.DefaultDiameterLabel},
 		N5:       n5,
 	}, Logger: testLogger(t), BcryptCost: bcrypt.MinCost}
 

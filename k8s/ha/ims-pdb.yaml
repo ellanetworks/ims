@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ella-ims
+  labels:
+    app.kubernetes.io/name: ella-ims
+    app.kubernetes.io/instance: ella-ims
+    app.kubernetes.io/part-of: ella
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ella-ims
+      app.kubernetes.io/instance: ella-ims

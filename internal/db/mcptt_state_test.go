@@ -126,7 +126,7 @@ func TestUnparsableState(t *testing.T) {
 			reg_id, contact, call_id, cseq, icid, orig_ioi, charging_function_addresses FROM mcptt_registrations`,
 		`INSERT INTO mcptt_affiliation_clients VALUES ('k', 'c2', 'not a URI', '')`,
 	} {
-		if _, err := d.conn.ExecContext(ctx, q); err != nil {
+		if _, err := d.local.ExecContext(ctx, q); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -144,7 +144,7 @@ func TestUnparsableState(t *testing.T) {
 	}
 
 	var n int
-	if err := d.conn.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM mcptt_registrations) + (SELECT COUNT(*) FROM mcptt_affiliation_clients)`).Scan(&n); err != nil || n != 2 {
+	if err := d.local.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM mcptt_registrations) + (SELECT COUNT(*) FROM mcptt_affiliation_clients)`).Scan(&n); err != nil || n != 2 {
 		t.Errorf("%d rows left, %v", n, err)
 	}
 }

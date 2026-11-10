@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/cluster"
+	"github.com/ellanetworks/ims/internal/db"
 	"github.com/ellanetworks/ims/internal/oidc"
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/ellanetworks/ims/internal/tracing"
@@ -29,7 +31,7 @@ type Config struct {
 	CallRecords    CallRecords
 	Backups        Backups
 	Frontend       fs.FS
-	Ready          func(ctx context.Context) []Check
+	Ready          func(ctx context.Context, withCluster bool) []cluster.Check
 	Metrics        prometheus.Gatherer
 	Requests       *RequestMetrics
 	MCPTT          MCPTTSettings
@@ -37,8 +39,9 @@ type Config struct {
 	MCPTTStatus    func() MCPTTStatus
 	Auth           AuthStore
 	OIDC           OIDC
-	JWTSecret      []byte
-	OIDCCookieKey  []byte
+	Cluster        Cluster
+	JWTSecret      func() []byte
+	OIDCCookieKey  func() []byte
 	SecureCookie   bool
 	BcryptCost     int
 	TracerProvider trace.TracerProvider
@@ -90,6 +93,41 @@ func NewHandler(cfg Config) http.Handler {
 	}
 
 	return traced(cfg, securityHeaders(cfg, http.NewCrossOriginProtection().Handler(mux)))
+}
+
+func NewLimitedHandler(cfg Config, unavailable func() (int, string)) http.Handler {
+	mux := http.NewServeMux()
+
+	for _, rt := range []route{
+		{"GET /api/v1/livez", public, Livez()},
+		{"GET /api/v1/readyz", public, Readyz(cfg)},
+		{"GET /api/v1/status", public, GetStatus(cfg)},
+		{"GET /api/v1/metrics", public, GetMetrics(cfg)},
+		{"GET /api/v1/openapi.yaml", public, OpenAPISpec()},
+	} {
+		mux.Handle(rt.pattern, cfg.Requests.instrument(rt.pattern, rt.handler))
+	}
+
+	frontend := http.NotFoundHandler()
+	if cfg.Frontend != nil {
+		frontend = Frontend(cfg.Frontend)
+	}
+
+	return securityHeaders(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			status, message := unavailable()
+			writeError(r.Context(), w, status, message, nil, cfg.Logger)
+
+			return
+		}
+
+		frontend.ServeHTTP(w, r)
+	}))
 }
 
 var untraced = map[string]bool{"/api/v1/livez": true, "/api/v1/readyz": true, "/api/v1/metrics": true}
@@ -152,6 +190,15 @@ func routes(cfg Config, a *auth) []route {
 		{"GET /api/v1/auth/oidc", public, GetOIDCLogin(cfg)},
 		{"GET /api/v1/auth/oidc/login", public, StartOIDCLogin(a)},
 		{"GET " + oidc.CallbackPath, public, OIDCCallback(a)},
+
+		{"GET /api/v1/cluster", PermReadCluster, GetCluster(cfg)},
+		{"POST /api/v1/cluster/tokens", PermManageCluster, a.needsLogin(CreateJoinToken(a))},
+		{"POST /api/v1/cluster/join", public, JoinCluster(a)},
+		{"PUT /api/v1/cluster/members/{node_id}", PermManageCluster, a.needsLogin(UpdateMember(a))},
+		{"DELETE /api/v1/cluster/members/{node_id}", PermManageCluster, a.needsLogin(RemoveMember(a))},
+		{"POST /api/v1/cluster/members/{node_id}/drain", PermManageCluster, a.needsLogin(DrainMember(a, db.DrainDraining))},
+		{"POST /api/v1/cluster/members/{node_id}/resume", PermManageCluster, a.needsLogin(DrainMember(a, db.DrainActive))},
+		{"POST /api/v1/restore", PermBackup, a.needsLogin(Restore(a))},
 
 		{"GET /api/v1/operator", PermReadOperator, GetOperator(cfg)},
 		{"PUT /api/v1/operator", PermUpdateOperator, UpdateOperator(cfg)},

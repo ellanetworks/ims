@@ -4,6 +4,7 @@ package ipsec
 
 import (
 	"errors"
+	"log/slog"
 	"net/netip"
 )
 
@@ -12,6 +13,8 @@ type XFRM struct{}
 func Open() (*XFRM, error) {
 	return nil, errors.ErrUnsupported
 }
+
+func (x *XFRM) Own([]netip.Addr, *slog.Logger) {}
 
 func (x *XFRM) Close() error {
 	return nil

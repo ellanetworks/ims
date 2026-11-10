@@ -9,16 +9,42 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/api"
-	"github.com/ellanetworks/ims/internal/backup"
+	"github.com/ellanetworks/ims/internal/cluster"
+	"github.com/ellanetworks/ims/internal/db"
 )
+
+func backupNode(t *testing.T, store *db.DB) *cluster.Node {
+	t.Helper()
+
+	n, err := cluster.Open(context.Background(), cluster.Config{Dir: filepath.Join(t.TempDir(), "raft")}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = n.Close() })
+
+	store.SetProposer(n)
+
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if ok, _ := n.Leader(); ok {
+			return n
+		}
+	}
+
+	t.Fatal("no leader")
+
+	return nil
+}
 
 func TestAPITokenBacksUp(t *testing.T) {
 	ctx := context.Background()
 	a := newUninitializedAPI(t)
+	node := backupNode(t, a.store)
 
 	secret, err := a.store.JWTSecret(ctx)
 	if err != nil {
@@ -26,9 +52,9 @@ func TestAPITokenBacksUp(t *testing.T) {
 	}
 
 	cfg := testConfig(t, a.store)
-	cfg.JWTSecret = secret
+	cfg.JWTSecret = func() []byte { return secret }
 	cfg.Logger = slog.New(slog.NewJSONHandler(&a.logs, nil))
-	cfg.Backups = &backup.Backups{DB: a.store, Dir: t.TempDir(), Now: time.Now}
+	cfg.Backups = node
 	a.handler = api.NewHandler(cfg)
 	a.token = initialize(t, a.handler)
 
@@ -60,6 +86,8 @@ func TestAPITokenBacksUp(t *testing.T) {
 type failingBackups struct{}
 
 func (failingBackups) Backup(context.Context, io.Writer) error { return errors.New("disk full") }
+
+func (failingBackups) Restore(context.Context, io.Reader) error { return errors.New("disk full") }
 
 func TestBackupUnavailable(t *testing.T) {
 	a := newTestAPI(t)

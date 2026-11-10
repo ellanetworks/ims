@@ -13,6 +13,7 @@ import (
 const (
 	poolWrite = "write"
 	poolRead  = "read"
+	poolLocal = "local"
 )
 
 type metrics struct {
@@ -36,7 +37,7 @@ func newMetrics() metrics {
 		}, []string{"pool"}),
 	}
 
-	for _, pool := range []string{poolWrite, poolRead} {
+	for _, pool := range []string{poolWrite, poolRead, poolLocal} {
 		m.duration.WithLabelValues(pool)
 		m.errors.WithLabelValues(pool)
 	}
@@ -67,17 +68,18 @@ var outcomes = []error{
 }
 
 func (d *DB) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{d.metrics.duration, d.metrics.errors, storageCollector{path: d.path}}
+	return []prometheus.Collector{d.metrics.duration, d.metrics.errors, storageCollector{path: d.path, local: d.localPath}}
 }
 
 var storageDesc = prometheus.NewDesc(
 	"ellaims_database_storage_bytes",
-	"Size of the database on disk, by file: the main file and its write-ahead log.",
+	"Size of the databases on disk, by file: the shared and node databases and their write-ahead logs.",
 	[]string{"file"}, nil,
 )
 
 type storageCollector struct {
-	path string
+	path  string
+	local string
 }
 
 func (c storageCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -85,7 +87,9 @@ func (c storageCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c storageCollector) Collect(ch chan<- prometheus.Metric) {
-	for _, f := range []struct{ label, path string }{{"main", c.path}, {"wal", c.path + "-wal"}} {
+	for _, f := range []struct{ label, path string }{
+		{"main", c.path}, {"wal", c.path + "-wal"}, {"node", c.local}, {"node_wal", c.local + "-wal"},
+	} {
 		size, err := fileSize(f.path)
 		if err != nil {
 			ch <- prometheus.NewInvalidMetric(storageDesc, err)

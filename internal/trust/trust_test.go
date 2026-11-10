@@ -103,3 +103,28 @@ func TestOverlaps(t *testing.T) {
 		}
 	}
 }
+
+func TestTrustedPeers(t *testing.T) {
+	d := New([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, nil)
+	peer := netip.MustParseAddr("10.0.0.2")
+
+	if d.Trusted(peer) {
+		t.Fatal("a peer is trusted before it is set")
+	}
+
+	d.SetPeers([]netip.Addr{netip.MustParseAddr("::ffff:10.0.0.2")})
+
+	if !d.Trusted(peer) || !d.Trusted(netip.MustParseAddr("10.0.0.1")) {
+		t.Fatal("the peer or the own address is not trusted")
+	}
+
+	if d.Overlaps(netip.MustParsePrefix("10.0.0.2/32")) {
+		t.Fatal("a peer counts as a trusted network")
+	}
+
+	d.SetPeers(nil)
+
+	if d.Trusted(peer) {
+		t.Fatal("a removed peer is still trusted")
+	}
+}

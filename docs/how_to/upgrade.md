@@ -4,6 +4,8 @@ description: Step-by-step instructions to upgrade Ella IMS.
 
 # Upgrade
 
+## Upgrade a standalone node
+
 === "Snap"
 
     Refresh the snap:
@@ -42,3 +44,7 @@ description: Step-by-step instructions to upgrade Ella IMS.
         ```
 
 Check the running version in the UI's top bar.
+
+## Upgrade a cluster
+
+See [Perform a Rolling Upgrade](rolling_upgrade.md).

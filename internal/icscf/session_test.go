@@ -29,7 +29,9 @@ func TestInviteToAssignedSCSCF(t *testing.T) {
 	})
 	u.send(invite)
 
-	if lir := h.hss.nextLIR(t); !reflect.DeepEqual(lir, cx.LocationInfoRequest{PublicIdentity: "sip:alice@" + homeDomain}) {
+	if lir := h.hss.nextLIR(t); !reflect.DeepEqual(lir, cx.LocationInfoRequest{
+		PublicIdentity: "sip:alice@" + homeDomain, Features: cx.FeatureIMSRestoration,
+	}) {
 		t.Fatalf("LIR = %+v", lir)
 	}
 

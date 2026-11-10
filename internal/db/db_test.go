@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,7 @@ func TestOpenReachesLatestVersion(t *testing.T) {
 	d := openTestDB(t)
 
 	var version int
-	if err := d.conn.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+	if err := d.writer.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,7 +60,7 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	if _, err := d.conn.ExecContext(ctx, "PRAGMA user_version = 99"); err != nil {
+	if _, err := d.writer.ExecContext(ctx, "PRAGMA user_version = 99"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +76,7 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 func TestReadsDoNotHoldUpWrites(t *testing.T) {
 	d := openTestDB(t)
 
-	tx, err := d.read.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	tx, err := d.reader().BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestReadsDoNotHoldUpWrites(t *testing.T) {
 		t.Fatalf("SaveCallRecords during a read = %v, %v", errs, err)
 	}
 
-	if _, err := d.read.ExecContext(t.Context(), `DELETE FROM call_records`); err == nil {
+	if _, err := d.reader().ExecContext(t.Context(), `DELETE FROM call_records`); err == nil {
 		t.Fatal("the readers wrote")
 	}
 }
@@ -127,5 +128,69 @@ func TestDatabaseIsPrivate(t *testing.T) {
 		if mode := info.Mode().Perm(); mode != 0o600 {
 			t.Errorf("%s mode = %o, want 600", name, mode)
 		}
+	}
+}
+
+func TestReadsSucceedDuringInstall(t *testing.T) {
+	ctx := t.Context()
+	d := openTestDB(t)
+
+	for range 3 {
+		c, err := d.CopyTo(ctx, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		stop := make(chan struct{})
+		failed := make(chan error, 1)
+
+		go func() {
+			for {
+				select {
+				case <-stop:
+					close(failed)
+					return
+				default:
+				}
+
+				if _, err := d.GetSettings(ctx); err != nil {
+					failed <- err
+					return
+				}
+			}
+		}()
+
+		if err := d.Install(ctx, c.Path, &c.Position); err != nil {
+			t.Fatal(err)
+		}
+
+		close(stop)
+
+		if err := <-failed; err != nil {
+			t.Fatalf("read during the install: %v", err)
+		}
+	}
+}
+
+func TestWipeClearsTheNodeDatabase(t *testing.T) {
+	ctx := t.Context()
+	d := openTestDB(t)
+
+	if _, err := d.SaveSecurityAssociation(ctx, testSecurityAssociation()); err != nil {
+		t.Fatal(err)
+	}
+
+	scratch := t.TempDir()
+
+	if err := d.Wipe(ctx, scratch); err != nil {
+		t.Fatal(err)
+	}
+
+	if sas, err := d.ListSecurityAssociations(ctx); err != nil || len(sas) != 0 {
+		t.Fatalf("security associations after a wipe = %v, %v; want none", sas, err)
+	}
+
+	if _, err := os.Stat(filepath.Join(scratch, localFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("node database in the scratch directory: %v", err)
 	}
 }

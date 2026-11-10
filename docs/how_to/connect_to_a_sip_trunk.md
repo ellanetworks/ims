@@ -31,15 +31,17 @@ ibcf:
       - address: 203.0.113.5
 ```
 
+In a cluster, set each node's own address on that node.
+
 ## 2. Open the firewall
 
-Allow SIP (TCP `5060`) from Telnyx's addresses, and voice (UDP `10000`–`19999`) from [Telnyx's media networks](https://sip.telnyx.com), to `203.0.113.5`.
+Allow SIP (TCP `5060`) from Telnyx's addresses, and voice (UDP `10000`–`19999`) from [Telnyx's media networks](https://sip.telnyx.com), to `203.0.113.5`. In a cluster, do the same for each node's address.
 
 ## 3. Configure the carrier
 
 In the carrier portal, create an IP connection:
 
-- Send calls to `203.0.113.5`, port `5060`, over TCP.
+- Send calls to `203.0.113.5`, port `5060`, over TCP. In a cluster, add each node's address, or a host name that resolves to all of them.
 - Enable AMR-WB.
 - Send called numbers in E.164 format, with `+`.
 - Attach an outbound voice profile.

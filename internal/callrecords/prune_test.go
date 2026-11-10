@@ -65,3 +65,40 @@ func TestPrune(t *testing.T) {
 		}
 	}
 }
+
+func TestPruneOnlyWhenActive(t *testing.T) {
+	store := make(pruneStore, 1)
+
+	var active atomic.Bool
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		Prune(ctx, PruneConfig{
+			Store: store, Interval: time.Millisecond, Clock: fixedClock(t0), Active: active.Load,
+			Retention: func() time.Duration { return time.Hour },
+		})
+	}()
+
+	select {
+	case c := <-store:
+		t.Fatalf("pruned %+v while not active", c)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	active.Store(true)
+	<-store
+
+	cancel()
+
+	for {
+		select {
+		case <-store:
+		case <-done:
+			return
+		}
+	}
+}

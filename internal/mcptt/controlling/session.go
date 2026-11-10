@@ -84,6 +84,7 @@ const (
 type member struct {
 	s        *session
 	id       sip.URI
+	nodes    []string
 	entry    *settings.Entry
 	required bool
 	state    state
@@ -304,7 +305,7 @@ func (s *session) invitees(affiliated []affiliation.Member, caller sip.URI) ([]*
 
 	for _, a := range affiliated {
 		if e := g.Entry(a.ID); e != nil && settings.Key(a.ID) != settings.Key(caller) {
-			out = append(out, &member{s: s, id: a.ID, entry: e, required: e.Required})
+			out = append(out, &member{s: s, id: a.ID, nodes: a.Nodes, entry: e, required: e.Required})
 		}
 	}
 
@@ -575,15 +576,17 @@ func (s *session) invite(ctx context.Context, m *member) {
 		return
 	}
 
-	t := s.c.cfg.Participating.Terminate(req)
-	if len(t.Invites) == 0 {
+	invites, failures := s.terminating(m, req)
+	if len(invites) == 0 {
 		ml.Close()
-		s.declined(ctx, m, failure(t.Code, t.Header))
+		s.declined(ctx, m, failures...)
 
 		return
 	}
 
-	for _, inv := range t.Invites {
+	m.failures = failures
+
+	for _, inv := range invites {
 		l, err := s.call.Dial(ctx, inv, b2bua.LegHandler{
 			Established: func(ctx context.Context, l *b2bua.Leg, _ sip.Message) { s.branchAccepted(ctx, m, l) },
 			Failed: func(ctx context.Context, l *b2bua.Leg, res *sip.Response, err error) {
@@ -608,6 +611,50 @@ func (s *session) invite(ctx context.Context, m *member) {
 		ml.Close()
 		s.declined(ctx, m, m.failures...)
 	}
+}
+
+// TS 24.379 clause 10.1.1.4.1.1
+func (s *session) terminating(m *member, req *sip.Request) ([]*sip.Request, []b2bua.Failure) {
+	var (
+		invites  []*sip.Request
+		failures []b2bua.Failure
+	)
+
+	peers := s.c.cfg.Peers
+	local := peers == nil || len(m.nodes) == 0
+
+	for _, n := range m.nodes {
+		if peers == nil || n == "" || n == peers.Self() {
+			local = true
+			continue
+		}
+
+		route, at, ok := peers.Route(n)
+		if !ok {
+			failures = append(failures, failure(404, nil))
+			continue
+		}
+
+		out := req.Clone()
+		out.Header.Set("Route", sip.Address{URI: route}.String())
+
+		if cs, err := out.Header.Contacts(); err == nil && len(cs) == 1 {
+			out.Header.Set("Contact", participating.At(cs[0], at).String())
+		}
+
+		invites = append(invites, out)
+	}
+
+	if local {
+		t := s.c.cfg.Participating.Terminate(req)
+		if len(t.Invites) == 0 {
+			failures = append(failures, failure(t.Code, t.Header))
+		}
+
+		invites = append(t.Invites, invites...)
+	}
+
+	return invites, failures
 }
 
 func (s *session) branchAccepted(ctx context.Context, m *member, l *b2bua.Leg) {
@@ -999,6 +1046,10 @@ func (s *session) release(ctx context.Context, cause string, rp ua.Reply) {
 
 	if s.grp.sess == s {
 		s.grp.sess = nil
+	}
+
+	if f := s.c.cfg.Released; f != nil {
+		f(s.g.ID())
 	}
 }
 

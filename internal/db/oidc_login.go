@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -50,15 +49,11 @@ func (r OIDCLoginResult) RoleChanged() bool {
 func (d *DB) LogInWithOIDC(ctx context.Context, l OIDCLogin) (res OIDCLoginResult, err error) {
 	defer d.observe(poolWrite, &err)()
 
-	err = d.inTx(ctx, "OIDC login", func(tx *sql.Tx) error {
-		res, err = logInWithOIDC(ctx, tx, l)
-		return err
-	})
-	if err != nil {
-		return OIDCLoginResult{}, err
-	}
+	return run[OIDCLoginResult](ctx, d, cmdLogInWithOIDC, "OIDC login", l)
+}
 
-	return res, nil
+func applyLogInWithOIDC(a *applyCtx, l OIDCLogin) (OIDCLoginResult, error) {
+	return logInWithOIDC(a.ctx, a.tx, l)
 }
 
 func logInWithOIDC(ctx context.Context, tx *sql.Tx, l OIDCLogin) (OIDCLoginResult, error) {
@@ -209,21 +204,35 @@ func syncRole(ctx context.Context, tx *sql.Tx, u User, l OIDCLogin) (User, bool,
 func (d *DB) UseOIDCState(ctx context.Context, stateHash []byte, expiresAt, now time.Time) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "use OIDC state", func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM oidc_used_states WHERE expires_at <= ?`, now.UnixNano()); err != nil {
-			return err
-		}
-
-		_, err := tx.ExecContext(ctx, `INSERT INTO oidc_used_states (state_hash, expires_at) VALUES (?, ?)`, stateHash,
-			expiresAt.UnixNano())
-		if isConstraint(err, sqlite3.ErrConstraintPrimaryKey) {
-			return ErrStateUsed
-		}
-
-		if err != nil {
-			return fmt.Errorf("record the state: %w", err)
-		}
-
-		return nil
+	_, err = run[struct{}](ctx, d, cmdUseOIDCState, "use OIDC state", useOIDCState{
+		StateHash: stateHash,
+		ExpiresAt: expiresAt.UnixNano(), Now: now.UnixNano(),
 	})
+
+	return err
+}
+
+type useOIDCState struct {
+	StateHash []byte
+	ExpiresAt int64
+	Now       int64
+}
+
+func applyUseOIDCState(a *applyCtx, p useOIDCState) (struct{}, error) {
+	if _, err := a.tx.ExecContext(a.ctx, `DELETE FROM oidc_used_states WHERE expires_at <= ?`, p.Now); err != nil {
+		return struct{}{}, err
+	}
+
+	_, err := a.tx.ExecContext(a.ctx, `INSERT INTO oidc_used_states (state_hash, expires_at) VALUES (?, ?)`,
+		p.StateHash, p.ExpiresAt)
+	if isConstraint(err, sqlite3.ErrConstraintPrimaryKey) {
+		return struct{}{}, ErrStateUsed
+	}
+
+	return struct{}{}, err
+}
+
+func init() {
+	register(cmdLogInWithOIDC, handle(applyLogInWithOIDC))
+	register(cmdUseOIDCState, handle(applyUseOIDCState))
 }

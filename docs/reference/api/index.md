@@ -17,17 +17,17 @@ The token is either:
 - an access token, from [log in](auth.md#log-in) or [refresh the access token](auth.md#refresh-the-access-token), valid for 15 minutes;
 - an [API token](users.md#create-an-api-token), which starts with `ellaims_`.
 
-These paths take no token: `GET /api/v1/livez`, `GET /api/v1/readyz`, `GET /api/v1/status`, `GET /api/v1/metrics`, `GET /api/v1/openapi.yaml`, `POST /api/v1/init`, `POST /api/v1/auth/login`, `/refresh` and `/logout`, and `GET /api/v1/auth/oidc`, `/oidc/login` and `/oidc/callback`.
+These paths take no token: `GET /api/v1/livez`, `GET /api/v1/readyz`, `GET /api/v1/status`, `GET /api/v1/metrics`, `GET /api/v1/openapi.yaml`, `POST /api/v1/init`, `POST /api/v1/cluster/join`, `POST /api/v1/auth/login`, `/refresh` and `/logout`, and `GET /api/v1/auth/oidc`, `/oidc/login` and `/oidc/callback`.
 
 ### Roles
 
 | Role            | `role_id` | Allows |
 | --------------- | --------- | ------ |
 | Admin           | `1`       | Everything. |
-| Read Only       | `2`       | Reading the settings, the registrations, the call records and the MCPTT state. |
+| Read Only       | `2`       | Reading the settings, the registrations, the call records, the MCPTT state and the [cluster](cluster.md). |
 | Network Manager | `3`       | Read Only, plus changing the settings and re-authenticating registrations. |
 
-Only an Admin manages users and [backs up](backup.md). Every user reads its own user, changes its own password, and manages its own API tokens.
+Only an Admin manages users and the [cluster](cluster.md), and [backs up and restores](backup.md). Every user reads its own user, changes its own password, and manages its own API tokens.
 
 An API token has the role of its user, but cannot create API tokens, change a password, or manage users or [single sign-on](oidc.md).
 
@@ -71,7 +71,8 @@ GET /api/v1/openapi.yaml
 - 404 - Not found.
 - 405 - Method not allowed.
 - 409 - Conflict.
+- 410 - The node was removed from the cluster. See [Remove a Member](cluster.md#remove-a-member).
 - 429 - Too many requests. `Retry-After` is the seconds to wait.
 - 500 - Internal server error.
-- 502 - The identity provider cannot be reached or used. See [Test an identity provider](oidc.md#test-an-identity-provider).
+- 502 - The identity provider cannot be reached or used, see [Test an identity provider](oidc.md#test-an-identity-provider), or no cluster member answered a join, see [Join a Cluster](cluster.md#join-a-cluster).
 - 503 - Service unavailable, or not ready. See [Check readiness](status.md#check-readiness).

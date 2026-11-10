@@ -87,7 +87,7 @@ func StartOIDCLogin(a *auth) http.Handler {
 
 		l := c.NewLogin(cfg.Now())
 
-		value, err := oidc.Seal(cfg.OIDCCookieKey, OIDCLoginCookieName, l)
+		value, err := oidc.Seal(cfg.OIDCCookieKey(), OIDCLoginCookieName, l)
 		if err != nil {
 			a.oidcDone(w, r, "", err)
 			return
@@ -148,7 +148,7 @@ func (a *auth) oidcAuthenticate(r *http.Request) (*oidc.Client, oidc.Claims, err
 		return nil, oidc.Claims{}, refuse(OIDCFailed, "no login in progress")
 	}
 
-	l, err := oidc.Open(cfg.OIDCCookieKey, OIDCLoginCookieName, cookie.Value, cfg.Now())
+	l, err := oidc.Open(cfg.OIDCCookieKey(), OIDCLoginCookieName, cookie.Value, cfg.Now())
 	if err != nil {
 		return nil, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
 	}

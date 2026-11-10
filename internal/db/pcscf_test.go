@@ -81,7 +81,7 @@ func TestListPCSCFRegistrationsSkipsAndDeletesBadRows(t *testing.T) {
 		{"2001:db8::3", "bogus", "[]"},
 		{"2001:db8::4", "2001:db8::10", "{not json"},
 	} {
-		if _, err := d.conn.ExecContext(ctx, `INSERT INTO pcscf_registrations (impi, flow_token, transport, protected,
+		if _, err := d.local.ExecContext(ctx, `INSERT INTO pcscf_registrations (impi, flow_token, transport, protected,
 			ue_address, ue_port, pcscf_address, contacts, associated_uris, sets, service_route, expires_at, signalling_lost)
 			VALUES (?, ?, 'UDP', 0, ?, 5060, ?, ?, '[]', '{}', '[]', 0, 0)`,
 			testIMPI, "bad"+string(rune('0'+i)), row.ue, row.pcscf, []byte(row.contacts)); err != nil {
@@ -95,7 +95,7 @@ func TestListPCSCFRegistrationsSkipsAndDeletesBadRows(t *testing.T) {
 	}
 
 	var n int
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pcscf_registrations`).Scan(&n); err != nil || n != 1 {
+	if err := d.local.QueryRowContext(ctx, `SELECT COUNT(*) FROM pcscf_registrations`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("rows left = %d, %v; want the bad rows deleted", n, err)
 	}
 }

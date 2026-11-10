@@ -57,6 +57,7 @@ type CallRecord struct {
 	InTrunkName     string
 	OutTrunk        string
 	OutTrunkName    string
+	NodeID          string
 }
 
 type CallRecordFilter struct {
@@ -68,67 +69,92 @@ type CallRecordFilter struct {
 const (
 	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
 		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete, in_trunk_id,
-		in_trunk_name, out_trunk_id, out_trunk_name`
+		in_trunk_name, out_trunk_id, out_trunk_name, node_id`
 
 	callRecordBatch = 1000
 )
 
+type saveCallRecordsCmd struct {
+	Records []CallRecord
+	Deleted []int64
+}
+
+type savedCallRecord struct {
+	ID      int64  `json:"i,omitempty"`
+	Code    string `json:"c,omitempty"`
+	Message string `json:"m,omitempty"`
+}
+
 func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted []int64) (errs []error, err error) {
 	defer d.observe(poolWrite, &err)()
 
-	tx, err := d.conn.BeginTx(ctx, nil)
+	p := saveCallRecordsCmd{Records: make([]CallRecord, len(records)), Deleted: deleted}
+	for i, r := range records {
+		p.Records[i] = *r
+	}
+
+	body, err := json.Marshal(p)
 	if err != nil {
 		return nil, fmt.Errorf("save call records: %w", err)
 	}
 
-	var inserted []*CallRecord
+	ctx = WithRequestID(ctx, RequestIDOf(body))
 
-	fail := func(err error) error {
-		_ = tx.Rollback()
-
-		for _, r := range inserted {
-			r.ID = 0
-		}
-
-		return fmt.Errorf("save call records: %w", err)
+	saved, err := run[[]savedCallRecord](ctx, d, cmdSaveCallRecords, "save call records", p)
+	if err != nil {
+		return nil, err
 	}
 
-	for i, r := range records {
-		insert := r.ID == 0
-
-		switch err := saveCallRecord(ctx, tx, r); {
-		case err == nil:
-			if insert {
-				inserted = append(inserted, r)
-			}
-		case isRecordError(err):
-			if errs == nil {
-				errs = make([]error, len(records))
-			}
-
-			errs[i] = fmt.Errorf("save call record %s: %w", r.ICID, err)
-		default:
-			return nil, fail(err)
-		}
+	if len(saved) != len(records) {
+		return nil, fmt.Errorf("save call records: %d results for %d records", len(saved), len(records))
 	}
 
-	if len(deleted) > 0 {
-		ids, err := json.Marshal(deleted)
-		if err != nil {
-			return nil, fail(err)
+	for i, s := range saved {
+		if s.Code == "" {
+			records[i].ID = s.ID
+			continue
 		}
 
-		if _, err := tx.ExecContext(ctx, `DELETE FROM call_records WHERE id IN (SELECT value FROM json_each(?))`,
-			string(ids)); err != nil {
-			return nil, fail(err)
+		if errs == nil {
+			errs = make([]error, len(records))
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fail(err)
+		errs[i] = fmt.Errorf("save call record %s: %w", records[i].ICID, Result{Code: s.Code, Message: s.Message}.Err())
 	}
 
 	return errs, nil
+}
+
+func applySaveCallRecords(a *applyCtx, p saveCallRecordsCmd) ([]savedCallRecord, error) {
+	saved := make([]savedCallRecord, len(p.Records))
+
+	for i := range p.Records {
+		r := &p.Records[i]
+
+		switch err := saveCallRecord(a.ctx, a.tx, r); {
+		case err == nil:
+			saved[i].ID = r.ID
+		case isRecordError(err):
+			code, _ := codeOf(err)
+			saved[i] = savedCallRecord{Code: code, Message: err.Error()}
+		default:
+			return nil, err
+		}
+	}
+
+	if len(p.Deleted) > 0 {
+		ids, err := json.Marshal(p.Deleted)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := a.tx.ExecContext(a.ctx, `DELETE FROM call_records WHERE id IN (SELECT value FROM json_each(?))`,
+			string(ids)); err != nil {
+			return nil, err
+		}
+	}
+
+	return saved, nil
 }
 
 func isRecordError(err error) bool {
@@ -176,11 +202,11 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 
 	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
 		requested_at, calling_party, called_party, callee_impi, delivery_start_at, delivery_end_at, sip_status, outcome,
-		ended_by, alerted, media, incomplete, in_trunk_id, in_trunk_name, out_trunk_id, out_trunk_name) VALUES (`+placeholders(20)+`) RETURNING id`,
+		ended_by, alerted, media, incomplete, in_trunk_id, in_trunk_name, out_trunk_id, out_trunk_name, node_id) VALUES (`+placeholders(21)+`) RETURNING id`,
 		append([]any{
 			r.ICID, r.SessionID, nullableString(r.CallerIMPI), r.RequestedParty,
 			r.RequestedAt.UTC().UnixNano(),
-		}, mutable...)...).Scan(&r.ID)
+		}, append(mutable, r.NodeID)...)...).Scan(&r.ID)
 	if isConstraint(err, sqlite3.ErrConstraintUnique) {
 		return ErrDuplicateICID
 	}
@@ -191,7 +217,7 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 func (d *DB) GetCallRecord(ctx context.Context, id int64) (_ CallRecord, err error) {
 	defer d.observe(poolRead, &err)()
 
-	r, err := scanCallRecord(d.read.QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
+	r, err := scanCallRecord(d.reader().QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
 		id))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
@@ -209,7 +235,7 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 
 	where, args := f.where()
 
-	tx, err := d.read.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := d.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, 0, fmt.Errorf("list call records: %w", err)
 	}
@@ -236,7 +262,7 @@ func (d *DB) CountCallRecords(ctx context.Context, f CallRecordFilter) (_ map[Ca
 
 	where, args := f.where()
 
-	rows, err := d.read.QueryContext(ctx, `SELECT outcome, COUNT(*) FROM call_records WHERE `+where+
+	rows, err := d.reader().QueryContext(ctx, `SELECT outcome, COUNT(*) FROM call_records WHERE `+where+
 		` AND outcome IS NOT NULL GROUP BY outcome`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("count call records: %w", err)
@@ -266,21 +292,32 @@ func (d *DB) CountCallRecords(ctx context.Context, f CallRecordFilter) (_ map[Ca
 	return counts, nil
 }
 
+type pruneCallRecords struct {
+	Before  int64
+	MaxRows int
+}
+
 func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
+	return run[int64](ctx, d, cmdPruneCallRecords, "prune call records", pruneCallRecords{
+		Before: before.UTC().UnixNano(), MaxRows: maxRows,
+	})
+}
+
+func applyPruneCallRecords(a *applyCtx, p pruneCallRecords) (int64, error) {
 	var deleted int64
 
 	deleteOldest := func(where string, limit int, args ...any) (int64, error) {
-		res, err := d.conn.ExecContext(ctx, `DELETE FROM call_records WHERE id IN (SELECT id FROM call_records WHERE `+
+		res, err := a.tx.ExecContext(a.ctx, `DELETE FROM call_records WHERE id IN (SELECT id FROM call_records WHERE `+
 			where+` ORDER BY requested_at, id LIMIT ?)`, append(args, limit)...)
 		if err != nil {
-			return 0, fmt.Errorf("prune call records: %w", err)
+			return 0, err
 		}
 
 		n, err := res.RowsAffected()
 		if err != nil {
-			return 0, fmt.Errorf("prune call records: %w", err)
+			return 0, err
 		}
 
 		deleted += n
@@ -289,9 +326,9 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 	}
 
 	for {
-		n, err := deleteOldest(`requested_at < ?`, callRecordBatch, before.UTC().UnixNano())
+		n, err := deleteOldest(`requested_at < ?`, callRecordBatch, p.Before)
 		if err != nil {
-			return deleted, err
+			return 0, err
 		}
 
 		if n < callRecordBatch {
@@ -300,14 +337,14 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 	}
 
 	var count int
-	if err := d.read.QueryRowContext(ctx, `SELECT COUNT(*) FROM call_records`).Scan(&count); err != nil {
-		return deleted, fmt.Errorf("prune call records: %w", err)
+	if err := a.tx.QueryRowContext(a.ctx, `SELECT COUNT(*) FROM call_records`).Scan(&count); err != nil {
+		return 0, err
 	}
 
-	for excess := count - maxRows; excess > 0; {
+	for excess := count - p.MaxRows; excess > 0; {
 		n, err := deleteOldest(`1`, min(excess, callRecordBatch))
 		if err != nil {
-			return deleted, err
+			return 0, err
 		}
 
 		if n == 0 {
@@ -320,26 +357,42 @@ func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int
 	return deleted, nil
 }
 
-func (d *DB) CloseOpenCallRecords(ctx context.Context, live []string) (_ int64, err error) {
+type closeOpenCallRecords struct {
+	NodeID string
+	Live   []string
+}
+
+func (d *DB) CloseOpenCallRecords(ctx context.Context, nodeID string, live []string) (_ int64, err error) {
 	defer d.observe(poolWrite, &err)()
 
+	return run[int64](ctx, d, cmdCloseOpenCallRecords, "close open call records", closeOpenCallRecords{
+		NodeID: nodeID, Live: nonNilList(live),
+	})
+}
+
+func applyCloseOpenCallRecords(a *applyCtx, p closeOpenCallRecords) (int64, error) {
+	return closeCallRecordsOf(a, p.NodeID, p.Live)
+}
+
+func closeCallRecordsOf(a *applyCtx, nodeID string, live []string) (int64, error) {
 	icids, err := json.Marshal(nonNilList(live))
 	if err != nil {
-		return 0, fmt.Errorf("close open call records: %w", err)
+		return 0, err
 	}
 
-	res, err := d.conn.ExecContext(ctx, `UPDATE call_records SET incomplete = 1 WHERE ended_by IS NULL AND
-		incomplete = 0 AND icid NOT IN (SELECT value FROM json_each(?))`, string(icids))
+	res, err := a.tx.ExecContext(a.ctx, `UPDATE call_records SET incomplete = 1 WHERE node_id = ? AND ended_by IS NULL AND
+		incomplete = 0 AND icid NOT IN (SELECT value FROM json_each(?))`, nodeID, string(icids))
 	if err != nil {
-		return 0, fmt.Errorf("close open call records: %w", err)
+		return 0, err
 	}
 
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("close open call records: %w", err)
-	}
+	return res.RowsAffected()
+}
 
-	return n, nil
+func init() {
+	register(cmdSaveCallRecords, handle(applySaveCallRecords))
+	register(cmdPruneCallRecords, handle(applyPruneCallRecords))
+	register(cmdCloseOpenCallRecords, handle(applyCloseOpenCallRecords))
 }
 
 func (f CallRecordFilter) where() (string, []any) {
@@ -412,7 +465,7 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 
 	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &calling, &callerIMPI, &r.RequestedParty, &calledParty,
 		&calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome, &endedBy, &r.Alerted, &media,
-		&r.Incomplete, &inTrunk, &inTrunkName, &outTrunk, &outTrunkName); err != nil {
+		&r.Incomplete, &inTrunk, &inTrunkName, &outTrunk, &outTrunkName, &r.NodeID); err != nil {
 		return CallRecord{}, err
 	}
 

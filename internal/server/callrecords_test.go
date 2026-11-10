@@ -2,10 +2,13 @@ package server
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/ellanetworks/ims/internal/callrecords"
+	"github.com/ellanetworks/ims/internal/cluster/pki"
 	"github.com/ellanetworks/ims/internal/db"
 )
 
@@ -18,7 +21,20 @@ func TestCallRecordsAtStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	open := &db.CallRecord{ICID: "OPEN", SessionID: "c1", RequestedParty: "tel:+15551230002", RequestedAt: now.Add(-time.Hour)}
+	nodeID := pki.NewID()
+	raftDir := filepath.Join(filepath.Dir(cfg.DB.Path), "raft")
+
+	if err := os.MkdirAll(raftDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(raftDir, "node-id"), []byte(nodeID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	open := &db.CallRecord{
+		ICID: "OPEN", SessionID: "c1", RequestedParty: "tel:+15551230002", RequestedAt: now.Add(-time.Hour), NodeID: nodeID,
+	}
 	old := &db.CallRecord{
 		ICID: "OLD", SessionID: "c2", RequestedParty: "tel:+15551230002", RequestedAt: now.Add(-91 * 24 * time.Hour),
 		SIPStatus: 486, Outcome: db.OutcomeBusy, EndedBy: db.PartyCallee, DeliveryStartAt: now.Add(-91 * 24 * time.Hour),

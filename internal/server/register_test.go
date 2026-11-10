@@ -83,7 +83,7 @@ func TestRegisterWithIPsecThroughTheRoles(t *testing.T) {
 	}
 
 	mar := hss.Next(t).MAR
-	if want := "sip:scscf." + imsRealm + ":" + strconv.Itoa(int(scscf.Port())); mar == nil || mar.ServerName != want ||
+	if want := "sip:scscf-ims." + imsRealm + ":" + strconv.Itoa(int(scscf.Port())); mar == nil || mar.ServerName != want ||
 		mar.PrivateIdentity != testIMPI {
 		t.Fatalf("MAR = %+v, want Server-Name %s", mar, want)
 	}
@@ -217,7 +217,7 @@ func TestRegisterUnderAConfiguredDomain(t *testing.T) {
 	}
 
 	mar := hss.Next(t).MAR
-	if want := "sip:scscf." + imsRealm + ":" + strconv.Itoa(int(scscf.Port())); mar == nil || mar.ServerName != want ||
+	if want := "sip:scscf-ims." + imsRealm + ":" + strconv.Itoa(int(scscf.Port())); mar == nil || mar.ServerName != want ||
 		mar.PrivateIdentity != impi {
 		t.Fatalf("MAR = %+v, want Server-Name %s", mar, want)
 	}

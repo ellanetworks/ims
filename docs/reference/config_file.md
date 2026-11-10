@@ -11,7 +11,7 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
 - `logging` (object, optional): The logging configuration.
     - `level` (string, optional): The log level: `debug`, `info`, `warn`, or `error`. Default `info`.
 - `db` (object): The database configuration.
-    - `path` (string): The path to the SQLite database file.
+    - `path` (string): The path to the SQLite database file. Its directory also holds `node.db`, the node's own database, and `raft/`, the node's Raft log and identity.
 - `api` (object): The HTTP API and UI.
     - `address` (string): The IP address to listen on. `0.0.0.0` or `::` for all IPv4 and IPv6 addresses.
     - `port` (int, optional): The TCP port to listen on. Default `5020`.
@@ -36,7 +36,7 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
     - `name` (string): The network interface of the Diameter connections, on all its addresses, advertised to peers. Either `name` or `address` must be set.
     - `address` (string): The IP address of the Diameter connections, advertised to peers. A specific address, not `0.0.0.0` or `::`. Either `name` or `address` must be set.
     - `port` (int, optional): The port. Default `3868`.
-    - `host_label` (string, optional): The first label of the node's [Diameter host](connectivity.md#diameter-identity). Default `ims`.
+    - `host_label` (string, optional): The first label of the node's [Diameter host](connectivity.md#diameter-identity). Default `ims-` and the last 12 hex characters of the node ID.
 - `n5` (object, optional): N5, to a PCF. Required to select the PCF as the policy function.
     - `notify` (object): Where the P-CSCF receives the PCF's notifications.
         - `address` (string): The IP address. A specific address, not `0.0.0.0` or `::`.
@@ -66,6 +66,13 @@ Ella IMS is configured using a YAML file. Start Ella IMS with the `--config` fla
     - `media` (object, optional): The UDP ports of the voice of calls over SIP trunks, on `sip.addresses` and on `ibcf.external.addresses`. Two ports per call on each.
         - `min_port` (int, optional): The first port. Even, from `1024`. Default `10000`.
         - `max_port` (int, optional): The last port. Default `19999`.
+- `cluster` (object, optional): The cluster port. Required to create or join a [cluster](../explanation/high_availability.md).
+    - `address` (string): The IP address to listen on. `0.0.0.0` or `::` for all addresses, with `advertise` set.
+    - `port` (int, optional): The TCP port to listen on. Default `7000`.
+    - `advertise` (string, optional): The `host:port` the other nodes reach this node at. A specific address or a host name. Default `address:port`.
+    - `join` (list of strings, optional): The `host` or `host:port` of the other nodes, on `port` when the port is left out. Each name resolves to all its addresses.
+    - `bootstrap_expect` (int, optional): The number of nodes that form a new cluster together. 2 or more. Requires `join`.
+    - `secret_file` (string): The path to the cluster secret: base64 keys of at least 32 bytes, one per line, the first used to sign. Required with `join`.
 - `telemetry` (object, optional): The [traces](observability.md#traces).
     - `enabled` (boolean, optional): Export traces. Default `false`.
     - `otlp_endpoint` (string): The `host:port` of an OTLP/gRPC collector, over plain gRPC. Required when `enabled` is `true`.
@@ -106,6 +113,9 @@ ibcf:
 diameter:
   address: 10.3.0.5
   port: 3868
+cluster:
+  address: 10.0.0.1
+  port: 7000
 telemetry:
   enabled: true
   otlp_endpoint: localhost:4317

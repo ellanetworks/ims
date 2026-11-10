@@ -15,9 +15,9 @@ import (
 )
 
 func (d *DB) GetMCPTTSettings(ctx context.Context) (_ settings.Settings, err error) {
-	defer d.observe(poolWrite, &err)()
+	defer d.observe(poolRead, &err)()
 
-	tx, err := d.conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := d.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return settings.Settings{}, fmt.Errorf("get MCPTT settings: %w", err)
 	}
@@ -191,68 +191,107 @@ func queryRows(ctx context.Context, tx *sql.Tx, what, query string, scan func(*s
 func (d *DB) UpdateMCPTTServiceConfiguration(ctx context.Context, c settings.ServiceConfiguration) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	res, err := d.conn.ExecContext(ctx, `UPDATE mcptt_service_configuration SET domain = ?, time_limit_ns = ? WHERE id = 1`,
-		c.Domain, nullDuration(c.OnNetwork.TransmitTime.TimeLimit))
+	_, err = run[struct{}](ctx, d, cmdUpdateMCPTTServiceConfiguration, "update MCPTT service configuration", c)
 
-	return oneRow(res, err, "update MCPTT service configuration")
+	return err
 }
 
-func oneRow(res sql.Result, err error, what string) error {
-	if err != nil {
-		return fmt.Errorf("%s: %w", what, err)
+func applyUpdateMCPTTServiceConfiguration(a *applyCtx, c settings.ServiceConfiguration) (struct{}, error) {
+	res, err := a.tx.ExecContext(a.ctx, `UPDATE mcptt_service_configuration SET domain = ?, time_limit_ns = ?
+		WHERE id = 1`, c.Domain, nullDuration(c.OnNetwork.TransmitTime.TimeLimit))
+	if err == nil {
+		err = checkAffected(res)
 	}
 
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return fmt.Errorf("%s: %d rows: %w", what, n, errors.Join(err, ErrNotFound))
+	if err == nil {
+		a.events.MCPTT = true
 	}
 
-	return nil
+	return struct{}{}, err
+}
+
+func init() {
+	register(cmdUpdateMCPTTServiceConfiguration, handle(applyUpdateMCPTTServiceConfiguration))
+	register(cmdCreateMCPTTUser, handle(applyCreateMCPTTUser))
+	register(cmdUpdateMCPTTUser, handle(applyUpdateMCPTTUser))
+	register(cmdDeleteMCPTTUser, handle(applyDeleteMCPTTUser))
+	register(cmdCreateMCPTTGroup, handle(applyCreateMCPTTGroup))
+	register(cmdUpdateMCPTTGroup, handle(applyUpdateMCPTTGroup))
+	register(cmdDeleteMCPTTGroup, handle(applyDeleteMCPTTGroup))
+	register(cmdPutMCPTTMember, handle(applyPutMCPTTMember))
+	register(cmdDeleteMCPTTMember, handle(applyDeleteMCPTTMember))
 }
 
 func (d *DB) CreateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "create MCPTT user", func(tx *sql.Tx) error {
-		k, err := mcpttKey(u.MCPTTUserID)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdCreateMCPTTUser, "create MCPTT user", u)
 
-		res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_users (mcptt_id, key, alias) VALUES (?, ?, ?)`, u.MCPTTUserID, k,
-			u.Alias)
-		if err != nil {
-			return duplicate(err)
-		}
+	return err
+}
 
-		id, err := res.LastInsertId()
-		if err != nil {
-			return err
-		}
+func applyCreateMCPTTUser(a *applyCtx, p settings.User) (struct{}, error) {
+	err := createMCPTTUserTx(a.ctx, a.tx, p)
+	if err == nil {
+		a.events.MCPTT = true
+	}
 
-		return putMCPTTUserLists(ctx, tx, id, u)
-	})
+	return struct{}{}, err
+}
+
+func createMCPTTUserTx(ctx context.Context, tx *sql.Tx, u settings.User) error {
+	k, err := mcpttKey(u.MCPTTUserID)
+	if err != nil {
+		return err
+	}
+
+	res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_users (mcptt_id, key, alias) VALUES (?, ?, ?)`, u.MCPTTUserID, k,
+		u.Alias)
+	if err != nil {
+		return duplicate(err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	return putMCPTTUserLists(ctx, tx, id, u)
 }
 
 func (d *DB) UpdateMCPTTUser(ctx context.Context, u settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "update MCPTT user", func(tx *sql.Tx) error {
-		id, err := mcpttRowID(ctx, tx, "mcptt_users", u.MCPTTUserID)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdUpdateMCPTTUser, "update MCPTT user", u)
 
-		if _, err := tx.ExecContext(ctx, `UPDATE mcptt_users SET mcptt_id = ?, alias = ? WHERE id = ?`, u.MCPTTUserID, u.Alias,
-			id); err != nil {
-			return err
-		}
+	return err
+}
 
-		if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_user_impus WHERE user_id = ?`, id); err != nil {
-			return err
-		}
+func applyUpdateMCPTTUser(a *applyCtx, p settings.User) (struct{}, error) {
+	err := updateMCPTTUserTx(a.ctx, a.tx, p)
+	if err == nil {
+		a.events.MCPTT = true
+	}
 
-		return putMCPTTUserLists(ctx, tx, id, u)
-	})
+	return struct{}{}, err
+}
+
+func updateMCPTTUserTx(ctx context.Context, tx *sql.Tx, u settings.User) error {
+	id, err := mcpttRowID(ctx, tx, "mcptt_users", u.MCPTTUserID)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE mcptt_users SET mcptt_id = ?, alias = ? WHERE id = ?`, u.MCPTTUserID, u.Alias,
+		id); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_user_impus WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+
+	return putMCPTTUserLists(ctx, tx, id, u)
 }
 
 func putMCPTTUserLists(ctx context.Context, tx *sql.Tx, id int64, u settings.User) error {
@@ -304,85 +343,134 @@ func putMCPTTImplicitAffiliations(ctx context.Context, tx *sql.Tx, id int64, u s
 func (d *DB) DeleteMCPTTUser(ctx context.Context, mcpttID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "delete MCPTT user", func(tx *sql.Tx) error {
-		id, err := mcpttRowID(ctx, tx, "mcptt_users", mcpttID)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdDeleteMCPTTUser, "delete MCPTT user", mcpttID)
 
-		_, err = tx.ExecContext(ctx, `DELETE FROM mcptt_users WHERE id = ?`, id)
+	return err
+}
 
+func applyDeleteMCPTTUser(a *applyCtx, p string) (struct{}, error) {
+	err := deleteMCPTTUserTx(a.ctx, a.tx, p)
+	if err == nil {
+		a.events.MCPTT = true
+	}
+
+	return struct{}{}, err
+}
+
+func deleteMCPTTUserTx(ctx context.Context, tx *sql.Tx, mcpttID string) error {
+	id, err := mcpttRowID(ctx, tx, "mcptt_users", mcpttID)
+	if err != nil {
 		return err
-	})
+	}
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM mcptt_users WHERE id = ?`, id)
+
+	return err
 }
 
 func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "create MCPTT group", func(tx *sql.Tx) error {
-		k, err := mcpttKey(g.URI)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdCreateMCPTTGroup, "create MCPTT group", createMCPTTGroupCmd{G: g, Users: users})
 
-		res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_groups (uri, key, display_name, t4_ns, tng3_ns,
-			release_on_initiator_leave) VALUES (?, ?, ?, ?, ?, ?)`, g.URI, k, g.DisplayName, nullDuration(g.T4), int64(g.TNG3),
-			g.ReleaseOnInitiatorLeave)
-		if err != nil {
-			return duplicate(err)
-		}
+	return err
+}
 
-		id, err := res.LastInsertId()
-		if err != nil {
-			return err
-		}
+type createMCPTTGroupCmd struct {
+	G     settings.Group
+	Users []settings.User
+}
 
-		if err := putMCPTTGroupLists(ctx, tx, id, g); err != nil {
-			return err
-		}
+func applyCreateMCPTTGroup(a *applyCtx, p createMCPTTGroupCmd) (struct{}, error) {
+	err := createMCPTTGroupTx(a.ctx, a.tx, p.G, p.Users)
+	if err == nil {
+		a.events.MCPTT = true
+	}
 
-		return putMCPTTAffiliationsOf(ctx, tx, users)
-	})
+	return struct{}{}, err
+}
+
+func createMCPTTGroupTx(ctx context.Context, tx *sql.Tx, g settings.Group, users []settings.User) error {
+	k, err := mcpttKey(g.URI)
+	if err != nil {
+		return err
+	}
+
+	res, err := tx.ExecContext(ctx, `INSERT INTO mcptt_groups (uri, key, display_name, t4_ns, tng3_ns,
+		release_on_initiator_leave) VALUES (?, ?, ?, ?, ?, ?)`, g.URI, k, g.DisplayName, nullDuration(g.T4), int64(g.TNG3),
+		g.ReleaseOnInitiatorLeave)
+	if err != nil {
+		return duplicate(err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	if err := putMCPTTGroupLists(ctx, tx, id, g); err != nil {
+		return err
+	}
+
+	return putMCPTTAffiliationsOf(ctx, tx, users)
 }
 
 func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "update MCPTT group", func(tx *sql.Tx) error {
-		id, err := mcpttRowID(ctx, tx, "mcptt_groups", g.URI)
+	_, err = run[struct{}](ctx, d, cmdUpdateMCPTTGroup, "update MCPTT group", updateMCPTTGroupCmd{G: g, Users: users})
+
+	return err
+}
+
+type updateMCPTTGroupCmd struct {
+	G     settings.Group
+	Users []settings.User
+}
+
+func applyUpdateMCPTTGroup(a *applyCtx, p updateMCPTTGroupCmd) (struct{}, error) {
+	err := updateMCPTTGroupTx(a.ctx, a.tx, p.G, p.Users)
+	if err == nil {
+		a.events.MCPTT = true
+	}
+
+	return struct{}{}, err
+}
+
+func updateMCPTTGroupTx(ctx context.Context, tx *sql.Tx, g settings.Group, users []settings.User) error {
+	id, err := mcpttRowID(ctx, tx, "mcptt_groups", g.URI)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE mcptt_groups SET uri = ?, display_name = ?, t4_ns = ?, tng3_ns = ?,
+		release_on_initiator_leave = ? WHERE id = ?`, g.URI, g.DisplayName, nullDuration(g.T4), int64(g.TNG3),
+		g.ReleaseOnInitiatorLeave, id); err != nil {
+		return err
+	}
+
+	kept := make([]any, 0, len(g.List.Entries)+1)
+	kept = append(kept, id)
+
+	for _, e := range g.List.Entries {
+		uid, err := mcpttRowID(ctx, tx, "mcptt_users", e.URI)
 		if err != nil {
-			return err
+			return fmt.Errorf("member %s: %w", e.URI, err)
 		}
 
-		if _, err := tx.ExecContext(ctx, `UPDATE mcptt_groups SET uri = ?, display_name = ?, t4_ns = ?, tng3_ns = ?,
-			release_on_initiator_leave = ? WHERE id = ?`, g.URI, g.DisplayName, nullDuration(g.T4), int64(g.TNG3),
-			g.ReleaseOnInitiatorLeave, id); err != nil {
-			return err
-		}
+		kept = append(kept, uid)
+	}
 
-		kept := make([]any, 0, len(g.List.Entries)+1)
-		kept = append(kept, id)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_group_members WHERE group_id = ? AND user_id NOT IN (SELECT value
+		FROM json_each(?))`, id, jsonInts(kept[1:])); err != nil {
+		return err
+	}
 
-		for _, e := range g.List.Entries {
-			uid, err := mcpttRowID(ctx, tx, "mcptt_users", e.URI)
-			if err != nil {
-				return fmt.Errorf("member %s: %w", e.URI, err)
-			}
+	if err := putMCPTTGroupLists(ctx, tx, id, g); err != nil {
+		return err
+	}
 
-			kept = append(kept, uid)
-		}
-
-		if _, err := tx.ExecContext(ctx, `DELETE FROM mcptt_group_members WHERE group_id = ? AND user_id NOT IN (SELECT value
-			FROM json_each(?))`, id, jsonInts(kept[1:])); err != nil {
-			return err
-		}
-
-		if err := putMCPTTGroupLists(ctx, tx, id, g); err != nil {
-			return err
-		}
-
-		return putMCPTTAffiliationsOf(ctx, tx, users)
-	})
+	return putMCPTTAffiliationsOf(ctx, tx, users)
 }
 
 func putMCPTTGroupLists(ctx context.Context, tx *sql.Tx, id int64, g settings.Group) error {
@@ -411,72 +499,122 @@ func putMCPTTMember(ctx context.Context, tx *sql.Tx, groupID int64, position int
 func (d *DB) DeleteMCPTTGroup(ctx context.Context, uri string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "delete MCPTT group", func(tx *sql.Tx) error {
-		id, err := mcpttRowID(ctx, tx, "mcptt_groups", uri)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdDeleteMCPTTGroup, "delete MCPTT group", uri)
 
-		_, err = tx.ExecContext(ctx, `DELETE FROM mcptt_groups WHERE id = ?`, id)
+	return err
+}
 
+func applyDeleteMCPTTGroup(a *applyCtx, p string) (struct{}, error) {
+	err := deleteMCPTTGroupTx(a.ctx, a.tx, p)
+	if err == nil {
+		a.events.MCPTT = true
+	}
+
+	return struct{}{}, err
+}
+
+func deleteMCPTTGroupTx(ctx context.Context, tx *sql.Tx, uri string) error {
+	id, err := mcpttRowID(ctx, tx, "mcptt_groups", uri)
+	if err != nil {
 		return err
-	})
+	}
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM mcptt_groups WHERE id = ?`, id)
+
+	return err
 }
 
 func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry, users []settings.User) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "put MCPTT member", func(tx *sql.Tx) error {
-		id, err := mcpttRowID(ctx, tx, "mcptt_groups", group)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdPutMCPTTMember, "put MCPTT member", putMCPTTMemberCmd{Group: group, Entry: e, Users: users})
 
-		uid, err := mcpttRowID(ctx, tx, "mcptt_users", e.URI)
-		if err != nil {
-			return fmt.Errorf("member %s: %w", e.URI, err)
-		}
+	return err
+}
 
-		var position int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT position FROM mcptt_group_members
-			WHERE group_id = ? AND user_id = ?), (SELECT COALESCE(MAX(position), -1) + 1 FROM mcptt_group_members
-			WHERE group_id = ?))`, id, uid, id).Scan(&position); err != nil {
-			return err
-		}
+type putMCPTTMemberCmd struct {
+	Group string
+	Entry settings.Entry
+	Users []settings.User
+}
 
-		if err := putMCPTTMember(ctx, tx, id, position, e); err != nil {
-			return err
-		}
+func applyPutMCPTTMember(a *applyCtx, p putMCPTTMemberCmd) (struct{}, error) {
+	err := putMCPTTMemberTx(a.ctx, a.tx, p.Group, p.Entry, p.Users)
+	if err == nil {
+		a.events.MCPTT = true
+	}
 
-		return putMCPTTAffiliationsOf(ctx, tx, users)
-	})
+	return struct{}{}, err
+}
+
+func putMCPTTMemberTx(ctx context.Context, tx *sql.Tx, group string, e settings.Entry, users []settings.User) error {
+	id, err := mcpttRowID(ctx, tx, "mcptt_groups", group)
+	if err != nil {
+		return err
+	}
+
+	uid, err := mcpttRowID(ctx, tx, "mcptt_users", e.URI)
+	if err != nil {
+		return fmt.Errorf("member %s: %w", e.URI, err)
+	}
+
+	var position int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT position FROM mcptt_group_members
+		WHERE group_id = ? AND user_id = ?), (SELECT COALESCE(MAX(position), -1) + 1 FROM mcptt_group_members
+		WHERE group_id = ?))`, id, uid, id).Scan(&position); err != nil {
+		return err
+	}
+
+	if err := putMCPTTMember(ctx, tx, id, position, e); err != nil {
+		return err
+	}
+
+	return putMCPTTAffiliationsOf(ctx, tx, users)
 }
 
 func (d *DB) DeleteMCPTTMember(ctx context.Context, group, mcpttID string) (err error) {
 	defer d.observe(poolWrite, &err)()
 
-	return d.inTx(ctx, "delete MCPTT member", func(tx *sql.Tx) error {
-		gid, err := mcpttRowID(ctx, tx, "mcptt_groups", group)
-		if err != nil {
-			return err
-		}
+	_, err = run[struct{}](ctx, d, cmdDeleteMCPTTMember, "delete MCPTT member", deleteMCPTTMemberCmd{Group: group, MCPTTID: mcpttID})
 
-		uid, err := mcpttRowID(ctx, tx, "mcptt_users", mcpttID)
-		if err != nil {
-			return err
-		}
+	return err
+}
 
-		res, err := tx.ExecContext(ctx, `DELETE FROM mcptt_group_members WHERE group_id = ? AND user_id = ?`, gid, uid)
-		if err != nil {
-			return err
-		}
+type deleteMCPTTMemberCmd struct {
+	Group   string
+	MCPTTID string
+}
 
-		if n, err := res.RowsAffected(); err != nil || n == 0 {
-			return errors.Join(err, ErrNotFound)
-		}
+func applyDeleteMCPTTMember(a *applyCtx, p deleteMCPTTMemberCmd) (struct{}, error) {
+	err := deleteMCPTTMemberTx(a.ctx, a.tx, p.Group, p.MCPTTID)
+	if err == nil {
+		a.events.MCPTT = true
+	}
 
-		return nil
-	})
+	return struct{}{}, err
+}
+
+func deleteMCPTTMemberTx(ctx context.Context, tx *sql.Tx, group string, mcpttID string) error {
+	gid, err := mcpttRowID(ctx, tx, "mcptt_groups", group)
+	if err != nil {
+		return err
+	}
+
+	uid, err := mcpttRowID(ctx, tx, "mcptt_users", mcpttID)
+	if err != nil {
+		return err
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM mcptt_group_members WHERE group_id = ? AND user_id = ?`, gid, uid)
+	if err != nil {
+		return err
+	}
+
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return errors.Join(err, ErrNotFound)
+	}
+
+	return nil
 }
 
 func mcpttRowID(ctx context.Context, tx *sql.Tx, table, uri string) (int64, error) {
@@ -500,12 +638,12 @@ func mcpttRowID(ctx context.Context, tx *sql.Tx, table, uri string) (int64, erro
 func mcpttKey(uri string) (string, error) {
 	u, err := sip.ParseURI(uri)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", uri, err)
+		return "", fmt.Errorf("%w: %s: %w", ErrInvalid, uri, err)
 	}
 
 	k := settings.Key(u)
 	if k == "" {
-		return "", fmt.Errorf("%s is neither a SIP nor a tel URI", uri)
+		return "", fmt.Errorf("%w: %s is neither a SIP nor a tel URI", ErrInvalid, uri)
 	}
 
 	return k, nil

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ellanetworks/ims/internal/deepequal"
 	"github.com/ellanetworks/ims/sip"
 )
 
@@ -31,6 +32,7 @@ type Live struct {
 	onChange func(ctx context.Context, before, after *Snapshot)
 
 	mu      sync.Mutex
+	stateMu sync.Mutex
 	current atomic.Pointer[state]
 }
 
@@ -301,13 +303,38 @@ func (l *Live) change(ctx context.Context, edit func(next *Settings) (string, er
 		return fmt.Errorf("save settings: %w", err)
 	}
 
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
+
+	l.swapLocked(context.WithoutCancel(ctx), next, snap)
+
+	return nil
+}
+
+func (l *Live) Reload(ctx context.Context, next Settings) error {
+	l.stateMu.Lock()
+	defer l.stateMu.Unlock()
+
+	if deepequal.IgnoringEmpty(l.current.Load().written, next) {
+		return nil
+	}
+
+	snap, err := New(next)
+	if err != nil {
+		return err
+	}
+
+	l.swapLocked(ctx, next, snap)
+
+	return nil
+}
+
+func (l *Live) swapLocked(ctx context.Context, next Settings, snap *Snapshot) {
 	before := l.current.Swap(&state{written: next, snap: snap}).snap
 
 	if l.onChange != nil {
-		l.onChange(context.WithoutCancel(ctx), before, snap)
+		l.onChange(ctx, before, snap)
 	}
-
-	return nil
 }
 
 func refusal(next Settings, doc string, err error) error {
