@@ -20,7 +20,7 @@ import (
 	"github.com/ellanetworks/ims/internal/settings"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	raftwal "github.com/hashicorp/raft-wal"
+	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 )
 
 const (
@@ -39,7 +39,7 @@ const (
 	joinedFile  = "joined"
 	joiningFile = "joining"
 	removedFile = "removed"
-	logDir      = "wal"
+	logFile     = "raft.db"
 )
 
 var (
@@ -93,7 +93,7 @@ type Node struct {
 
 	raftMu    sync.RWMutex
 	raft      *raft.Raft
-	store     *raftwal.WAL
+	store     *raftboltdb.BoltStore
 	transport raft.Transport
 	batcher   *batcher
 	notify    chan bool
@@ -273,7 +273,7 @@ func (n *Node) electionTimeout() time.Duration {
 }
 
 func (n *Node) startRaft(ctx context.Context) error {
-	store, err := openLogStore(filepath.Join(n.cfg.Dir, logDir))
+	store, err := openLogStore(filepath.Join(n.cfg.Dir, logFile))
 	if err != nil {
 		return fmt.Errorf("open the raft log: %w", err)
 	}

@@ -286,6 +286,7 @@ func (n *node) launch() {
 
 	if err != nil {
 		_ = log.Close()
+
 		n.t.Fatal(err)
 	}
 

@@ -170,6 +170,7 @@ func TestClusteredNodeIsUnreadyUntilInitialized(t *testing.T) {
 	if _, err := joiner.redeem(n.mintToken()); err != nil {
 		t.Fatal(err)
 	}
+
 	joiner.waitReady("")
 }
 

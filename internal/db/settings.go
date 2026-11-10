@@ -13,7 +13,14 @@ import (
 func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
 	defer d.observe(poolRead, &err)()
 
-	return getSettings(ctx, d.reader())
+	tx, err := d.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return settings.Settings{}, fmt.Errorf("get settings: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	return getSettings(ctx, tx)
 }
 
 func getSettings(ctx context.Context, q querier) (_ settings.Settings, err error) {

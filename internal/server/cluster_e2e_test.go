@@ -23,7 +23,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const clusterWait = time.Minute
+const (
+	clusterWait = time.Minute
+	fenceWait   = 90 * time.Second
+)
 
 type clusterNode struct {
 	srv     *Server
@@ -289,7 +292,13 @@ func (n *clusterNode) diameterListener(t *testing.T) string {
 func eventuallyFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 
-	deadline := time.Now().Add(clusterWait)
+	eventuallyWithin(t, clusterWait, what, cond)
+}
+
+func eventuallyWithin(t *testing.T, wait time.Duration, what string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(wait)
 
 	for !cond() {
 		if time.Now().After(deadline) {
@@ -543,7 +552,7 @@ func TestNodeRemovedWhileDownIsFencedOnRestart(t *testing.T) {
 
 	diameterAddr := b.diameterListener(t)
 
-	eventuallyFor(t, "the restarted node to fail its member check", func() bool {
+	eventuallyWithin(t, fenceWait, "the restarted node to fail its member check", func() bool {
 		code, c, ok := b.check(t, cluster.CheckMember)
 		return ok && code == http.StatusServiceUnavailable && !c.OK
 	})

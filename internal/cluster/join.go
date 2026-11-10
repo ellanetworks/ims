@@ -413,7 +413,7 @@ func (n *Node) finishJoin() error {
 		return err
 	}
 
-	for _, name := range []string{logDir, "snapshots"} {
+	for _, name := range []string{logFile, "snapshots"} {
 		if err := os.RemoveAll(filepath.Join(n.cfg.Dir, name)); err != nil {
 			return err
 		}
