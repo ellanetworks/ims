@@ -358,6 +358,13 @@ curl -fsSL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${
   | sed "s|multus-cni:snapshot-thick|multus-cni:${MULTUS_VERSION}-thick|" \
   | kubectl apply -f -
 kubectl -n kube-system rollout status daemonset/kube-multus-ds --timeout=180s
+for node in $(kind get nodes --name "${CLUSTER}"); do
+  for _ in $(seq 60); do
+    docker exec "${node}" test -f /etc/cni/net.d/00-multus.conf && break
+    sleep 2
+  done
+  docker exec "${node}" test -f /etc/cni/net.d/00-multus.conf || fail "Multus did not configure the CNI on ${node}"
+done
 endstep
 
 if [ "${MODE}" = ha ]; then
