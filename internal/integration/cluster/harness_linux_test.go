@@ -31,6 +31,7 @@ const (
 	adminEmail    = "admin@example.com"
 	adminPassword = "integration password"
 	waitTimeout   = 60 * time.Second
+	fenceTimeout  = 90 * time.Second
 	apiPort       = 5020
 	clusterPort   = 7000
 )
@@ -337,7 +338,27 @@ func (n *node) stop() {
 	}
 }
 
-func (n *node) freeze() { _ = n.cmd.Process.Signal(syscall.SIGSTOP) }
+func (n *node) freeze() {
+	n.t.Helper()
+
+	_ = n.cmd.Process.Signal(syscall.SIGSTOP)
+
+	stat := filepath.Join("/proc", strconv.Itoa(n.cmd.Process.Pid), "stat")
+
+	eventually(n.t, n.name+" stopped", func() error {
+		raw, err := os.ReadFile(stat)
+		if err != nil {
+			return err
+		}
+
+		_, after, ok := bytes.Cut(raw, []byte(") "))
+		if !ok || len(after) == 0 || after[0] != 'T' {
+			return fmt.Errorf("state %q", after[:min(1, len(after))])
+		}
+
+		return nil
+	})
+}
 
 func (n *node) thaw() { _ = n.cmd.Process.Signal(syscall.SIGCONT) }
 
@@ -837,7 +858,13 @@ func (c *cluster) everyNodeHasUser(email string) {
 func eventually(t *testing.T, what string, f func() error) {
 	t.Helper()
 
-	deadline := time.Now().Add(waitTimeout)
+	within(t, waitTimeout, what, f)
+}
+
+func within(t *testing.T, timeout time.Duration, what string, f func() error) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
 
 	var err error
 

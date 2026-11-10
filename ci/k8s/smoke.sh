@@ -431,7 +431,7 @@ endstep
 step "Restart the pod"
 uid="$(k get pod ella-ims-0 -o jsonpath='{.metadata.uid}')"
 k logs -f ella-ims-0 >"${WORK}/stopped.log" 2>&1 &
-k get pod ella-ims-0 -w -o jsonpath='{.metadata.uid} {.status.containerStatuses[0].state.terminated.exitCode}{"\n"}' \
+kubectl -n "${NS}" get pod ella-ims-0 -w -o jsonpath='{.metadata.uid} {.status.containerStatuses[0].state.terminated.exitCode}{"\n"}' \
   >"${WORK}/watch.txt" 2>&1 &
 WATCH_PID=$!
 k delete pod ella-ims-0 --wait=false

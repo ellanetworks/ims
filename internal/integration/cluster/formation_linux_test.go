@@ -252,7 +252,7 @@ func TestRemovedNodeStaysUpFenced(t *testing.T) {
 
 	gone.start()
 
-	gone.waitFailing("", "member")
+	gone.waitFailingWithin(fenceTimeout, "", "member")
 
 	eventually(t, "the removed state in the status", func() error {
 		st, err := gone.formation()

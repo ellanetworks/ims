@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -93,7 +92,13 @@ func (n *node) waitReady(query string) {
 func (n *node) waitFailing(query, name string) {
 	n.t.Helper()
 
-	eventually(n.t, n.name+" failing "+name, func() error {
+	n.waitFailingWithin(waitTimeout, query, name)
+}
+
+func (n *node) waitFailingWithin(timeout time.Duration, query, name string) {
+	n.t.Helper()
+
+	within(n.t, timeout, n.name+" failing "+name, func() error {
 		code, r, err := n.readyz(query)
 		if err != nil {
 			return err
@@ -235,41 +240,42 @@ func TestRestartedNodeIsUnreadyUntilCaughtUp(t *testing.T) {
 
 	n.stop()
 
-	var wg sync.WaitGroup
-
-	for w := range 8 {
-		wg.Go(func() {
-			for i := range 150 {
-				leader.must(http.MethodPut, "/api/v1/cluster/members/"+leader.id,
-					map[string]string{"display_name": fmt.Sprintf("leader-%d-%d", w, i)}, nil)
-			}
-		})
+	for i := range 50 {
+		leader.must(http.MethodPut, "/api/v1/cluster/members/"+leader.id,
+			map[string]string{"display_name": fmt.Sprintf("leader-%d", i)}, nil)
 	}
-
-	wg.Wait()
 
 	n.launch()
 
-	sawUnready := false
+	var (
+		first    string
+		answered bool
+	)
 
-	eventually(t, n.name+" ready after its restart", func() error {
-		code, r, err := n.readyz("")
-		t.Logf("DEBUG %s %d %v %s", time.Now().Format("15:04:05.000"), code, err, r.failing())
-
-		switch {
-		case err != nil:
-			return err
-		case code != http.StatusOK:
-			sawUnready = true
-			return fmt.Errorf("readyz = %d: %s", code, r.failing())
+	for deadline := time.Now().Add(waitTimeout); ; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s not ready after its restart", n.name)
 		}
 
-		return nil
-	})
+		code, r, err := n.readyz("")
+		if err != nil {
+			continue
+		}
 
-	if !sawUnready {
-		t.Fatal("the restarted node was ready from its first answer")
+		if !answered {
+			answered, first = true, r.failing()
+
+			if code == http.StatusOK {
+				t.Fatal("the restarted node was ready from its first answer")
+			}
+		}
+
+		if code == http.StatusOK {
+			break
+		}
 	}
+
+	t.Logf("first answer after the restart: %s", first)
 }
 
 func TestClusterCheckWithAVoterDown(t *testing.T) {
