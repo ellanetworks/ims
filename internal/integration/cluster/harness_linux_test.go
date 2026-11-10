@@ -38,27 +38,72 @@ const (
 
 var binary, upgraded, sharedSecret string
 
+const buildDirEnv = "IMS_INTEGRATION_BUILD_DIR"
+
 func TestMain(m *testing.M) {
 	if !netnstest.Inside() {
+		dir, err := build()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		if err := os.Setenv(buildDirEnv, dir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
 		netnstest.Main(m)
 	}
 
 	os.Exit(run(m))
 }
 
+func build() (string, error) {
+	dir, err := os.MkdirTemp("", "ims-cluster-integration-*")
+	if err != nil {
+		return "", err
+	}
+
+	builds := []*exec.Cmd{
+		exec.CommandContext(context.Background(), "go", "build", "-o", filepath.Join(dir, "ims"), "../../../cmd/ims"),
+		exec.CommandContext(context.Background(), "go", "build", "-tags", "upgradetest", "-o", filepath.Join(dir, "ims-next"),
+			"../../../cmd/ims"),
+	}
+
+	for _, b := range builds {
+		b.Stdout, b.Stderr = os.Stdout, os.Stderr
+
+		if err := b.Start(); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", err
+		}
+	}
+
+	var failed error
+
+	for _, b := range builds {
+		if err := b.Wait(); err != nil {
+			failed = err
+		}
+	}
+
+	if failed != nil {
+		_ = os.RemoveAll(dir)
+		return "", failed
+	}
+
+	return dir, nil
+}
+
 func run(m *testing.M) int {
+	dir := os.Getenv(buildDirEnv)
+	defer func() { _ = os.RemoveAll(dir) }()
+
 	if out, err := exec.CommandContext(context.Background(), "ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "bring up the loopback interface: %v: %s\n", err, out)
 		return 1
 	}
-
-	dir, err := os.MkdirTemp("", "ims-cluster-integration-*")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-
-	defer func() { _ = os.RemoveAll(dir) }()
 
 	binary, upgraded = filepath.Join(dir, "ims"), filepath.Join(dir, "ims-next")
 	sharedSecret = filepath.Join(dir, "cluster-secret")
@@ -66,27 +111,6 @@ func run(m *testing.M) int {
 	if err := writeSecret(sharedSecret); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
-	}
-
-	builds := []*exec.Cmd{
-		exec.CommandContext(context.Background(), "go", "build", "-o", binary, "../../../cmd/ims"),
-		exec.CommandContext(context.Background(), "go", "build", "-tags", "upgradetest", "-o", upgraded, "../../../cmd/ims"),
-	}
-
-	for _, build := range builds {
-		build.Stdout, build.Stderr = os.Stdout, os.Stderr
-
-		if err := build.Start(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-	}
-
-	for _, build := range builds {
-		if err := build.Wait(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
 	}
 
 	return m.Run()
