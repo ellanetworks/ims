@@ -704,7 +704,14 @@ func TestCloseWithoutLeaks(t *testing.T) {
 		t.Fatalf("%v relays in the gauge after Close", got)
 	}
 
-	waitMetric(t, func() float64 { return float64(runtime.NumGoroutine()) }, float64(before))
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > before {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d goroutines after Close, want at most %d", runtime.NumGoroutine(), before)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	for _, p := range g.pools {
 		if got := p.available(); got != 64 {
@@ -881,9 +888,8 @@ func TestNoMediaTimeoutBeforeAnswer(t *testing.T) {
 }
 
 func TestMediaTimeout(t *testing.T) {
-	r, _, trunk, expired := answered(t, 200*time.Millisecond)
-
 	start := time.Now()
+	r, _, trunk, expired := answered(t, 200*time.Millisecond)
 	deadline := time.After(2 * time.Second)
 
 	for got := (*Relay)(nil); got == nil; {
