@@ -15,6 +15,7 @@ theme:
     - navigation.footer
     - navigation.indexes
     - content.code.copy
+    - content.tabs.link
   icon:
     repo: fontawesome/brands/github
   custom_dir: docs/overrides
@@ -58,7 +59,7 @@ nav:
   - Tutorials:
     - tutorials/index.md
     - Make Your First Voice Call: tutorials/first_voice_call.md
-    - Run a High Availability Cluster on GKE: tutorials/ha_cluster_on_gke.md
+    - Run a High Availability Cluster in the Cloud: tutorials/ha_cluster_in_the_cloud.md
   - How-to Guides:
     - how_to/index.md
     - Install: how_to/install.md

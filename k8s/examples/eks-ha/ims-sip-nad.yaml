@@ -1,0 +1,10 @@
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ims-sip
+spec:
+  config: '{
+    "cniVersion": "1.0.0",
+    "type": "host-device",
+    "device": "ens7"
+  }'
