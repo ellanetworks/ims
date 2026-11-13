@@ -23,7 +23,8 @@ type putMCPTTAffiliation struct {
 
 // TS 24.379 clause 9.2.2.3.2
 func (d *DB) PutMCPTTAffiliation(ctx context.Context, nodeID string, r affiliation.Row) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "PutMCPTTAffiliation", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdPutMCPTTAffiliation, "save the MCPTT group affiliation", putMCPTTAffiliation{
 		NodeID: nodeID, Group: r.Group.String(), User: r.User.String(), Clients: nonNilList(r.Clients),
@@ -80,13 +81,15 @@ func checkMember(a *applyCtx, nodeID string) error {
 
 // TS 24.379 clause 9.2.2.3.2
 func (d *DB) MCPTTGroupAffiliations(ctx context.Context, group sip.URI) (_ []affiliation.Row, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "MCPTTGroupAffiliations", poolRead)
+	defer done(&err)
 
 	return d.groupAffiliations(ctx, `WHERE group_key = ?`, mcpttsettings.Key(group))
 }
 
 func (d *DB) MCPTTNodeAffiliations(ctx context.Context, nodeID string) (_ []affiliation.Row, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "MCPTTNodeAffiliations", poolRead)
+	defer done(&err)
 
 	return d.groupAffiliations(ctx, `WHERE node_id = ?`, nodeID)
 }
@@ -148,7 +151,8 @@ type claimMCPTTGroupCall struct {
 
 // TS 23.379 clause 7.4.2.3.2
 func (d *DB) ClaimMCPTTGroupCall(ctx context.Context, group sip.URI, nodeID, claim string) (_ MCPTTGroupCall, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "ClaimMCPTTGroupCall", poolWrite)
+	defer done(&err)
 
 	return run[MCPTTGroupCall](ctx, d, cmdClaimMCPTTGroupCall, "claim the MCPTT group call", claimMCPTTGroupCall{
 		Group: group.String(), NodeID: nodeID, Claim: claim,
@@ -195,7 +199,8 @@ type releaseMCPTTGroupCall struct {
 }
 
 func (d *DB) ReleaseMCPTTGroupCall(ctx context.Context, group sip.URI, nodeID, claim string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "ReleaseMCPTTGroupCall", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdReleaseMCPTTGroupCall, "release the MCPTT group call", releaseMCPTTGroupCall{
 		Group: group.String(), NodeID: nodeID, Claim: claim,
@@ -217,7 +222,8 @@ func applyReleaseMCPTTGroupCall(a *applyCtx, p releaseMCPTTGroupCall) (struct{},
 }
 
 func (d *DB) ReleaseMCPTTGroupCallsOf(ctx context.Context, nodeID string) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "ReleaseMCPTTGroupCallsOf", poolWrite)
+	defer done(&err)
 
 	return run[int64](ctx, d, cmdReleaseMCPTTGroupCallsOf, "release the MCPTT group calls of a node", nodeID)
 }
@@ -242,7 +248,8 @@ func deleteMCPTTRowsOf(a *applyCtx, nodeID string) error {
 }
 
 func (d *DB) MCPTTGroupCall(ctx context.Context, group sip.URI) (_ MCPTTGroupCall, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "MCPTTGroupCall", poolRead)
+	defer done(&err)
 
 	return groupCall(ctx, d.reader(), mcpttsettings.Key(group))
 }
@@ -269,7 +276,8 @@ func groupCall(ctx context.Context, q querier, gk string) (MCPTTGroupCall, error
 }
 
 func (d *DB) MCPTTGroupCalls(ctx context.Context) (_ []MCPTTGroupCall, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "MCPTTGroupCalls", poolRead)
+	defer done(&err)
 
 	rows, err := d.reader().QueryContext(ctx, `SELECT group_uri, node_id, claim, started_at FROM mcptt_group_calls ORDER BY group_key`)
 	if err != nil {

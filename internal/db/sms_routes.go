@@ -56,7 +56,8 @@ func smsRoutes(ctx context.Context, q querier) ([]settings.SMSRoute, error) {
 }
 
 func (d *DB) CreateSMSRoute(ctx context.Context, r settings.SMSRoute) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateSMSRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdCreateSMSRoute, r, "create SMS route")
 }
@@ -71,7 +72,8 @@ func applyCreateSMSRoute(a *applyCtx, r settings.SMSRoute) (struct{}, error) {
 }
 
 func (d *DB) UpdateSMSRoute(ctx context.Context, r settings.SMSRoute) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateSMSRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateSMSRoute, r, "update SMS route")
 }
@@ -105,7 +107,8 @@ func putSMSRoutePeers(ctx context.Context, tx *sql.Tx, r settings.SMSRoute) erro
 }
 
 func (d *DB) DeleteSMSRoute(ctx context.Context, id string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteSMSRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdDeleteSMSRoute, id, "delete SMS route")
 }

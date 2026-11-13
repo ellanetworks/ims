@@ -1,13 +1,21 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"slices"
+	"strconv"
 	"time"
 
+	"github.com/ellanetworks/ims/internal/tracing"
+	"github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -45,16 +53,50 @@ func newMetrics() metrics {
 	return m
 }
 
-func (d *DB) observe(pool string, err *error) func() {
+func (d *DB) observe(ctx context.Context, method, pool string) (context.Context, func(*error)) {
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		ctx, span = d.tracer.Start(ctx, "db."+method,
+			trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(tracing.DBPoolKey.String(pool)))
+	}
+
 	start := time.Now()
 
-	return func() {
-		d.metrics.duration.WithLabelValues(pool).Observe(time.Since(start).Seconds())
+	return ctx, func(err *error) {
+		elapsed := time.Since(start).Seconds()
+
+		if sc := span.SpanContext(); sc.IsSampled() {
+			d.metrics.duration.WithLabelValues(pool).(prometheus.ExemplarObserver).ObserveWithExemplar(elapsed,
+				prometheus.Labels{"trace_id": sc.TraceID().String(), "span_id": sc.SpanID().String()})
+		} else {
+			d.metrics.duration.WithLabelValues(pool).Observe(elapsed)
+		}
 
 		if failed(*err) {
 			d.metrics.errors.WithLabelValues(pool).Inc()
+			span.SetAttributes(errorType(*err))
+			span.SetStatus(codes.Error, "")
 		}
+
+		span.End()
 	}
+}
+
+func errorType(err error) attribute.KeyValue {
+	var se sqlite3.Error
+
+	switch {
+	case errors.As(err, &se):
+		return semconv.ErrorTypeKey.String(strconv.Itoa(int(se.ExtendedCode)))
+	case errors.Is(err, ErrBusy):
+		return semconv.ErrorTypeKey.String("busy")
+	case errors.Is(err, context.DeadlineExceeded):
+		return semconv.ErrorTypeKey.String("timeout")
+	case errors.Is(err, context.Canceled):
+		return semconv.ErrorTypeKey.String("canceled")
+	}
+
+	return semconv.ErrorType(err)
 }
 
 func failed(err error) bool {

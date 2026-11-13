@@ -241,7 +241,8 @@ func queryEach(ctx context.Context, q querier, what, query string, scan func(*sq
 }
 
 func (d *DB) CreateTrunk(ctx context.Context, t settings.Trunk) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateTrunk", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdCreateTrunk, t, "create SIP trunk")
 }
@@ -257,7 +258,8 @@ func applyCreateTrunk(a *applyCtx, t settings.Trunk) (struct{}, error) {
 }
 
 func (d *DB) UpdateTrunk(ctx context.Context, t settings.Trunk) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateTrunk", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateTrunk, t, "update SIP trunk")
 }
@@ -328,7 +330,8 @@ func putTrunkLists(ctx context.Context, tx *sql.Tx, t settings.Trunk) error {
 }
 
 func (d *DB) DeleteTrunk(ctx context.Context, id string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteTrunk", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdDeleteTrunk, id, "delete SIP trunk")
 }
@@ -338,7 +341,8 @@ func applyDeleteTrunk(a *applyCtx, id string) (struct{}, error) {
 }
 
 func (d *DB) CreateSIPRoute(ctx context.Context, r settings.SIPRoute) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateSIPRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdCreateSIPRoute, r, "create SIP route")
 }
@@ -353,7 +357,8 @@ func applyCreateSIPRoute(a *applyCtx, r settings.SIPRoute) (struct{}, error) {
 }
 
 func (d *DB) UpdateSIPRoute(ctx context.Context, r settings.SIPRoute) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateSIPRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateSIPRoute, r, "update SIP route")
 }
@@ -387,7 +392,8 @@ func putRouteTrunks(ctx context.Context, tx *sql.Tx, r settings.SIPRoute) error 
 }
 
 func (d *DB) DeleteSIPRoute(ctx context.Context, id string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteSIPRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdDeleteSIPRoute, id, "delete SIP route")
 }

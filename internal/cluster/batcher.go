@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/hashicorp/raft"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -34,6 +37,7 @@ var (
 type request struct {
 	cmds    []db.Command
 	size    int
+	cause   trace.SpanContext
 	state   atomic.Int32
 	results []db.Result
 	index   uint64
@@ -43,6 +47,7 @@ type request struct {
 
 type batcher struct {
 	raft   *raft.Raft
+	tracer trace.Tracer
 	now    func() time.Time
 	floor  func() int64
 	queue  chan *request
@@ -54,14 +59,15 @@ type batcher struct {
 	last   int64
 }
 
-func newBatcher(r *raft.Raft, now func() time.Time, floor func() int64) *batcher {
+func newBatcher(r *raft.Raft, now func() time.Time, floor func() int64, tracer trace.Tracer) *batcher {
 	b := &batcher{
-		raft:  r,
-		now:   now,
-		floor: floor,
-		queue: make(chan *request, queueLength),
-		slots: make(chan struct{}, maxInFlight),
-		stop:  make(chan struct{}),
+		raft:   r,
+		tracer: tracer,
+		now:    now,
+		floor:  floor,
+		queue:  make(chan *request, queueLength),
+		slots:  make(chan struct{}, maxInFlight),
+		stop:   make(chan struct{}),
 	}
 
 	b.wg.Add(1)
@@ -81,7 +87,7 @@ func (b *batcher) propose(ctx context.Context, cmds []db.Command) ([]db.Result, 
 		return nil, 0, fmt.Errorf("%w: %d bytes", ErrTooLarge, size)
 	}
 
-	req := &request{cmds: cmds, size: size, done: make(chan struct{})}
+	req := &request{cmds: cmds, size: size, cause: trace.SpanContextFromContext(ctx), done: make(chan struct{})}
 
 	if err := b.enqueue(req); err != nil {
 		return nil, 0, err
@@ -203,14 +209,29 @@ func (b *batcher) send(batch []*request) {
 	b.last = max(b.last+1, b.now().UnixNano(), b.floor()+1)
 
 	var cmds []db.Command
+
+	links := make([]trace.Link, 0, len(batch))
+
 	for _, r := range batch {
 		cmds = append(cmds, r.cmds...)
+
+		if r.cause.IsSampled() {
+			links = append(links, trace.Link{SpanContext: r.cause})
+		}
+	}
+
+	var span trace.Span = noop.Span{}
+	if len(links) > 0 {
+		_, span = b.tracer.Start(context.Background(), "raft apply", trace.WithNewRoot(),
+			trace.WithSpanKind(trace.SpanKindInternal), trace.WithLinks(links...),
+			trace.WithAttributes(tracing.RaftCommandsKey.Int(len(cmds))))
 	}
 
 	entry, err := db.EncodeBatch(db.Batch{LeaderTime: b.last, Commands: cmds})
 	if err != nil {
 		<-b.slots
 
+		tracing.End(span, err)
 		finish(batch, nil, 0, err)
 
 		return
@@ -225,16 +246,24 @@ func (b *batcher) send(batch []*request) {
 		defer func() { <-b.slots }()
 
 		if err := future.Error(); err != nil {
+			tracing.End(span, err)
 			finish(batch, nil, 0, applyOutcome(err))
+
 			return
 		}
 
 		results, ok := future.Response().([]db.Result)
 		if !ok || len(results) != len(cmds) {
-			finish(batch, nil, 0, fmt.Errorf("unexpected apply response %T", future.Response()))
+			err := fmt.Errorf("unexpected apply response %T", future.Response())
+
+			tracing.End(span, err)
+			finish(batch, nil, 0, err)
+
 			return
 		}
 
+		span.SetAttributes(tracing.RaftIndexKey.Int64(int64(future.Index())))
+		tracing.End(span, nil)
 		finish(batch, results, future.Index(), nil)
 	}()
 }

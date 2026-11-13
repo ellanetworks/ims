@@ -23,7 +23,8 @@ type migrate struct {
 }
 
 func (d *DB) Migrate(ctx context.Context, target int) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "Migrate", poolWrite)
+	defer done(&err)
 
 	_, err = submit[struct{}](ctx, d, cmdMigrate, migrate{Target: target})
 

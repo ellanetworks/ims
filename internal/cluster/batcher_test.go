@@ -12,6 +12,7 @@ import (
 
 	"github.com/ellanetworks/ims/internal/db"
 	"github.com/hashicorp/raft"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type echoFSM struct {
@@ -86,12 +87,13 @@ func newTestBatcher(t *testing.T, f *echoFSM, start bool) *batcher {
 	}
 
 	b := &batcher{
-		raft:  r,
-		now:   time.Now,
-		floor: func() int64 { return 0 },
-		queue: make(chan *request, queueLength),
-		slots: make(chan struct{}, maxInFlight),
-		stop:  make(chan struct{}),
+		raft:   r,
+		tracer: noop.NewTracerProvider().Tracer(tracerName),
+		now:    time.Now,
+		floor:  func() int64 { return 0 },
+		queue:  make(chan *request, queueLength),
+		slots:  make(chan struct{}, maxInFlight),
+		stop:   make(chan struct{}),
 	}
 
 	if start {

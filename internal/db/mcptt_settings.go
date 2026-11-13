@@ -15,7 +15,8 @@ import (
 )
 
 func (d *DB) GetMCPTTSettings(ctx context.Context) (_ settings.Settings, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetMCPTTSettings", poolRead)
+	defer done(&err)
 
 	tx, err := d.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -189,7 +190,8 @@ func queryRows(ctx context.Context, tx *sql.Tx, what, query string, scan func(*s
 }
 
 func (d *DB) UpdateMCPTTServiceConfiguration(ctx context.Context, c settings.ServiceConfiguration) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateMCPTTServiceConfiguration", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUpdateMCPTTServiceConfiguration, "update MCPTT service configuration", c)
 
@@ -223,7 +225,8 @@ func init() {
 }
 
 func (d *DB) CreateMCPTTUser(ctx context.Context, u settings.User) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateMCPTTUser", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdCreateMCPTTUser, "create MCPTT user", u)
 
@@ -260,7 +263,8 @@ func createMCPTTUserTx(ctx context.Context, tx *sql.Tx, u settings.User) error {
 }
 
 func (d *DB) UpdateMCPTTUser(ctx context.Context, u settings.User) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateMCPTTUser", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUpdateMCPTTUser, "update MCPTT user", u)
 
@@ -341,7 +345,8 @@ func putMCPTTImplicitAffiliations(ctx context.Context, tx *sql.Tx, id int64, u s
 }
 
 func (d *DB) DeleteMCPTTUser(ctx context.Context, mcpttID string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteMCPTTUser", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteMCPTTUser, "delete MCPTT user", mcpttID)
 
@@ -369,7 +374,8 @@ func deleteMCPTTUserTx(ctx context.Context, tx *sql.Tx, mcpttID string) error {
 }
 
 func (d *DB) CreateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateMCPTTGroup", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdCreateMCPTTGroup, "create MCPTT group", createMCPTTGroupCmd{G: g, Users: users})
 
@@ -416,7 +422,8 @@ func createMCPTTGroupTx(ctx context.Context, tx *sql.Tx, g settings.Group, users
 }
 
 func (d *DB) UpdateMCPTTGroup(ctx context.Context, g settings.Group, users []settings.User) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateMCPTTGroup", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUpdateMCPTTGroup, "update MCPTT group", updateMCPTTGroupCmd{G: g, Users: users})
 
@@ -497,7 +504,8 @@ func putMCPTTMember(ctx context.Context, tx *sql.Tx, groupID int64, position int
 }
 
 func (d *DB) DeleteMCPTTGroup(ctx context.Context, uri string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteMCPTTGroup", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteMCPTTGroup, "delete MCPTT group", uri)
 
@@ -525,7 +533,8 @@ func deleteMCPTTGroupTx(ctx context.Context, tx *sql.Tx, uri string) error {
 }
 
 func (d *DB) PutMCPTTMember(ctx context.Context, group string, e settings.Entry, users []settings.User) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "PutMCPTTMember", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdPutMCPTTMember, "put MCPTT member", putMCPTTMemberCmd{Group: group, Entry: e, Users: users})
 
@@ -573,7 +582,8 @@ func putMCPTTMemberTx(ctx context.Context, tx *sql.Tx, group string, e settings.
 }
 
 func (d *DB) DeleteMCPTTMember(ctx context.Context, group, mcpttID string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteMCPTTMember", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteMCPTTMember, "delete MCPTT member", deleteMCPTTMemberCmd{Group: group, MCPTTID: mcpttID})
 

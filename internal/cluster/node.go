@@ -21,6 +21,9 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -35,6 +38,7 @@ const (
 	transportTimeout = 10 * time.Second
 	retryEstablish   = 5 * time.Second
 
+	tracerName  = "github.com/ellanetworks/ims/internal/cluster"
 	idFile      = "node-id"
 	joinedFile  = "joined"
 	joiningFile = "joining"
@@ -61,6 +65,7 @@ type Config struct {
 	SecretFile      string
 	Now             func() time.Time
 	Logger          *slog.Logger
+	TracerProvider  trace.TracerProvider
 
 	transport       func(raft.Transport) raft.Transport
 	logStore        func(raft.LogStore) raft.LogStore
@@ -81,6 +86,7 @@ type Node struct {
 	generated bool
 	db        *db.DB
 	certs     *certs
+	tracer    trace.Tracer
 
 	metrics *metrics
 	ln      *listener.Listener
@@ -124,6 +130,10 @@ func Open(ctx context.Context, cfg Config, d *db.DB) (*Node, error) {
 		cfg.Logger = slog.Default()
 	}
 
+	if cfg.TracerProvider == nil {
+		cfg.TracerProvider = noop.NewTracerProvider()
+	}
+
 	if cfg.Advertise == "" {
 		cfg.Advertise = cfg.Address
 	}
@@ -150,6 +160,7 @@ func Open(ctx context.Context, cfg Config, d *db.DB) (*Node, error) {
 	n := &Node{
 		cfg: cfg, id: id, label: label, generated: generated, db: d, certs: c, notify: make(chan bool, 16), ready: make(chan struct{}),
 		removed: make(chan struct{}), done: make(chan struct{}), stopped: make(chan struct{}),
+		tracer: cfg.TracerProvider.Tracer(tracerName, trace.WithSchemaURL(semconv.SchemaURL)),
 	}
 
 	d.SetProposer(n)
@@ -407,7 +418,7 @@ func (n *Node) startRaft(ctx context.Context) error {
 
 	n.raft, n.store, n.transport = r, store, transport
 
-	n.batcher = newBatcher(r, n.cfg.Now, n.db.LeaderTime)
+	n.batcher = newBatcher(r, n.cfg.Now, n.db.LeaderTime, n.tracer)
 
 	return nil
 }

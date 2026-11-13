@@ -12,7 +12,11 @@ import (
 
 	"github.com/ellanetworks/ims/internal/cluster/listener"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/hashicorp/raft"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -57,7 +61,7 @@ func (n *Node) serveRPC() {
 	errorLog := slog.NewLogLogger(n.cfg.Logger.Handler(), slog.LevelDebug)
 
 	n.rpc = &http.Server{
-		Handler:           fenced(mux),
+		Handler:           n.traced(fenced(mux), false),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       rpcReadTimeout,
 		WriteTimeout:      rpcWriteTimeout,
@@ -74,7 +78,7 @@ func (n *Node) serveRPC() {
 	join.HandleFunc("POST /cluster/v1/hello", n.withSecret(n.handleHello))
 
 	joinServer := &http.Server{
-		Handler:           join,
+		Handler:           n.traced(join, true),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      time.Minute,
@@ -91,6 +95,17 @@ func (n *Node) serveRPC() {
 
 		_ = joinServer.Close()
 	})
+}
+
+func (n *Node) traced(h http.Handler, public bool) http.Handler {
+	return otelhttp.NewHandler(h, "",
+		otelhttp.WithTracerProvider(n.cfg.TracerProvider),
+		otelhttp.WithPropagators(tracing.Propagator),
+		otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return public }),
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return trace.SpanContextFromContext(tracing.Propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))).IsValid()
+		}),
+	)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

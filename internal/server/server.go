@@ -191,7 +191,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen for the API: %w", err)
 	}
 
-	database, err := db.Open(ctx, cfg.DB.Path)
+	database, err := db.Open(ctx, cfg.DB.Path, db.WithTracerProvider(s.tracerProvider))
 	if err != nil {
 		_ = apiLn.Close()
 
@@ -202,7 +202,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	clusterCfg := cluster.Config{
 		Dir: filepath.Join(filepath.Dir(cfg.DB.Path), "raft"), Version: version.Get().Version, Now: time.Now,
-		Logger: s.Logger, DiameterLabel: cfg.Diameter.HostLabel,
+		Logger: s.Logger, DiameterLabel: cfg.Diameter.HostLabel, TracerProvider: s.tracerProvider,
 	}
 
 	if c := cfg.Cluster; c != nil {

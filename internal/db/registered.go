@@ -12,7 +12,8 @@ const registeredWhere = `FROM registrations r JOIN bindings b ON b.registration_
 		SELECT 1 FROM set_identities i WHERE i.set_id = r.set_id AND i.uri LIKE ? ESCAPE '\'))`
 
 func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Time, page, perPage int) (_ []string, _ int, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "ListRegisteredIMPIs", poolLocal)
+	defer done(&err)
 
 	like := "%" + escapeLike(search) + "%"
 	args := []any{now.UTC().UnixNano(), search, like, like}
@@ -49,7 +50,8 @@ func (d *DB) ListRegisteredIMPIs(ctx context.Context, search string, now time.Ti
 }
 
 func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "CountRegisteredIMPIs", poolLocal)
+	defer done(&err)
 
 	var n int
 	if err := d.localRead.QueryRowContext(ctx, `SELECT COUNT(DISTINCT r.impi) `+registeredWhere,
@@ -61,7 +63,8 @@ func (d *DB) CountRegisteredIMPIs(ctx context.Context, now time.Time) (_ int, er
 }
 
 func (d *DB) ListPCSCFRegistrationsByIMPI(ctx context.Context, impi string) (_ []PCSCFRegistration, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "ListPCSCFRegistrationsByIMPI", poolLocal)
+	defer done(&err)
 
 	rows, err := d.local.QueryContext(ctx,
 		`SELECT `+pcscfRegistrationColumns+` FROM pcscf_registrations WHERE impi = ? ORDER BY id`, impi)

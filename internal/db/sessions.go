@@ -35,7 +35,8 @@ type NewSession struct {
 }
 
 func (d *DB) CreateSession(ctx context.Context, s NewSession, maxPerUser int) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateSession", poolWrite)
+	defer done(&err)
 
 	return run[int64](ctx, d, cmdCreateSession, "create session", createSessionCmd{Session: s, MaxPerUser: maxPerUser})
 }
@@ -70,14 +71,16 @@ func createSession(ctx context.Context, tx *sql.Tx, s NewSession, maxPerUser int
 }
 
 func (d *DB) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (_ Session, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetSessionByTokenHash", poolRead)
+	defer done(&err)
 
 	return getSession(d.reader().QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE token_hash = ?`,
 		tokenHash))
 }
 
 func (d *DB) GetSession(ctx context.Context, id int64) (_ Session, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetSession", poolRead)
+	defer done(&err)
 
 	return getSession(d.reader().QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id = ?`, id))
 }
@@ -108,7 +111,8 @@ func getSession(row *sql.Row) (Session, error) {
 }
 
 func (d *DB) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteSessionByTokenHash", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteSession, "delete session", tokenHash)
 
@@ -122,7 +126,8 @@ func applyDeleteSession(a *applyCtx, tokenHash []byte) (struct{}, error) {
 }
 
 func (d *DB) DeleteExpiredSessions(ctx context.Context, now time.Time) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteExpiredSessions", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteExpiredSessions, "delete expired sessions", now.UnixNano())
 

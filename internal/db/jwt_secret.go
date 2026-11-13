@@ -28,13 +28,15 @@ func (d *DB) Secrets(ctx context.Context) (Secrets, error) {
 }
 
 func (d *DB) ReadSecrets(ctx context.Context) (_ Secrets, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "ReadSecrets", poolRead)
+	defer done(&err)
 
 	return readSecrets(ctx, d.reader())
 }
 
 func (d *DB) InitSecrets(ctx context.Context, via Proposer) (_ Secrets, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "InitSecrets", poolWrite)
+	defer done(&err)
 
 	s, err := readSecrets(ctx, d.reader())
 	if err == nil {

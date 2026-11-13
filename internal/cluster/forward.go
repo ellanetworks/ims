@@ -14,7 +14,10 @@ import (
 
 	"github.com/ellanetworks/ims/internal/cluster/listener"
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/internal/tracing"
 	"github.com/hashicorp/raft"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -43,6 +46,11 @@ func (n *Node) Propose(ctx context.Context, cmds []db.Command) ([]db.Result, err
 	var last error
 
 	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			trace.SpanFromContext(ctx).AddEvent("raft propose retry", trace.WithAttributes(
+				tracing.RaftAttemptKey.Int(attempt), tracing.RaftRetryReasonKey.String(last.Error())))
+		}
+
 		results, err := n.proposeOnce(ctx, cmds)
 
 		switch {
@@ -129,14 +137,22 @@ func (n *Node) proposeOnce(ctx context.Context, cmds []db.Command) ([]db.Result,
 		return nil, db.ErrBusy
 	}
 
-	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), n.forwardBudget())
-	defer cancel()
-
-	if err := n.db.WaitApplied(waitCtx, reply.Index); err != nil {
+	if err := n.waitApplied(ctx, reply.Index); err != nil {
 		return nil, fmt.Errorf("%w: committed at index %d but not applied on this node: %w", errUnknown, reply.Index, err)
 	}
 
 	return reply.Results, nil
+}
+
+func (n *Node) waitApplied(ctx context.Context, index uint64) (err error) {
+	ctx, span := n.tracer.Start(ctx, "raft wait applied", trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(tracing.RaftIndexKey.Int64(int64(index))))
+	defer func() { tracing.End(span, err) }()
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), n.forwardBudget())
+	defer cancel()
+
+	return n.db.WaitApplied(ctx, index)
 }
 
 func classify(err error) error {
@@ -193,8 +209,14 @@ func newPeerClient(n *Node) *peerClient {
 		IdleConnTimeout:       time.Minute,
 		ResponseHeaderTimeout: rpcTimeout,
 	}
-	p.client = &http.Client{Transport: p.transport, Timeout: rpcTimeout}
-	p.streams = &http.Client{Transport: p.transport}
+	rt := otelhttp.NewTransport(p.transport,
+		otelhttp.WithTracerProvider(n.cfg.TracerProvider),
+		otelhttp.WithPropagators(tracing.Propagator),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }),
+		otelhttp.WithFilter(func(r *http.Request) bool { return trace.SpanContextFromContext(r.Context()).IsValid() }),
+	)
+	p.client = &http.Client{Transport: rt, Timeout: rpcTimeout}
+	p.streams = &http.Client{Transport: rt}
 
 	return p
 }
