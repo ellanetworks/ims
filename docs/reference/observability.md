@@ -34,7 +34,7 @@ Ella IMS exposes Prometheus metrics at `GET /api/v1/metrics`.
 | `ellaims_trunk_media_packets_lost_total` | Counter | RTP packets lost before reaching the media relay of SIP trunks, from gaps in sequence numbers, by trunk ID and leg. |
 | `ellaims_api_request_duration_seconds` | Histogram | Duration of API requests, by method, route (`/api/v1/users/{email}`) and status code. Requests to `/api/v1/pprof/` and to no route are left out. |
 | `ellaims_oidc_logins_total` | Counter | Logins through the identity provider, by outcome: `success`, or a [login error](api/auth.md#errors). |
-| `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`, `local`. |
+| `ellaims_database_query_duration_seconds` | Histogram | Duration of database calls, by connection pool: `write`, `read`, `local`. Exemplars: `trace_id`, `span_id`. |
 | `ellaims_database_query_errors_total` | Counter | Failed database calls, by connection pool. |
 | `ellaims_database_storage_bytes` | Gauge | Size of the databases on disk, by file: `main`, `wal`, `node`, `node_wal`. |
 | `ellaims_cluster_failure_tolerance` | Gauge | Voters that can fail without stopping writes. Leader only. |
@@ -68,25 +68,10 @@ Ella IMS exports [OpenTelemetry](https://opentelemetry.io/) traces when `telemet
 | `Cx/{command}`, `Sh/{command}`, `Rx/{command}`, `S6c/{command}`, `SGd/{command}` | Server, Client | A Diameter request. |
 | `{method}`, such as `INVITE` | Server, Client | A SIP transaction, until its final response. A request from a phone or a SIP trunk starts a trace, linked to the INVITE of its call or the REGISTER it renews. Out-of-dialog OPTIONS to and from SIP trunks have no span. |
 | `registration expiry`, `media loss`, `media timeout`, … | Internal | Work that starts later than its cause, as on a timer or after a settings change: a new trace, linked to its cause. `media timeout`: the IBCF ends a call whose media stopped, linked to its INVITE. |
-
-### Events
-
-| Event | Span | Attributes |
-| --- | --- | --- |
-| `sip.provisional_response` | SIP | `sip.response.status_code` |
-| `sip.retransmission` | SIP | |
-| `sip.resolution` | The IBCF's SIP span of a call to a SIP trunk, when resolving a trunk address fails or takes over 1 s | `server.address`, `error.type` (`timeout`, `not_found`, `_OTHER`) when it fails |
-
-### Attributes
-
-| Attribute | Values |
-| --- | --- |
-| `ella.ims.role` | `pcscf`, `icscf`, `scscf`, `ibcf`, `mcptt`, `ipsmgw`, or `ims` for work of the IMS as a whole |
-| `sip.call_id` | The Call-ID of a SIP span |
-| `ella.ims.icid` | The ICID of P-Charging-Vector of a SIP span within the trust domain, or of the call on the IBCF's INVITE, which joins it to its [call record](api/call_records.md) |
-| `ella.ims.trunk.id` | The ID of the SIP trunk of an IBCF span on the trunk side |
-| `network.peer.address`, `network.peer.port` | The peer of a SIP span within the trust domain or on the trunk side |
-| `server.address` | The trunk address host of an IBCF client span to a SIP trunk, else the peer's IP address |
+| `db.{call}`, such as `db.SaveSet` | Internal | A database call within a trace. |
+| `POST /cluster/v1/{propose,join,probe,hello}` | Server, Client | A request between cluster nodes within a trace. `join` and `hello` from a node not yet in the cluster link to the caller's `traceparent`. |
+| `raft wait applied` | Internal | A follower applying a write it forwarded to the leader. |
+| `raft apply` | Internal | A batch of writes committed to the Raft log, when one of its writes is in a sampled trace. A new trace, linked to the sampled spans of its writes. |
 
 ## Logs
 

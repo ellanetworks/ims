@@ -26,6 +26,7 @@ func GetMetrics(cfg Config) http.Handler {
 		MaxRequestsInFlight: metricsMaxRequestsInFlight,
 		ErrorHandling:       promhttp.ContinueOnError,
 		ErrorLog:            metricsErrorLog{cfg.Logger},
+		EnableOpenMetrics:   true,
 	})
 }
 

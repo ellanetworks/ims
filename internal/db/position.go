@@ -33,7 +33,8 @@ func readPosition(ctx context.Context, q querier) (Position, error) {
 }
 
 func (d *DB) Position(ctx context.Context) (_ Position, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "Position", poolRead)
+	defer done(&err)
 
 	return readPosition(ctx, d.reader())
 }
@@ -77,7 +78,7 @@ func (d *DB) MakeDurable(ctx context.Context, p Position) error {
 	}
 
 	defer func() {
-		_, _ = conn.ExecContext(context.Background(), fmt.Sprintf(`PRAGMA synchronous = %d`, previous))
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf(`PRAGMA synchronous = %d`, previous))
 	}()
 
 	if _, err := conn.ExecContext(ctx, `UPDATE fsm_state SET
@@ -114,7 +115,8 @@ func (d *DB) ResetPosition(ctx context.Context) error {
 }
 
 func (d *DB) LeaderStart(ctx context.Context, via Proposer, nodeID string) (_ uint64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "LeaderStart", poolWrite)
+	defer done(&err)
 
 	term, _, err := submitVia[uint64](ctx, via, cmdLeaderStart, nodeID)
 	if err != nil {
@@ -169,7 +171,8 @@ type Copy struct {
 }
 
 func (d *DB) CopyTo(ctx context.Context, dir string) (_ Copy, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CopyTo", poolWrite)
+	defer done(&err)
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Copy{}, fmt.Errorf("copy database: %w", err)
@@ -205,7 +208,7 @@ func (d *DB) copyPinned(ctx context.Context, dest string, p *Position) error {
 		return err
 	}
 
-	defer func() { _, _ = conn.ExecContext(context.Background(), `ROLLBACK`) }()
+	defer func() { _, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`) }()
 
 	if *p, err = readPosition(ctx, conn); err != nil {
 		return err
@@ -295,7 +298,8 @@ func ReadSnapshot(r io.Reader, dir string) (string, error) {
 }
 
 func (d *DB) Install(ctx context.Context, src string, at *Position) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "Install", poolWrite)
+	defer done(&err)
 
 	if err := d.install(ctx, src, at); err != nil {
 		return err
@@ -450,7 +454,8 @@ func Sequences(ctx context.Context, path string) (map[string]int64, error) {
 }
 
 func (d *DB) Sequences(ctx context.Context) (_ map[string]int64, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "Sequences", poolRead)
+	defer done(&err)
 
 	return sequences(ctx, d.reader())
 }
@@ -508,7 +513,8 @@ func RaiseSequences(ctx context.Context, path string, floor map[string]int64) er
 }
 
 func (d *DB) Wipe(ctx context.Context, scratch string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "Wipe", poolWrite)
+	defer done(&err)
 
 	path := filepath.Join(scratch, "empty.db")
 
@@ -601,7 +607,8 @@ func StripSecrets(ctx context.Context, path string) error {
 }
 
 func (d *DB) KeepClusterState(ctx context.Context, path string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "KeepClusterState", poolWrite)
+	defer done(&err)
 
 	conn, err := sql.Open("sqlite3", dsn(path))
 	if err != nil {
@@ -621,7 +628,7 @@ func (d *DB) KeepClusterState(ctx context.Context, path string) (err error) {
 		return err
 	}
 
-	defer func() { _, _ = c.ExecContext(context.Background(), `DETACH DATABASE live`) }()
+	defer func() { _, _ = c.ExecContext(context.WithoutCancel(ctx), `DETACH DATABASE live`) }()
 
 	tx, err := c.BeginTx(ctx, nil)
 	if err != nil {

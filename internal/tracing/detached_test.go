@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
 	"github.com/ellanetworks/ims/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -30,7 +32,7 @@ func TestDetachedIsARootLinkedToItsCauses(t *testing.T) {
 	parent, p := tracer.Start(life, "parent")
 
 	ctx, s := tracing.NewDetached(tp, "scope", "pcscf").Start(parent, "work", a.SpanContext(), trace.SpanContext{}, b.SpanContext())
-	tracing.End(s, errors.New("failed"))
+	tracing.End(s, fmt.Errorf("work: %w", context.DeadlineExceeded))
 	p.End()
 
 	var got sdktrace.ReadOnlySpan
@@ -50,8 +52,13 @@ func TestDetachedIsARootLinkedToItsCauses(t *testing.T) {
 		t.Fatalf("links %v", l)
 	}
 
-	if got.Status().Code != codes.Error || got.Status().Description != "*errors.errorString" {
+	if got.Status().Code != codes.Error || got.Status().Description != "" {
 		t.Fatalf("status %v", got.Status())
+	}
+
+	attrs := attribute.NewSet(got.Attributes()...)
+	if v, _ := attrs.Value(semconv.ErrorTypeKey); v.AsString() != "context.deadlineExceededError" {
+		t.Fatalf("error.type %q", v.AsString())
 	}
 
 	found := false

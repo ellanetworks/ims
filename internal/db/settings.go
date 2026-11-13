@@ -11,7 +11,8 @@ import (
 )
 
 func (d *DB) GetSettings(ctx context.Context) (_ settings.Settings, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetSettings", poolRead)
+	defer done(&err)
 
 	tx, err := d.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -152,7 +153,8 @@ func routes(ctx context.Context, q querier) ([]settings.Route, error) {
 }
 
 func (d *DB) UpdateOperator(ctx context.Context, o settings.Operator) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateOperator", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateOperator, o, "update operator")
 }
@@ -167,7 +169,8 @@ func applyUpdateOperator(a *applyCtx, o settings.Operator) (struct{}, error) {
 }
 
 func (d *DB) CreatePeer(ctx context.Context, p settings.Peer) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreatePeer", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdCreatePeer, p, "create Diameter peer")
 }
@@ -180,7 +183,8 @@ func applyCreatePeer(a *applyCtx, p settings.Peer) (struct{}, error) {
 }
 
 func (d *DB) UpdatePeer(ctx context.Context, p settings.Peer) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdatePeer", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdatePeer, p, "update Diameter peer")
 }
@@ -193,7 +197,8 @@ func applyUpdatePeer(a *applyCtx, p settings.Peer) (struct{}, error) {
 }
 
 func (d *DB) DeletePeer(ctx context.Context, id string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeletePeer", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdDeletePeer, id, "delete Diameter peer")
 }
@@ -203,7 +208,8 @@ func applyDeletePeer(a *applyCtx, id string) (struct{}, error) {
 }
 
 func (d *DB) UpdateRoute(ctx context.Context, r settings.Route) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateRoute", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateRoute, r, "update Diameter route")
 }
@@ -214,7 +220,8 @@ func applyUpdateRoute(a *applyCtx, r settings.Route) (struct{}, error) {
 }
 
 func (d *DB) UpdatePolicy(ctx context.Context, p settings.Policy) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdatePolicy", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdatePolicy, p, "update policy")
 }
@@ -227,7 +234,8 @@ func applyUpdatePolicy(a *applyCtx, p settings.Policy) (struct{}, error) {
 }
 
 func (d *DB) UpdateCallRecords(ctx context.Context, c settings.CallRecords) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateCallRecords", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateCallRecords, c, "update call record settings")
 }
@@ -251,7 +259,8 @@ func peerRow(p settings.Peer) []any {
 }
 
 func (d *DB) UpdateIPSMGW(ctx context.Context, g settings.IPSMGW) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateIPSMGW", poolWrite)
+	defer done(&err)
 
 	return submitSettings(ctx, d, cmdUpdateIPSMGW, g, "update IP-SM-GW settings")
 }

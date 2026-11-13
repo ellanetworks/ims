@@ -47,7 +47,8 @@ func (r OIDCLoginResult) RoleChanged() bool {
 }
 
 func (d *DB) LogInWithOIDC(ctx context.Context, l OIDCLogin) (res OIDCLoginResult, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "LogInWithOIDC", poolWrite)
+	defer done(&err)
 
 	return run[OIDCLoginResult](ctx, d, cmdLogInWithOIDC, "OIDC login", l)
 }
@@ -202,7 +203,8 @@ func syncRole(ctx context.Context, tx *sql.Tx, u User, l OIDCLogin) (User, bool,
 }
 
 func (d *DB) UseOIDCState(ctx context.Context, stateHash []byte, expiresAt, now time.Time) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UseOIDCState", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUseOIDCState, "use OIDC state", useOIDCState{
 		StateHash: stateHash,

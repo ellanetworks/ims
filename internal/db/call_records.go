@@ -86,7 +86,8 @@ type savedCallRecord struct {
 }
 
 func (d *DB) SaveCallRecords(ctx context.Context, records []*CallRecord, deleted []int64) (errs []error, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "SaveCallRecords", poolWrite)
+	defer done(&err)
 
 	p := saveCallRecordsCmd{Records: make([]CallRecord, len(records)), Deleted: deleted}
 	for i, r := range records {
@@ -215,7 +216,8 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 }
 
 func (d *DB) GetCallRecord(ctx context.Context, id int64) (_ CallRecord, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetCallRecord", poolRead)
+	defer done(&err)
 
 	r, err := scanCallRecord(d.reader().QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
 		id))
@@ -231,7 +233,8 @@ func (d *DB) GetCallRecord(ctx context.Context, id int64) (_ CallRecord, err err
 }
 
 func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perPage int) (_ []CallRecord, _ int, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "ListCallRecords", poolRead)
+	defer done(&err)
 
 	where, args := f.where()
 
@@ -258,7 +261,8 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 }
 
 func (d *DB) CountCallRecords(ctx context.Context, f CallRecordFilter) (_ map[CallOutcome]int, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "CountCallRecords", poolRead)
+	defer done(&err)
 
 	where, args := f.where()
 
@@ -298,7 +302,8 @@ type pruneCallRecords struct {
 }
 
 func (d *DB) PruneCallRecords(ctx context.Context, before time.Time, maxRows int) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "PruneCallRecords", poolWrite)
+	defer done(&err)
 
 	return run[int64](ctx, d, cmdPruneCallRecords, "prune call records", pruneCallRecords{
 		Before: before.UTC().UnixNano(), MaxRows: maxRows,
@@ -363,7 +368,8 @@ type closeOpenCallRecords struct {
 }
 
 func (d *DB) CloseOpenCallRecords(ctx context.Context, nodeID string, live []string) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CloseOpenCallRecords", poolWrite)
+	defer done(&err)
 
 	return run[int64](ctx, d, cmdCloseOpenCallRecords, "close open call records", closeOpenCallRecords{
 		NodeID: nodeID, Live: nonNilList(live),

@@ -78,7 +78,8 @@ func scanMember(scan func(...any) error) (Member, error) {
 }
 
 func (d *DB) Members(ctx context.Context) (_ []Member, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "Members", poolRead)
+	defer done(&err)
 
 	return members(ctx, d.reader())
 }
@@ -106,7 +107,8 @@ func members(ctx context.Context, q querier) ([]Member, error) {
 }
 
 func (d *DB) Member(ctx context.Context, nodeID string) (_ Member, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "Member", poolRead)
+	defer done(&err)
 
 	return member(ctx, d.reader(), nodeID)
 }
@@ -126,7 +128,8 @@ func (d *DB) RegisterMember(ctx context.Context, m Member) error {
 }
 
 func (d *DB) RegisterMemberVia(ctx context.Context, via Proposer, m Member) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "RegisterMemberVia", poolWrite)
+	defer done(&err)
 
 	_, _, err = submitVia[struct{}](ctx, via, cmdRegisterMember, m)
 
@@ -248,7 +251,8 @@ type joinToken struct {
 }
 
 func (d *DB) CreateJoinToken(ctx context.Context, tokenID string, expiresAt time.Time) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateJoinToken", poolWrite)
+	defer done(&err)
 
 	_, err = submit[struct{}](ctx, d, cmdCreateJoinToken, joinToken{TokenID: tokenID, ExpiresAt: expiresAt.UnixNano()})
 
@@ -271,7 +275,8 @@ type admitMember struct {
 }
 
 func (d *DB) AdmitMember(ctx context.Context, tokenID string, m Member) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "AdmitMember", poolWrite)
+	defer done(&err)
 
 	_, err = submit[struct{}](ctx, d, cmdAdmitMember, admitMember{TokenID: tokenID, Member: m})
 
@@ -390,7 +395,8 @@ func (r *removeMember) UnmarshalJSON(b []byte) error {
 }
 
 func (d *DB) RemoveMember(ctx context.Context, nodeID string, reason RemovalReason) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "RemoveMember", poolWrite)
+	defer done(&err)
 
 	_, err = submit[struct{}](ctx, d, cmdRemoveMember, removeMember{NodeID: nodeID, Reason: reason})
 
@@ -443,7 +449,8 @@ func applyRemoveMember(a *applyCtx, p removeMember) (struct{}, error) {
 }
 
 func (d *DB) Tombstones(ctx context.Context) (_ []Tombstone, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "Tombstones", poolRead)
+	defer done(&err)
 
 	rows, err := d.reader().QueryContext(ctx, `SELECT node_id, fingerprint, removed_at, reason
 		FROM cluster_removed_members ORDER BY removed_at, node_id`)
@@ -498,7 +505,8 @@ type displayName struct {
 }
 
 func (d *DB) SetDisplayName(ctx context.Context, nodeID, name string) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "SetDisplayName", poolWrite)
+	defer done(&err)
 
 	if len(name) > MaxDisplayNameLength {
 		return fmt.Errorf("%w: the display name must be at most %d bytes", ErrInvalid, MaxDisplayNameLength)
@@ -529,7 +537,8 @@ func applySetDisplayName(a *applyCtx, p displayName) (struct{}, error) {
 }
 
 func (d *DB) DeleteExpiredJoinTokens(ctx context.Context, before time.Time) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteExpiredJoinTokens", poolWrite)
+	defer done(&err)
 
 	_, err = submit[struct{}](ctx, d, cmdDeleteExpiredJoinTokens, before.UnixNano())
 
@@ -548,7 +557,8 @@ type drainState struct {
 }
 
 func (d *DB) SetDrainState(ctx context.Context, nodeID string, state DrainState) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "SetDrainState", poolWrite)
+	defer done(&err)
 
 	_, err = submit[struct{}](ctx, d, cmdSetDrainState, drainState{NodeID: nodeID, State: state})
 

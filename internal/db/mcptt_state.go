@@ -15,7 +15,8 @@ import (
 )
 
 func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Record, deleted []string) (err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "SaveMCPTTRegistrations", poolLocal)
+	defer done(&err)
 
 	return d.localTx(ctx, "save MCPTT registrations", func(tx *sql.Tx) error {
 		for _, client := range deleted {
@@ -50,7 +51,8 @@ func (d *DB) SaveMCPTTRegistrations(ctx context.Context, records []registrar.Rec
 }
 
 func (d *DB) MCPTTRegistrations(ctx context.Context) (_ []registrar.Record, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "MCPTTRegistrations", poolLocal)
+	defer done(&err)
 
 	out, bad, err := d.mcpttRegistrations(ctx)
 	if err != nil || len(bad) == 0 {
@@ -131,7 +133,8 @@ func parseMCPTTRecord(r *registrar.Record, uris []string, set string) bool {
 }
 
 func (d *DB) ClearMCPTTState(ctx context.Context) (err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "ClearMCPTTState", poolLocal)
+	defer done(&err)
 
 	return d.localTx(ctx, "clear MCPTT state", func(tx *sql.Tx) error {
 		for _, q := range []string{`DELETE FROM mcptt_registrations`, `DELETE FROM mcptt_affiliation_clients`} {
@@ -145,7 +148,8 @@ func (d *DB) ClearMCPTTState(ctx context.Context) (err error) {
 }
 
 func (d *DB) SaveMCPTTAffiliations(ctx context.Context, records []affiliation.Record) (err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "SaveMCPTTAffiliations", poolLocal)
+	defer done(&err)
 
 	return d.localTx(ctx, "save MCPTT affiliations", func(tx *sql.Tx) error {
 		for _, r := range records {
@@ -184,7 +188,8 @@ func (d *DB) SaveMCPTTAffiliations(ctx context.Context, records []affiliation.Re
 }
 
 func (d *DB) MCPTTAffiliations(ctx context.Context) (_ []affiliation.Record, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "MCPTTAffiliations", poolLocal)
+	defer done(&err)
 
 	out, bad, err := d.mcpttAffiliations(ctx)
 	if err != nil || len(bad) == 0 {

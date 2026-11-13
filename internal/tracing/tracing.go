@@ -25,6 +25,12 @@ const (
 	RoleKey    = attribute.Key("ella.ims.role")
 	ICIDKey    = attribute.Key("ella.ims.icid")
 	TrunkIDKey = attribute.Key("ella.ims.trunk.id")
+	DBPoolKey  = attribute.Key("ella.ims.db.pool")
+
+	RaftIndexKey       = attribute.Key("ella.ims.raft.index")
+	RaftCommandsKey    = attribute.Key("ella.ims.raft.commands")
+	RaftAttemptKey     = attribute.Key("ella.ims.raft.attempt")
+	RaftRetryReasonKey = attribute.Key("ella.ims.raft.retry_reason")
 )
 
 var Propagator = propagation.TraceContext{}
@@ -88,9 +94,8 @@ func (d Detached) Start(life context.Context, name string, causes ...trace.SpanC
 
 func End(span trace.Span, err error) {
 	if err != nil {
-		typ := fmt.Sprintf("%T", err)
-		span.SetAttributes(semconv.ErrorTypeKey.String(typ))
-		span.SetStatus(codes.Error, typ)
+		span.SetAttributes(semconv.ErrorType(err))
+		span.SetStatus(codes.Error, "")
 	}
 
 	span.End()

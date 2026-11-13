@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 var (
@@ -32,6 +35,7 @@ type DB struct {
 	path        string
 	localPath   string
 	metrics     metrics
+	tracer      trace.Tracer
 	proposer    atomic.Pointer[proposerRef]
 	applyMu     sync.Mutex
 	applied     atomic.Uint64
@@ -43,6 +47,7 @@ type DB struct {
 }
 
 const (
+	tracerName          = "github.com/ellanetworks/ims/internal/db"
 	baselineSchema      = 1
 	readConns           = 8
 	localReadConns      = 4
@@ -590,6 +595,14 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(d *DB) {
+		if tp != nil {
+			d.tracer = tp.Tracer(tracerName, trace.WithSchemaURL(semconv.SchemaURL))
+		}
+	}
+}
+
 func Open(ctx context.Context, path string, opts ...Option) (*DB, error) {
 	if err := recoverInstall(path); err != nil {
 		return nil, fmt.Errorf("open database: recover an interrupted install: %w", err)
@@ -599,7 +612,10 @@ func Open(ctx context.Context, path string, opts ...Option) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	d := &DB{path: path, localPath: filepath.Join(filepath.Dir(path), localFile), metrics: newMetrics()}
+	d := &DB{
+		path: path, localPath: filepath.Join(filepath.Dir(path), localFile), metrics: newMetrics(),
+		tracer: noop.NewTracerProvider().Tracer(tracerName),
+	}
 
 	if err := d.openConns(ctx); err != nil {
 		return nil, err

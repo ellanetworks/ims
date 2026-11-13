@@ -28,7 +28,8 @@ type NewIdentity struct {
 }
 
 func (d *DB) GetIdentity(ctx context.Context, issuer, subject string) (_ Identity, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetIdentity", poolRead)
+	defer done(&err)
 
 	var (
 		i                    Identity
@@ -53,7 +54,8 @@ func (d *DB) GetIdentity(ctx context.Context, issuer, subject string) (_ Identit
 }
 
 func (d *DB) CreateIdentity(ctx context.Context, userID int64, i NewIdentity) (_ int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateIdentity", poolWrite)
+	defer done(&err)
 
 	return run[int64](ctx, d, cmdCreateIdentity, "create identity", createIdentityCmd{UserID: userID, Identity: i})
 }
@@ -87,7 +89,8 @@ func createIdentity(ctx context.Context, conn execer, userID int64, i NewIdentit
 }
 
 func (d *DB) DeleteIdentities(ctx context.Context, userID int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteIdentities", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteIdentities, "delete identities", userID)
 

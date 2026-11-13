@@ -28,7 +28,8 @@ type GroupRole struct {
 }
 
 func (d *DB) GetOIDC(ctx context.Context) (_ OIDC, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetOIDC", poolRead)
+	defer done(&err)
 
 	var (
 		o        OIDC
@@ -80,7 +81,8 @@ func (d *DB) groupRoles(ctx context.Context) ([]GroupRole, error) {
 }
 
 func (d *DB) UpdateOIDC(ctx context.Context, o OIDC) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateOIDC", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUpdateOIDC, "update OIDC", o)
 

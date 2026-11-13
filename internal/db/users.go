@@ -34,7 +34,8 @@ type NewUser struct {
 }
 
 func (d *DB) CountUsers(ctx context.Context) (_ int, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "CountUsers", poolRead)
+	defer done(&err)
 
 	var n int
 	if err := d.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
@@ -45,7 +46,8 @@ func (d *DB) CountUsers(ctx context.Context) (_ int, err error) {
 }
 
 func (d *DB) CreateUser(ctx context.Context, u NewUser, maxUsers int) (id int64, err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "CreateUser", poolWrite)
+	defer done(&err)
 
 	return run[int64](ctx, d, cmdCreateUser, "create user", createUserCmd{User: u, MaxUsers: maxUsers})
 }
@@ -83,19 +85,22 @@ func createUser(ctx context.Context, tx *sql.Tx, u NewUser, maxUsers int) (int64
 }
 
 func (d *DB) GetUser(ctx context.Context, email string) (_ User, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetUser", poolRead)
+	defer done(&err)
 
 	return getUser(d.reader().QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE email = ?`, email))
 }
 
 func (d *DB) GetUserByID(ctx context.Context, id int64) (_ User, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "GetUserByID", poolRead)
+	defer done(&err)
 
 	return getUser(d.reader().QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, id))
 }
 
 func (d *DB) ListUsers(ctx context.Context, page, perPage int) (_ []User, _ int, err error) {
-	defer d.observe(poolRead, &err)()
+	ctx, done := d.observe(ctx, "ListUsers", poolRead)
+	defer done(&err)
 
 	var total int
 	if err := d.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&total); err != nil {
@@ -129,7 +134,8 @@ func (d *DB) ListUsers(ctx context.Context, page, perPage int) (_ []User, _ int,
 }
 
 func (d *DB) UpdateUserRole(ctx context.Context, id int64, role Role, pinned bool) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateUserRole", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUpdateUserRole, "update user role", updateUserRole{
 		ID: id, Role: role,
@@ -180,7 +186,8 @@ func applyUpdateUserRole(a *applyCtx, p updateUserRole) (struct{}, error) {
 }
 
 func (d *DB) UpdateUserPassword(ctx context.Context, id int64, passwordHash string, keepSession []byte) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "UpdateUserPassword", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdUpdateUserPassword, "update user password", updateUserPassword{
 		ID:           id,
@@ -239,7 +246,8 @@ func missingPassword(ctx context.Context, tx *sql.Tx, id int64) error {
 }
 
 func (d *DB) DeleteUser(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolWrite, &err)()
+	ctx, done := d.observe(ctx, "DeleteUser", poolWrite)
+	defer done(&err)
 
 	_, err = run[struct{}](ctx, d, cmdDeleteUser, "delete user", id)
 

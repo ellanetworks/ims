@@ -41,7 +41,8 @@ const securityAssociationColumns = `id, impi, state, pcscf_address, ue_address, 
 	pcscf_port_c, pcscf_port_s, ue_port_c, ue_port_s, spi_pc, spi_ps, spi_uc, spi_us, alg, ealg, expires_at`
 
 func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation) (_ SecurityAssociation, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "SaveSecurityAssociation", poolLocal)
+	defer done(&err)
 
 	args := []any{
 		sa.IMPI, sa.State, sa.PCSCFAddress.String(), sa.UEAddress.String(), nullableString(sa.Instance), nullableInt(sa.RegID),
@@ -78,7 +79,8 @@ func (d *DB) SaveSecurityAssociation(ctx context.Context, sa SecurityAssociation
 }
 
 func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) (err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "DeleteSecurityAssociation", poolLocal)
+	defer done(&err)
 
 	res, err := d.local.ExecContext(ctx, `DELETE FROM security_associations WHERE id = ?`, id)
 	if err != nil {
@@ -93,7 +95,8 @@ func (d *DB) DeleteSecurityAssociation(ctx context.Context, id int64) (err error
 }
 
 func (d *DB) ListSecurityAssociations(ctx context.Context) (_ []SecurityAssociation, err error) {
-	defer d.observe(poolLocal, &err)()
+	ctx, done := d.observe(ctx, "ListSecurityAssociations", poolLocal)
+	defer done(&err)
 
 	rows, err := d.local.QueryContext(ctx, `SELECT `+securityAssociationColumns+` FROM security_associations ORDER BY id`)
 	if err != nil {
