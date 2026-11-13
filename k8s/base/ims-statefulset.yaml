@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: ims
-        image: ghcr.io/ellanetworks/ella-ims:sha-98222a4c00ec
+        image: ghcr.io/ellanetworks/ella-ims:sha-fec62f8b4f54
         command: ["ims"]
         args: ["--config", "/config/ims.yaml"]
         env:

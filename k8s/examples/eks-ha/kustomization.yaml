@@ -1,0 +1,46 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ella
+resources:
+  - ../../ha
+  - ims-sip-nad.yaml
+patches:
+  - patch: |
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: ella-ims
+      spec:
+        template:
+          metadata:
+            annotations:
+              k8s.v1.cni.cncf.io/networks: |
+                [
+                  {"name": "ims-sip", "interface": "eth1"}
+                ]
+          spec:
+            initContainers:
+            - name: sip-address
+              image: busybox:1.36
+              command:
+              - sh
+              - -c
+              - |
+                printf '#!/bin/sh\n[ "$1" = bound ] && ip addr add "$ip/$mask" dev "$interface"\nexit 0\n' > /run/sip/dhcp.sh
+                chmod +x /run/sip/dhcp.sh
+                udhcpc -i eth1 -n -q -s /run/sip/dhcp.sh
+                ip addr show eth1
+              securityContext:
+                runAsUser: 0
+                runAsGroup: 0
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+                  add: ["NET_ADMIN", "NET_RAW"]
+              volumeMounts:
+              - name: sip-run
+                mountPath: /run/sip
+            volumes:
+            - name: sip-run
+              emptyDir: {}
