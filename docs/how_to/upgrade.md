@@ -1,50 +1,86 @@
 ---
-description: Step-by-step instructions to upgrade Ella IMS.
+description: Upgrade Ella IMS to the next release, on a standalone node or a high-availability cluster.
 ---
 
 # Upgrade
 
-## Upgrade a standalone node
+## Prerequisites
 
-=== "Snap"
+- Ella IMS installed with [Install](install.md) or [Deploy a High Availability Cluster](deploy_ha_cluster.md).
+- The target release of `ella-ims` available.
 
-    Refresh the snap:
+## 1. Upgrade
 
-    ```shell
-    sudo snap refresh ella-ims
-    ```
+=== "Standalone"
 
-=== "Docker"
+    === "Snap"
 
-    In the directory of `docker-compose.yaml`, pull the new image and restart the container:
-
-    ```shell
-    docker compose pull
-    docker compose up -d
-    ```
-
-=== "Kubernetes"
-
-    1. Set the new image:
+        Refresh the snap:
 
         ```shell
-        kubectl set image statefulset/ella-ims -n ella ims=ghcr.io/ellanetworks/ella-ims:<version>
+        sudo snap refresh ella-ims
         ```
 
-    2. Wait for the rollout:
+    === "Docker"
+
+        In the directory of `docker-compose.yaml`, pull the new image and restart the container:
 
         ```shell
-        kubectl rollout status statefulset/ella-ims -n ella
+        docker compose pull
+        docker compose up -d
         ```
 
-    3. Open the UI and API on your machine:
+    === "Kubernetes"
 
-        ```shell
-        kubectl port-forward -n ella svc/ella-ims 5020:5020
-        ```
+        1. Set the new image:
 
-Check the running version in the UI's top bar.
+            ```shell
+            kubectl set image statefulset/ella-ims -n ella ims=ghcr.io/ellanetworks/ella-ims:<version>
+            ```
 
-## Upgrade a cluster
+        2. Wait for the rollout:
 
-See [Perform a Rolling Upgrade](rolling_upgrade.md).
+            ```shell
+            kubectl rollout status statefulset/ella-ims -n ella
+            ```
+
+=== "High Availability"
+
+    === "Snap"
+
+        Repeat these steps for each node:
+
+        1. On that host, refresh the snap:
+
+            ```shell
+            sudo snap refresh ella-ims
+            ```
+
+        2. On the leader's **Cluster** page, wait for the node to return to **Healthy**.
+
+    === "Kubernetes"
+
+        1. Set the new image:
+
+            ```shell
+            kubectl set image statefulset/ella-ims -n ella ims=ghcr.io/ellanetworks/ella-ims:<version>
+            ```
+
+        2. Wait for the rollout:
+
+            ```shell
+            kubectl rollout status statefulset/ella-ims -n ella
+            ```
+
+## 2. Verify
+
+=== "Standalone"
+
+    Check the running version in the UI's top bar.
+
+=== "High Availability"
+
+    On the leader's **Cluster** page, confirm:
+
+    - Every node's **Version** column shows the target release.
+    - Every node is **Healthy** and its **Drain** column shows **Active**.
