@@ -63,20 +63,20 @@ nav:
   - How-to Guides:
     - how_to/index.md
     - Install: how_to/install.md
-    - Upgrade: how_to/upgrade.md
-    - Deploy a High Availability Cluster: how_to/deploy_ha_cluster.md
-    - Scale a High Availability Cluster: how_to/scale_ha_cluster.md
-    - Perform a Rolling Upgrade: how_to/rolling_upgrade.md
     - Integrate with Ella Core: how_to/integrate_with_ella_core.md
+    - Integrate with Open5GS: how_to/integrate_with_open5gs.md
     - Connect a Core at Another Site: how_to/connect_a_core_at_another_site.md
-    - Integrate with an Application Server: how_to/integrate_with_application_server.md
+    - Deploy a High Availability Cluster: how_to/deploy_ha_cluster.md
     - Configure Single Sign-On: how_to/configure_single_sign_on.md
-    - Manage Single Sign-On Users: how_to/manage_single_sign_on_users.md
-    - Install the Android MCPTT App: how_to/install_android_app.md
-    - Enable Push-to-Talk: how_to/enable_push_to_talk.md
-    - Enable SMS over IP: how_to/enable_sms_over_ip.md
     - Connect to a SIP Trunk: how_to/connect_to_a_sip_trunk.md
+    - Integrate with an Application Server: how_to/integrate_with_application_server.md
+    - Enable SMS over IP: how_to/enable_sms_over_ip.md
+    - Enable Push-to-Talk: how_to/enable_push_to_talk.md
+    - Install the Android MCPTT App: how_to/install_android_app.md
     - Back Up and Restore: how_to/back_up_and_restore.md
+    - Upgrade: how_to/upgrade.md
+    - Scale a High Availability Cluster: how_to/scale_ha_cluster.md
+    - Manage Single Sign-On Users: how_to/manage_single_sign_on_users.md
   - Reference:
     - reference/index.md
     - API:

@@ -16,7 +16,7 @@ The examples use these addresses:
 
 ## Prerequisites
 
-- **Ella IMS**: connected to the core network, as in [Integrate with Ella Core](integrate_with_ella_core.md), with the numbering plan set.
+- **Ella IMS**: connected to the core network, as in [Integrate with Ella Core](integrate_with_ella_core.md) or [Integrate with Open5GS](integrate_with_open5gs.md), with the **Numbering Plan** set on the **Operator** page.
 - **SIP trunk**: an IP-authenticated trunk.
 - **Numbers**: the carrier's numbers, set as the subscribers' MSISDNs in the HSS.
 

@@ -48,7 +48,7 @@ From `10.46.0.0/16` to `10.6.0.5`, allow:
 
 - In the core, set the P-CSCF address to `10.6.0.5`. In Ella Core, it is **Operator → IMS → P-CSCF Addresses**.
 - In Ella IMS, go to the **Cores** page. Under **Peers**, click **Create Peer**, enter `10.3.0.2`, check **HSS**, **PCRF** and **Sh**, and click **Create**. For SMS over IP, also check **S6c**, and set **Transport** to **SCTP**.
-- Set the realms, as in [Integrate with Ella Core](integrate_with_ella_core.md), step 4.
+- Set the realms, as in [Integrate with Ella Core](integrate_with_ella_core.md), step 2.
 
 ## 6. Verify
 
