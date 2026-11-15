@@ -172,6 +172,12 @@ func (h *harness) wantResponse(code int) *sip.Response {
 		h.t.Fatalf("peer got %q, want %d", res.StartLine(), code)
 	}
 
+	for deadline := time.Now().Add(siptest.Timeout); h.l.Responding(res); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%d received, never recorded as sent", code)
+		}
+	}
+
 	return res
 }
 

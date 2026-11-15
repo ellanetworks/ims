@@ -20,6 +20,22 @@ func (l *Layer) Sending(req *sip.Request) bool {
 	return tx != nil && !tx.Sent()
 }
 
+func (l *Layer) Responding(res *sip.Response) bool {
+	via, err := res.Header.TopVia()
+	if err != nil {
+		return false
+	}
+
+	cseq, err := res.Header.CSeq()
+	if err != nil {
+		return false
+	}
+
+	tx := l.server(serverKey{branchKey: branchKey{branch: via.Branch(), sentBy: sentByKey(via)}, method: cseq.Method})
+
+	return tx != nil && tx.Sending()
+}
+
 func (tx *ServerTransaction) Sending() bool {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
