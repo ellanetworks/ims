@@ -362,13 +362,19 @@ func (d *DB) publish(ev Events) {
 		return
 	}
 
-	for _, f := range d.subscribers {
+	d.subsMu.Lock()
+	subs := d.subscribers
+	d.subsMu.Unlock()
+
+	for _, f := range subs {
 		f(ev)
 	}
 }
 
 func (d *DB) OnEvents(f func(Events)) {
-	d.subscribers = append(d.subscribers, f)
+	d.subsMu.Lock()
+	d.subscribers = append(d.subscribers[:len(d.subscribers):len(d.subscribers)], f)
+	d.subsMu.Unlock()
 }
 
 func (d *DB) SetProposer(p Proposer) {

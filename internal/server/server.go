@@ -99,6 +99,7 @@ type Server struct {
 	sweepDone   chan struct{}
 	readiness   *readiness
 	stopReady   context.CancelFunc
+	events      *events
 	stopEvents  func()
 	readyDone   chan struct{}
 	settings    *settings.Live
@@ -214,6 +215,8 @@ func (s *Server) Start(ctx context.Context) error {
 		clusterCfg.APIAddress = apiAddress(cfg, apiLn.Addr())
 	}
 
+	events := subscribeEvents(database)
+
 	node, err := cluster.Open(ctx, clusterCfg, database)
 	if err != nil {
 		_ = apiLn.Close()
@@ -232,7 +235,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
-	s.database, s.node = database, node
+	s.database, s.node, s.events = database, node, events
 	s.records = callrecords.New(callrecords.Config{Store: database, NodeID: node.ID(), Logger: s.Logger})
 
 	s.metrics, err = newMetrics(database, node, s.records, func() ([]settings.Peer, []diameter.PeerStatus) {
@@ -486,8 +489,6 @@ func (s *Server) finish(ctx context.Context) error {
 
 	view := coreView{s}
 	oidcLive := oidc.NewLive(database, oidcSettings)
-	s.stopEvents = s.followEvents(base, database, oidcLive, secrets)
-
 	apiCfg := s.baseAPIConfig()
 	apiCfg.Settings = live
 	apiCfg.Diameter = view
@@ -551,6 +552,8 @@ func (s *Server) finish(ctx context.Context) error {
 
 		s.drain.run(drainCtx)
 	}()
+
+	s.stopEvents = s.followEvents(base, s.events, database, oidcLive, secrets)
 
 	s.setHandler(api.NewHandler(apiCfg))
 
@@ -908,13 +911,13 @@ func (s *Server) Shutdown(ctx context.Context) {
 }
 
 func (s *Server) stopRunning(ctx context.Context) {
+	s.stopEvents()
+
 	s.stopDrain()
 	<-s.drainDone
 
 	s.stopFollow()
 	<-s.followDone
-
-	s.stopEvents()
 
 	s.stopTrunks(ctx)
 
