@@ -20,29 +20,38 @@ type CallRecords interface {
 
 // TS 32.298 clause 5.1.3.1
 type CallRecordResponse struct {
-	ID              int64    `json:"id"`
-	ICID            string   `json:"icid"`
-	SessionID       string   `json:"session_id"`
-	CallingParty    []string `json:"calling_party"`
-	CallerIMPI      string   `json:"caller_impi,omitempty"`
-	RequestedParty  string   `json:"requested_party"`
-	CalledParty     string   `json:"called_party,omitempty"`
-	CalleeIMPI      string   `json:"callee_impi,omitempty"`
-	RequestedAt     string   `json:"requested_at"`
-	DeliveryStartAt string   `json:"delivery_start_at,omitempty"`
-	DeliveryEndAt   string   `json:"delivery_end_at,omitempty"`
-	SIPStatus       int      `json:"sip_status,omitempty"`
-	Outcome         string   `json:"outcome,omitempty"`
-	EndedBy         string   `json:"ended_by,omitempty"`
-	Alerted         bool     `json:"alerted"`
-	Media           []string `json:"media"`
-	InProgress      bool     `json:"in_progress"`
-	Incomplete      bool     `json:"incomplete"`
-	DurationMS      *int64   `json:"duration_ms,omitempty"`
-	InTrunkID       string   `json:"in_trunk_id,omitempty"`
-	InTrunkName     string   `json:"in_trunk_name,omitempty"`
-	OutTrunkID      string   `json:"out_trunk_id,omitempty"`
-	OutTrunkName    string   `json:"out_trunk_name,omitempty"`
+	ID              int64             `json:"id"`
+	ICID            string            `json:"icid"`
+	SessionID       string            `json:"session_id"`
+	CallingParty    []string          `json:"calling_party"`
+	CallerIMPI      string            `json:"caller_impi,omitempty"`
+	RequestedParty  string            `json:"requested_party"`
+	CalledParty     string            `json:"called_party,omitempty"`
+	CalleeIMPI      string            `json:"callee_impi,omitempty"`
+	RequestedAt     string            `json:"requested_at"`
+	DeliveryStartAt string            `json:"delivery_start_at,omitempty"`
+	DeliveryEndAt   string            `json:"delivery_end_at,omitempty"`
+	SIPStatus       int               `json:"sip_status,omitempty"`
+	Outcome         string            `json:"outcome,omitempty"`
+	EndedBy         string            `json:"ended_by,omitempty"`
+	Alerted         bool              `json:"alerted"`
+	Media           []string          `json:"media"`
+	Codecs          []CallRecordCodec `json:"codecs"`
+	InProgress      bool              `json:"in_progress"`
+	Incomplete      bool              `json:"incomplete"`
+	DurationMS      *int64            `json:"duration_ms,omitempty"`
+	InTrunkID       string            `json:"in_trunk_id,omitempty"`
+	InTrunkName     string            `json:"in_trunk_name,omitempty"`
+	OutTrunkID      string            `json:"out_trunk_id,omitempty"`
+	OutTrunkName    string            `json:"out_trunk_name,omitempty"`
+}
+
+// RFC 8866 section 6.6
+type CallRecordCodec struct {
+	Media     string `json:"media"`
+	Encoding  string `json:"encoding"`
+	ClockRate uint32 `json:"clock_rate"`
+	Channels  int    `json:"channels,omitempty"`
 }
 
 type ListCallRecordsResponse struct {
@@ -221,6 +230,11 @@ func callRecordResponse(r db.CallRecord) CallRecordResponse {
 		EndedBy: string(r.EndedBy), Alerted: r.Alerted, Media: nonNil(r.Media),
 		InProgress: r.EndedBy == "" && !r.Incomplete, Incomplete: r.Incomplete, InTrunkID: r.InTrunk,
 		InTrunkName: r.InTrunkName, OutTrunkID: r.OutTrunk, OutTrunkName: r.OutTrunkName,
+	}
+
+	resp.Codecs = make([]CallRecordCodec, 0, len(r.Codecs))
+	for _, c := range r.Codecs {
+		resp.Codecs = append(resp.Codecs, CallRecordCodec(c))
 	}
 
 	if !r.DeliveryStartAt.IsZero() {

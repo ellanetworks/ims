@@ -52,12 +52,21 @@ type CallRecord struct {
 	EndedBy         CallParty
 	Alerted         bool
 	Media           []string
+	Codecs          []Codec
 	Incomplete      bool
 	InTrunk         string
 	InTrunkName     string
 	OutTrunk        string
 	OutTrunkName    string
 	NodeID          string
+}
+
+// RFC 8866 section 6.6
+type Codec struct {
+	Media     string `json:"media"`
+	Encoding  string `json:"encoding"`
+	ClockRate uint32 `json:"clock_rate"`
+	Channels  int    `json:"channels,omitempty"`
 }
 
 type CallRecordFilter struct {
@@ -67,12 +76,21 @@ type CallRecordFilter struct {
 }
 
 const (
-	callRecordColumns = `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
-		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete, in_trunk_id,
-		in_trunk_name, out_trunk_id, out_trunk_name, node_id`
-
 	callRecordBatch = 1000
+
+	codecsSchema = 2
 )
+
+func callRecordColumns(schema int) string {
+	codecs := "NULL"
+	if schema >= codecsSchema {
+		codecs = "codecs"
+	}
+
+	return `id, icid, session_id, calling_party, caller_impi, requested_party, called_party, callee_impi,
+		requested_at, delivery_start_at, delivery_end_at, sip_status, outcome, ended_by, alerted, media, incomplete, in_trunk_id,
+		in_trunk_name, out_trunk_id, out_trunk_name, node_id, ` + codecs
+}
 
 type saveCallRecordsCmd struct {
 	Records []CallRecord
@@ -132,7 +150,7 @@ func applySaveCallRecords(a *applyCtx, p saveCallRecordsCmd) ([]savedCallRecord,
 	for i := range p.Records {
 		r := &p.Records[i]
 
-		switch err := saveCallRecord(a.ctx, a.tx, r); {
+		switch err := saveCallRecord(a.ctx, a.tx, r, a.schema); {
 		case err == nil:
 			saved[i].ID = r.ID
 		case isRecordError(err):
@@ -165,7 +183,7 @@ func isRecordError(err error) bool {
 		errors.As(err, &e) && e.Code == sqlite3.ErrConstraint
 }
 
-func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
+func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord, schema int) error {
 	calling, err := jsonList(r.CallingParty)
 	if err != nil {
 		return err
@@ -183,11 +201,23 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 		nullableString(r.InTrunkName), nullableString(r.OutTrunk), nullableString(r.OutTrunkName),
 	}
 
+	set, insert := "", ""
+
+	if schema >= codecsSchema {
+		codecs, err := jsonList(r.Codecs)
+		if err != nil {
+			return err
+		}
+
+		mutable = append(mutable, codecs)
+		set, insert = ", codecs = ?", ", codecs"
+	}
+
 	if r.ID != 0 {
 		res, err := tx.ExecContext(ctx, `UPDATE call_records SET calling_party = ?, called_party = ?, callee_impi = ?,
 			delivery_start_at = ?, delivery_end_at = ?, sip_status = ?, outcome = ?, ended_by = ?, alerted = ?,
 			media = ?, incomplete = ?, in_trunk_id = ?, in_trunk_name = ?, out_trunk_id = ?,
-			out_trunk_name = ? WHERE id = ?`,
+			out_trunk_name = ?`+set+` WHERE id = ?`,
 			append(mutable, r.ID)...)
 		if err != nil {
 			return err
@@ -203,7 +233,8 @@ func saveCallRecord(ctx context.Context, tx *sql.Tx, r *CallRecord) error {
 
 	err = tx.QueryRowContext(ctx, `INSERT INTO call_records (icid, session_id, caller_impi, requested_party,
 		requested_at, calling_party, called_party, callee_impi, delivery_start_at, delivery_end_at, sip_status, outcome,
-		ended_by, alerted, media, incomplete, in_trunk_id, in_trunk_name, out_trunk_id, out_trunk_name, node_id) VALUES (`+placeholders(21)+`) RETURNING id`,
+		ended_by, alerted, media, incomplete, in_trunk_id, in_trunk_name, out_trunk_id, out_trunk_name`+insert+`, node_id)
+		VALUES (`+placeholders(6+len(mutable))+`) RETURNING id`,
 		append([]any{
 			r.ICID, r.SessionID, nullableString(r.CallerIMPI), r.RequestedParty,
 			r.RequestedAt.UTC().UnixNano(),
@@ -219,7 +250,7 @@ func (d *DB) GetCallRecord(ctx context.Context, id int64) (_ CallRecord, err err
 	ctx, done := d.observe(ctx, "GetCallRecord", poolRead)
 	defer done(&err)
 
-	r, err := scanCallRecord(d.reader().QueryRowContext(ctx, `SELECT `+callRecordColumns+` FROM call_records WHERE id = ?`,
+	r, err := scanCallRecord(d.reader().QueryRowContext(ctx, `SELECT `+callRecordColumns(d.Schema())+` FROM call_records WHERE id = ?`,
 		id))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
@@ -237,6 +268,7 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 	defer done(&err)
 
 	where, args := f.where()
+	columns := callRecordColumns(d.Schema())
 
 	tx, err := d.reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -251,7 +283,7 @@ func (d *DB) ListCallRecords(ctx context.Context, f CallRecordFilter, page, perP
 		return nil, 0, fmt.Errorf("list call records: %w", err)
 	}
 
-	records, err := queryCallRecords(ctx, tx, `SELECT `+callRecordColumns+` FROM call_records WHERE `+where+`
+	records, err := queryCallRecords(ctx, tx, `SELECT `+columns+` FROM call_records WHERE `+where+`
 		ORDER BY requested_at DESC, id DESC LIMIT ? OFFSET ?`, append(args, perPage, (page-1)*perPage)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list call records: %w", err)
@@ -461,7 +493,7 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 	var (
 		r                                         CallRecord
 		callerIMPI, calledParty, calleeIMPI       sql.NullString
-		calling, media                            sql.NullString
+		calling, media, codecs                    sql.NullString
 		outcome, endedBy                          sql.NullString
 		inTrunk, inTrunkName                      sql.NullString
 		outTrunk, outTrunkName                    sql.NullString
@@ -471,7 +503,7 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 
 	if err := row.Scan(&r.ID, &r.ICID, &r.SessionID, &calling, &callerIMPI, &r.RequestedParty, &calledParty,
 		&calleeIMPI, &requestedAt, &deliveryStartAt, &deliveryEndAt, &sipStatus, &outcome, &endedBy, &r.Alerted, &media,
-		&r.Incomplete, &inTrunk, &inTrunkName, &outTrunk, &outTrunkName, &r.NodeID); err != nil {
+		&r.Incomplete, &inTrunk, &inTrunkName, &outTrunk, &outTrunkName, &r.NodeID, &codecs); err != nil {
 		return CallRecord{}, err
 	}
 
@@ -484,9 +516,9 @@ func scanCallRecord(row scanner) (CallRecord, error) {
 	r.OutTrunk, r.OutTrunkName = outTrunk.String, outTrunkName.String
 
 	for _, l := range []struct {
-		dst *[]string
+		dst any
 		src sql.NullString
-	}{{&r.CallingParty, calling}, {&r.Media, media}} {
+	}{{&r.CallingParty, calling}, {&r.Media, media}, {&r.Codecs, codecs}} {
 		if !l.src.Valid {
 			continue
 		}
@@ -507,7 +539,7 @@ func nonNilList(l []string) []string {
 	return l
 }
 
-func jsonList(l []string) (sql.NullString, error) {
+func jsonList[T any](l []T) (sql.NullString, error) {
 	if len(l) == 0 {
 		return sql.NullString{}, nil
 	}

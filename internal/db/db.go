@@ -401,6 +401,7 @@ var migrations = []string{
 		fingerprint TEXT,
 		CHECK ((node_id IS NULL) = (fingerprint IS NULL))
 	);`,
+	`ALTER TABLE call_records ADD COLUMN codecs TEXT;`,
 }
 
 var localMigrations = []string{

@@ -3,6 +3,7 @@ import { callRecord } from "@/test/fixtures";
 import {
   calleeOf,
   callerOf,
+  codecsText,
   dialledOf,
   formatDuration,
 } from "@/utils/callRecords";
@@ -12,6 +13,22 @@ describe("formatDuration", () => {
     expect(formatDuration(0)).toBe("0:00");
     expect(formatDuration(65_400)).toBe("1:05");
     expect(formatDuration(3_723_000)).toBe("1:02:03");
+  });
+});
+
+describe("codecsText", () => {
+  it("shows each codec as its rtpmap encoding", () => {
+    expect(
+      codecsText([
+        { media: "audio", encoding: "EVS", clock_rate: 16000, channels: 1 },
+        { media: "audio", encoding: "opus", clock_rate: 48000, channels: 2 },
+        { media: "video", encoding: "H264", clock_rate: 90000 },
+      ]),
+    ).toBe("EVS/16000, opus/48000/2, H264/90000");
+  });
+
+  it("is a dash without codecs", () => {
+    expect(codecsText([])).toBe("—");
   });
 });
 

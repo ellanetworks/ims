@@ -47,6 +47,7 @@ const busy = callRecord({
   outcome: "busy",
   ended_by: "callee",
   media: [],
+  codecs: [],
   duration_ms: undefined,
 });
 
@@ -60,6 +61,7 @@ const ringing = callRecord({
   outcome: undefined,
   ended_by: undefined,
   media: [],
+  codecs: [],
   in_progress: true,
   duration_ms: undefined,
 });
@@ -317,6 +319,7 @@ describe("Calls", () => {
       ["Ended By", "Caller"],
       ["Rang", "Yes"],
       ["Media", "Voice, Video"],
+      ["Codecs", "AMR-WB/16000, H264/90000"],
       ["Duration", "1:05"],
     ]);
     expect(fields(drawer, "Parties")).toEqual([

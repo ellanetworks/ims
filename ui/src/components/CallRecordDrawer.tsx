@@ -9,6 +9,7 @@ import type { CallRecord } from "@/queries/callRecords";
 import {
   callerOf,
   calleeOf,
+  codecsText,
   endedByLabels,
   formatDuration,
   dialledOf,
@@ -53,6 +54,7 @@ function CallRecordDetail({
     ["Ended By", record.ended_by ? endedByLabels[record.ended_by] : "—"],
     ["Rang", record.alerted ? "Yes" : "No"],
     ["Media", mediaText(record.media)],
+    ["Codecs", codecsText(record.codecs)],
     [
       "Duration",
       record.duration_ms !== undefined
