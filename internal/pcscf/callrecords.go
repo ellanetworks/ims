@@ -68,6 +68,7 @@ func (c *callRecord) event(e proxy.DialogEvent) {
 		c.r.Answered(c.attempt.ICID, e.Code)
 	case proxy.EventNegotiated:
 		c.r.Media(c.attempt.ICID, callrecords.AcceptedMedia(e.Exchange.Answer.Data))
+		c.r.Codecs(c.attempt.ICID, callrecords.AcceptedCodecs(e.Exchange.Offer.Data, e.Exchange.Answer.Data))
 	case proxy.EventEnded:
 		c.r.Ended(c.attempt.ICID, callrecords.End{Code: e.Code, Tag: e.Tag, By: e.By, Cause: e.End})
 	}

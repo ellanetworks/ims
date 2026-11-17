@@ -23,12 +23,19 @@ func callRecordsDB(t *testing.T) (*db.DB, []*db.CallRecord) {
 
 	t.Cleanup(func() { _ = d.Close() })
 
+	for target := d.Schema() + 1; target <= db.SchemaVersion(); target++ {
+		if err := d.Migrate(t.Context(), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	answered := &db.CallRecord{
 		ICID: "AAAA", SessionID: "c1", CallingParty: []string{"sip:+15551230001@example.org;user=phone"},
 		CallerIMPI: "alice@example.org", RequestedParty: "tel:5551230002", CalledParty: "tel:+15551230002",
 		CalleeIMPI: "bob@example.org", RequestedAt: callT0, DeliveryStartAt: callT0.Add(5 * time.Second),
 		DeliveryEndAt: callT0.Add(65*time.Second + 250*time.Millisecond), SIPStatus: 200, Outcome: db.OutcomeAnswered,
 		EndedBy: db.PartyCaller, Alerted: true, Media: []string{"audio"}, OutTrunk: "carrier", OutTrunkName: "Carrier",
+		Codecs: []db.Codec{{Media: "audio", Encoding: "AMR-WB", ClockRate: 16000, Channels: 1}},
 	}
 	busy := &db.CallRecord{
 		ICID: "BBBB", SessionID: "c2", CallerIMPI: "carol@example.org", RequestedParty: "tel:+15551230003",
@@ -154,6 +161,7 @@ func TestGetCallRecord(t *testing.T) {
 		CalleeIMPI: "bob@example.org", RequestedAt: "2026-10-08T12:00:00.000Z", DeliveryStartAt: "2026-10-08T12:00:05.000Z",
 		DeliveryEndAt: "2026-10-08T12:01:05.250Z", SIPStatus: 200, Outcome: "answered", EndedBy: "caller", Alerted: true,
 		Media: []string{"audio"}, DurationMS: new(int64(60250)), OutTrunkID: "carrier", OutTrunkName: "Carrier",
+		Codecs: []CallRecordCodec{{Media: "audio", Encoding: "AMR-WB", ClockRate: 16000, Channels: 1}},
 	}
 
 	if got := decodeResult[CallRecordResponse](t, body); !reflect.DeepEqual(got, want) {
@@ -162,7 +170,7 @@ func TestGetCallRecord(t *testing.T) {
 
 	code, body = serve(t, cfg, http.MethodGet, "/api/v1/call-records/"+strconv.FormatInt(recs[2].ID, 10), "")
 	if got := decodeResult[CallRecordResponse](t, body); code != http.StatusOK || !got.InProgress || got.Outcome != "" ||
-		got.DurationMS != nil || got.CallingParty == nil || got.Media == nil {
+		got.DurationMS != nil || got.CallingParty == nil || got.Media == nil || got.Codecs == nil {
 		t.Fatalf("call in progress = %d %+v, want it in progress, with empty lists", code, got)
 	}
 

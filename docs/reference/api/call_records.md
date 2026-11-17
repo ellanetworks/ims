@@ -45,6 +45,11 @@ This path returns the list of call records, most recently requested first.
 | `ended_by`          | string  | `caller`, `callee` or `network`. |
 | `alerted`           | boolean | Whether a 180 reached the caller. |
 | `media`             | array   | Media types of the accepted m-lines. |
+| `codecs`            | array   | Codecs of the accepted RTP m-lines (§5.1.3.1.47), each in both the SDP offer and the SDP answer, from every offer-answer exchange of the call, once each, in the order first answered. `telephone-event` and `CN` are left out. Empty for calls recorded before the cluster's `schema` is 2. |
+| `codecs[].media`    | string  | Media type of the m-line. |
+| `codecs[].encoding` | string  | Encoding name of the `a=rtpmap` attribute, or of the static payload type. |
+| `codecs[].clock_rate` | int   | Clock rate, in Hz. |
+| `codecs[].channels` | int     | Number of audio channels. Absent for media other than `audio`. |
 | `in_progress`       | boolean | Whether the call has not ended. |
 | `incomplete`        | boolean | Whether the record was closed without the end of the call. |
 | `duration_ms`       | int     | Duration of an answered call that ended, in milliseconds. |
@@ -81,6 +86,14 @@ A value the IMS did not observe is absent. Times are RFC 3339.
                 "ended_by": "caller",
                 "alerted": true,
                 "media": ["audio"],
+                "codecs": [
+                    {
+                        "media": "audio",
+                        "encoding": "EVS",
+                        "clock_rate": 16000,
+                        "channels": 1
+                    }
+                ],
                 "in_progress": false,
                 "incomplete": false,
                 "duration_ms": 107459
@@ -104,6 +117,14 @@ A value the IMS did not observe is absent. Times are RFC 3339.
                 "ended_by": "callee",
                 "alerted": true,
                 "media": ["audio"],
+                "codecs": [
+                    {
+                        "media": "audio",
+                        "encoding": "PCMA",
+                        "clock_rate": 8000,
+                        "channels": 1
+                    }
+                ],
                 "in_progress": false,
                 "incomplete": false,
                 "duration_ms": 62502,
@@ -204,6 +225,7 @@ This path returns a specific call record.
         "ended_by": "callee",
         "alerted": true,
         "media": [],
+        "codecs": [],
         "in_progress": false,
         "incomplete": false
     }

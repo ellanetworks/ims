@@ -327,6 +327,18 @@ func (r *Recorder) Media(icid string, types []string) {
 	})
 }
 
+func (r *Recorder) Codecs(icid string, codecs []db.Codec) {
+	r.update(icid, func(c *call, _ time.Time) bool {
+		for _, codec := range codecs {
+			if !slices.ContainsFunc(c.rec.Codecs, func(d db.Codec) bool { return sameCodec(codec, d) }) {
+				c.rec.Codecs = append(c.rec.Codecs, codec)
+			}
+		}
+
+		return false
+	})
+}
+
 func (r *Recorder) Released(icid string) {
 	r.update(icid, func(c *call, _ time.Time) bool {
 		c.network = true
@@ -600,7 +612,8 @@ func (r *Recorder) save() (more bool, err error) {
 		}
 
 		rec := c.rec
-		rec.CallingParty, rec.Media = slices.Clone(rec.CallingParty), slices.Clone(rec.Media)
+		rec.CallingParty, rec.Media, rec.Codecs = slices.Clone(rec.CallingParty), slices.Clone(rec.Media),
+			slices.Clone(rec.Codecs)
 
 		batch = append(batch, c)
 		records = append(records, &rec)

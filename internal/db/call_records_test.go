@@ -87,6 +87,57 @@ func TestCallRecordLifecycle(t *testing.T) {
 	}
 }
 
+func TestCallRecordCodecs(t *testing.T) {
+	d := openTestDB(t)
+
+	amrWB := Codec{Media: "audio", Encoding: "AMR-WB", ClockRate: 16000, Channels: 1}
+	evs := Codec{Media: "audio", Encoding: "EVS", ClockRate: 16000, Channels: 1}
+	h264 := Codec{Media: "video", Encoding: "H264", ClockRate: 90000}
+
+	before := attempt("ICID1", callT0)
+	before.Media, before.Codecs = []string{"audio"}, []Codec{amrWB}
+	saveCalls(t, d, before)
+
+	got, err := d.GetCallRecord(t.Context(), before.ID)
+	if err != nil {
+		t.Fatalf("GetCallRecord: %v", err)
+	}
+
+	if got.Codecs != nil || !reflect.DeepEqual(got.Media, []string{"audio"}) {
+		t.Fatalf("codecs before the schema has them = %+v, media = %v", got.Codecs, got.Media)
+	}
+
+	if err := d.Migrate(t.Context(), codecsSchema); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	if got, err = d.GetCallRecord(t.Context(), before.ID); err != nil || got.Codecs != nil {
+		t.Fatalf("GetCallRecord of an earlier record = %+v, %v", got.Codecs, err)
+	}
+
+	r := attempt("ICID2", callT0.Add(time.Minute))
+	saveCalls(t, d, r)
+
+	if got, err = d.GetCallRecord(t.Context(), r.ID); err != nil || got.Codecs != nil {
+		t.Fatalf("codecs of a record without = %+v, %v", got.Codecs, err)
+	}
+
+	r.Codecs = []Codec{amrWB, h264}
+	saveCalls(t, d, r)
+
+	r.Codecs = append(r.Codecs, evs)
+	saveCalls(t, d, r)
+
+	records, _, err := d.ListCallRecords(t.Context(), CallRecordFilter{}, 1, 10)
+	if err != nil {
+		t.Fatalf("ListCallRecords: %v", err)
+	}
+
+	if len(records) != 2 || !reflect.DeepEqual(records[0].Codecs, []Codec{amrWB, h264, evs}) {
+		t.Fatalf("listed records = %+v", records)
+	}
+}
+
 func TestSaveCallRecordsKeepsTheOthers(t *testing.T) {
 	d := openTestDB(t)
 

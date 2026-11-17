@@ -150,6 +150,10 @@ export const callRecord = (
   ended_by: "caller",
   alerted: true,
   media: ["audio", "video"],
+  codecs: [
+    { media: "audio", encoding: "AMR-WB", clock_rate: 16000, channels: 1 },
+    { media: "video", encoding: "H264", clock_rate: 90000 },
+  ],
   in_progress: false,
   incomplete: false,
   duration_ms: 65000,

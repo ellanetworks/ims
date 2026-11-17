@@ -24,6 +24,14 @@ export const CALL_OUTCOMES: CallOutcome[] = [
   "failed",
 ];
 
+// RFC 8866 section 6.6
+export interface CallRecordCodec {
+  media: string;
+  encoding: string;
+  clock_rate: number;
+  channels?: number;
+}
+
 // TS 32.298 clause 5.1.3.1
 export interface CallRecord {
   id: number;
@@ -42,6 +50,7 @@ export interface CallRecord {
   ended_by?: "caller" | "callee" | "network";
   alerted: boolean;
   media: string[];
+  codecs: CallRecordCodec[];
   in_progress: boolean;
   incomplete: boolean;
   duration_ms?: number;

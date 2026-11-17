@@ -23,7 +23,7 @@ func openTestDB(t *testing.T) *DB {
 	return d
 }
 
-func TestOpenReachesLatestVersion(t *testing.T) {
+func TestOpenReachesBaselineSchema(t *testing.T) {
 	d := openTestDB(t)
 
 	var version int
@@ -31,8 +31,27 @@ func TestOpenReachesLatestVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if version != len(migrations) {
-		t.Fatalf("user_version = %d, want %d", version, len(migrations))
+	if version != baselineSchema || d.Schema() != baselineSchema {
+		t.Fatalf("user_version = %d, schema = %d, want %d", version, d.Schema(), baselineSchema)
+	}
+}
+
+func TestMigrateReachesLatestVersion(t *testing.T) {
+	d := openTestDB(t)
+
+	for target := baselineSchema + 1; target <= len(migrations); target++ {
+		if err := d.Migrate(t.Context(), target); err != nil {
+			t.Fatalf("Migrate(%d): %v", target, err)
+		}
+	}
+
+	var version int
+	if err := d.writer.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+
+	if version != len(migrations) || d.Schema() != len(migrations) {
+		t.Fatalf("user_version = %d, schema = %d, want %d", version, d.Schema(), len(migrations))
 	}
 }
 

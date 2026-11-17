@@ -316,12 +316,14 @@ func (c *call) progressed(res *sip.Response, code int) {
 	case code/100 == 2:
 		c.b.cfg.Records.Answered(c.icid, code)
 
-		if _, offered, _ := c.initial.Content().FindFunc(sip.BodyPart.IsSession); !offered {
+		offer, offered, _ := c.initial.Content().FindFunc(sip.BodyPart.IsSession)
+		if !offered {
 			return
 		}
 
 		if part, ok, _ := res.Content().FindFunc(sip.BodyPart.IsSession); ok {
 			c.b.cfg.Records.Media(c.icid, callrecords.AcceptedMedia(part.Body))
+			c.b.cfg.Records.Codecs(c.icid, callrecords.AcceptedCodecs(offer.Body, part.Body))
 		}
 	}
 }
