@@ -100,7 +100,7 @@ func (sp speech) joining(s *sdp.Session) (st stream, ai, ci int, err error) {
 
 // RFC 4867 section 8.3.1
 func (sp speech) compatible(c sdp.RTPMap, fp sdp.FormatParams) (sdp.FormatParams, bool) {
-	if !strings.EqualFold(c.Encoding, sp.codec.Encoding) || c.ClockRate != sp.codec.ClockRate || channels(c) != channels(sp.codec) {
+	if !strings.EqualFold(c.Encoding, sp.codec.Encoding) || c.ClockRate != sp.codec.ClockRate || c.Channels() != sp.codec.Channels() {
 		return nil, false
 	}
 
@@ -130,15 +130,6 @@ func (sp speech) compatible(c sdp.RTPMap, fp sdp.FormatParams) (sdp.FormatParams
 	}
 
 	return out, true
-}
-
-// RFC 8866 section 6.6
-func channels(r sdp.RTPMap) string {
-	if r.Params == "" {
-		return "1"
-	}
-
-	return r.Params
 }
 
 // RFC 4855 section 3

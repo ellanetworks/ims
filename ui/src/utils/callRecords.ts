@@ -1,4 +1,8 @@
-import type { CallOutcome, CallRecord } from "@/queries/callRecords";
+import type {
+  CallOutcome,
+  CallRecord,
+  CallRecordCodec,
+} from "@/queries/callRecords";
 import { numberOfURI } from "@/utils/registrations";
 
 export const outcomeLabels: Record<CallOutcome, string> = {
@@ -35,6 +39,15 @@ export const callerOf = (record: CallRecord): string => {
 
 export const calleeOf = (record: CallRecord): string =>
   partyOf(record.called_party ?? record.requested_party);
+
+// RFC 8866 section 6.6
+export const codecsText = (codecs: CallRecordCodec[]): string =>
+  codecs
+    .map(
+      (c) =>
+        `${c.encoding}/${c.clock_rate}${c.channels && c.channels > 1 ? `/${c.channels}` : ""}`,
+    )
+    .join(", ") || "—";
 
 export const formatDuration = (ms: number): string => {
   const total = Math.round(ms / 1000);

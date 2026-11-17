@@ -20,7 +20,8 @@ type Exchange struct {
 
 	Value any
 
-	ended bool
+	answers map[*pair][]byte
+	ended   bool
 }
 
 // RFC 7092 section 3.1
@@ -51,11 +52,22 @@ func (p *Relay) begin(x *Exchange) ([]byte, error) {
 }
 
 func (p *Relay) answerOf(x *Exchange, pr *pair, sdp []byte) ([]byte, error) {
-	if p.cfg.Media == nil {
-		return sdp, nil
+	answer := sdp
+
+	if p.cfg.Media != nil {
+		var err error
+		if answer, err = p.cfg.Media.Answer(x, pr.b, sdp); err != nil {
+			return nil, err
+		}
 	}
 
-	return p.cfg.Media.Answer(x, pr.b, sdp)
+	if x.answers == nil {
+		x.answers = map[*pair][]byte{}
+	}
+
+	x.answers[pr] = sdp
+
+	return answer, nil
 }
 
 func (p *Relay) end(x *Exchange, pr *pair) {
@@ -70,6 +82,10 @@ func (p *Relay) end(x *Exchange, pr *pair) {
 			p.open = append(p.open[:i], p.open[i+1:]...)
 			break
 		}
+	}
+
+	if answer, ok := x.answers[pr]; ok && pr != nil && p.cfg.Negotiated != nil {
+		p.cfg.Negotiated(x, answer)
 	}
 
 	if p.cfg.Media == nil {

@@ -32,6 +32,8 @@ type RelayConfig struct {
 
 	Final func(res *sip.Response, err error) ua.Reply
 
+	Negotiated func(x *Exchange, answer []byte)
+
 	Failover func(ctx context.Context, failed *Leg, f Failure) *sip.Request
 }
 

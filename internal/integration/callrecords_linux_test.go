@@ -92,6 +92,11 @@ func TestCallRecordOfACall(t *testing.T) {
 	if !slices.Contains(r.Media, "audio") || r.DurationMS == nil || r.DeliveryEndAt == "" {
 		t.Errorf("media %v, duration %v; want an audio call that lasted", r.Media, r.DurationMS)
 	}
+
+	want := []api.CallRecordCodec{{Media: "audio", Encoding: "AMR-WB", ClockRate: 16000, Channels: 1}}
+	if !slices.Equal(r.Codecs, want) {
+		t.Errorf("codecs %+v, want %+v", r.Codecs, want)
+	}
 }
 
 func TestCallRecordOfABusyCall(t *testing.T) {

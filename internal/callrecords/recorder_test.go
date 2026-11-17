@@ -46,6 +46,12 @@ func newTestRecorder(t *testing.T, store Store) *Recorder {
 	return r
 }
 
+var (
+	amrWB = db.Codec{Media: "audio", Encoding: "AMR-WB", ClockRate: 16000, Channels: 1}
+	evs   = db.Codec{Media: "audio", Encoding: "EVS", ClockRate: 16000, Channels: 1}
+	h264  = db.Codec{Media: "video", Encoding: "H264", ClockRate: 90000}
+)
+
 func openDB(t *testing.T) *db.DB {
 	t.Helper()
 
@@ -55,6 +61,12 @@ func openDB(t *testing.T) *db.DB {
 	}
 
 	t.Cleanup(func() { _ = d.Close() })
+
+	for target := d.Schema() + 1; target <= db.SchemaVersion(); target++ {
+		if err := d.Migrate(t.Context(), target); err != nil {
+			t.Fatalf("Migrate(%d): %v", target, err)
+		}
+	}
 
 	return d
 }
@@ -108,9 +120,12 @@ func TestRecorder(t *testing.T) {
 				})
 				r.Alerted(icid)
 				r.Media(icid, []string{"audio"})
+				r.Codecs(icid, []db.Codec{amrWB})
 				r.Reached(icid, "bob@example.org")
 				r.Answered(icid, 200)
 				r.Media(icid, []string{"audio", "video"})
+				r.Codecs(icid, []db.Codec{{Media: "audio", Encoding: "amr-wb", ClockRate: 16000, Channels: 1}, h264})
+				r.Codecs(icid, []db.Codec{evs})
 				r.Ended(icid, End{Code: 200, By: proxy.Callee, Cause: proxy.EndBye})
 			},
 			want: func(w *db.CallRecord) {
@@ -118,9 +133,10 @@ func TestRecorder(t *testing.T) {
 				w.CalledParty = "tel:+15551230002"
 				w.Alerted = true
 				w.CalleeIMPI = "bob@example.org"
-				w.SIPStatus, w.Outcome, w.DeliveryStartAt = 200, db.OutcomeAnswered, at(6)
+				w.SIPStatus, w.Outcome, w.DeliveryStartAt = 200, db.OutcomeAnswered, at(7)
 				w.Media = []string{"audio", "video"}
-				w.DeliveryEndAt, w.EndedBy = at(8), db.PartyCallee
+				w.Codecs = []db.Codec{amrWB, h264, evs}
+				w.DeliveryEndAt, w.EndedBy = at(11), db.PartyCallee
 			},
 		},
 		{
@@ -789,6 +805,7 @@ func TestNilRecorder(t *testing.T) {
 	r.Alerted("ICID1")
 	r.Answered("ICID1", 200)
 	r.Media("ICID1", nil)
+	r.Codecs("ICID1", nil)
 	r.Released("ICID1")
 	r.Ended("ICID1", End{})
 	r.CloseOpen()
