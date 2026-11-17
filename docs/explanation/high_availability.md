@@ -33,7 +33,7 @@ Observability is per-node: the UI and API show the registrations, live calls and
 
 A phone registers through one node, which serves it. A call to that phone can arrive on any node, which forwards it to the phone's node.
 
-When a node dies, its calls drop. Its phones register again through another node. This requires an HSS that supports IMS restoration.
+When a node dies, its calls drop. Its phones register again through another node. Unless the HSS supports IMS restoration, calls to a phone fail until it has registered again.
 
 ## SIP trunks
 

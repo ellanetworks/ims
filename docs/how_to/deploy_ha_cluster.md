@@ -12,7 +12,6 @@ Ella IMS can be deployed as a high-availability cluster to provide redundancy an
 
     - Three hosts meeting the standard [system requirements](../reference/system_reqs.md).
     - Ella IMS installed on each host via the [Install](install.md) guide, with `cluster.address` set in the configuration file.
-    - An HSS that supports IMS restoration.
 
     ## 1. Start node 1
 
@@ -46,7 +45,6 @@ Ella IMS can be deployed as a high-availability cluster to provide redundancy an
 
     - A Kubernetes cluster with three nodes meeting the [system requirements](../reference/system_reqs.md).
     - A second interface, `eth1`, for each pod, as in [Install](install.md).
-    - An HSS that supports IMS restoration.
 
     ## 1. Deploy
 
