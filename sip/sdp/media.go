@@ -252,6 +252,15 @@ func ParseRTPMap(s string) (RTPMap, error) {
 	return r, nil
 }
 
+// RFC 8866 section 6.6
+func (r RTPMap) Channels() string {
+	if r.Params == "" {
+		return "1"
+	}
+
+	return r.Params
+}
+
 func (r RTPMap) String() string {
 	s := strconv.Itoa(int(r.Payload)) + " " + r.Encoding + "/" + strconv.FormatUint(uint64(r.ClockRate), 10)
 	if r.Params != "" {

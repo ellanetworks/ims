@@ -101,11 +101,12 @@ func (c *call) towardsTrunk(to *b2bua.Leg) bool {
 
 func (b *IBCF) relay(c *call) b2bua.RelayConfig {
 	cfg := b2bua.RelayConfig{
-		Headers:  b2bua.Headers{Sticky: []string{}, Field: c.crosses, Part: crossing},
-		TimerC:   timerC,
-		Request:  c.request,
-		Response: c.response,
-		Final:    c.final,
+		Headers:    b2bua.Headers{Sticky: []string{}, Field: c.crosses, Part: crossing},
+		TimerC:     timerC,
+		Request:    c.request,
+		Response:   c.response,
+		Final:      c.final,
+		Negotiated: c.negotiated,
 	}
 
 	if c.media != nil {
@@ -315,17 +316,18 @@ func (c *call) progressed(res *sip.Response, code int) {
 		c.b.cfg.Records.Alerted(c.icid)
 	case code/100 == 2:
 		c.b.cfg.Records.Answered(c.icid, code)
-
-		offer, offered, _ := c.initial.Content().FindFunc(sip.BodyPart.IsSession)
-		if !offered {
-			return
-		}
-
-		if part, ok, _ := res.Content().FindFunc(sip.BodyPart.IsSession); ok {
-			c.b.cfg.Records.Media(c.icid, callrecords.AcceptedMedia(part.Body))
-			c.b.cfg.Records.Codecs(c.icid, callrecords.AcceptedCodecs(offer.Body, part.Body))
-		}
 	}
+}
+
+// RFC 3264 section 6
+func (c *call) negotiated(x *b2bua.Exchange, answer []byte) {
+	if c.outbound {
+		return
+	}
+
+	media, codecs := callrecords.Negotiated(x.Offer, answer)
+	c.b.cfg.Records.Media(c.icid, media)
+	c.b.cfg.Records.Codecs(c.icid, codecs)
 }
 
 // RFC 3261 section 8.1.3.5

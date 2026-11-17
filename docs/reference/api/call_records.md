@@ -45,7 +45,7 @@ This path returns the list of call records, most recently requested first.
 | `ended_by`          | string  | `caller`, `callee` or `network`. |
 | `alerted`           | boolean | Whether a 180 reached the caller. |
 | `media`             | array   | Media types of the accepted m-lines. |
-| `codecs`            | array   | Codecs of the accepted RTP m-lines (§5.1.3.1.47), each in both the SDP offer and the SDP answer, from every offer-answer exchange of the call, once each, in the order first answered. `telephone-event` and `CN` are left out. Empty for calls recorded before the cluster's `schema` is 2. |
+| `codecs`            | array   | Codecs of the accepted RTP m-lines (§5.1.3.1.47), each in both the SDP offer and the SDP answer, from every offer-answer exchange of the call, once each, in the order first answered. `telephone-event`, `CN`, `rtx`, `red`, `ulpfec` and `flexfec` are left out. Empty for calls recorded before the cluster's `schema` is 2. |
 | `codecs[].media`    | string  | Media type of the m-line. |
 | `codecs[].encoding` | string  | Encoding name of the `a=rtpmap` attribute, or of the static payload type. |
 | `codecs[].clock_rate` | int   | Clock rate, in Hz. |

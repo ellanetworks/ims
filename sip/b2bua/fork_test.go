@@ -30,7 +30,13 @@ func forkedCallOf(t *testing.T) (f forked) {
 func forkedParts(t *testing.T) (alice, bob *party, b *b2b, first, fork *ua.Request, a1, a2 *ua.Session) {
 	t.Helper()
 
-	alice, bob, b = newCall(t, b2bua.RelayConfig{})
+	return forkedPartsWith(t, b2bua.RelayConfig{})
+}
+
+func forkedPartsWith(t *testing.T, cfg b2bua.RelayConfig) (alice, bob *party, b *b2b, first, fork *ua.Request, a1, a2 *ua.Session) {
+	t.Helper()
+
+	alice, bob, b = newCall(t, cfg)
 	alice.invite(b.uri(), "offer-1", alice.handler())
 
 	first = bob.next("invite").req

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ellanetworks/ims/internal/db"
+	"github.com/ellanetworks/ims/mcptt/amr"
 	"github.com/ellanetworks/ims/sip/proxy"
 	"github.com/ellanetworks/ims/sip/sdp"
 )
@@ -54,54 +55,53 @@ func Duration(r db.CallRecord) (time.Duration, bool) {
 }
 
 // RFC 3264 section 6
-func AcceptedMedia(answer []byte) []string {
-	s, err := sdp.Parse(answer)
-	if err != nil {
-		return nil
-	}
-
-	var types []string
-
-	for _, m := range s.Media {
-		if m.Port() != 0 && !slices.Contains(types, m.Type()) {
-			types = append(types, m.Type())
-		}
-	}
-
-	return types
-}
-
 // RFC 3264 section 6.1
-// RFC 8866 section 6.6
-func AcceptedCodecs(offer, answer []byte) []db.Codec {
-	o, err := sdp.Parse(offer)
-	if err != nil {
-		return nil
-	}
-
+func Negotiated(offer, answer []byte) ([]string, []db.Codec) {
 	a, err := sdp.Parse(answer)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
-	var codecs []db.Codec
+	o, err := sdp.Parse(offer)
+	if err != nil {
+		o = &sdp.Session{}
+	}
+
+	var (
+		media  []string
+		codecs []db.Codec
+	)
 
 	for i, m := range a.Media {
-		if i >= len(o.Media) || m.Port() == 0 {
+		if !accepted(m) {
+			continue
+		}
+
+		if !slices.Contains(media, m.Type()) {
+			media = append(media, m.Type())
+		}
+
+		if i >= len(o.Media) {
 			continue
 		}
 
 		offered := codecsOf(o.Media[i])
 
 		for _, c := range codecsOf(m) {
-			same := func(d db.Codec) bool { return sameCodec(c, d) }
-			if slices.ContainsFunc(offered, same) && !slices.ContainsFunc(codecs, same) {
-				codecs = append(codecs, c)
+			if slices.ContainsFunc(offered, c.compatible) && !slices.ContainsFunc(codecs, func(d db.Codec) bool { return sameCodec(c.Codec, d) }) {
+				codecs = append(codecs, c.Codec)
 			}
 		}
 	}
 
-	return codecs
+	return media, codecs
+}
+
+// RFC 3264 section 6
+// RFC 8843 section 7.3
+// RFC 8843 section 7.3.3
+func accepted(m *sdp.Media) bool {
+	return m.Port() != 0 || m.HasAttr("bundle-only")
 }
 
 // RFC 4855 section 3
@@ -110,34 +110,55 @@ func sameCodec(a, b db.Codec) bool {
 		a.Channels == b.Channels
 }
 
+type format struct {
+	db.Codec
+	fmtp sdp.FormatParams
+}
+
+// RFC 4867 section 8.3.1
+func (f format) compatible(g format) bool {
+	if !sameCodec(f.Codec, g.Codec) {
+		return false
+	}
+
+	if _, ok := amr.Of(sdp.RTPMap{Encoding: f.Encoding, ClockRate: f.ClockRate}); ok {
+		return amr.SameConfiguration(f.fmtp, g.fmtp)
+	}
+
+	return true
+}
+
 // RFC 4733 section 7.1.1
 // RFC 3389 section 6.1
-func codecsOf(m *sdp.Media) []db.Codec {
+// RFC 4588 section 8.6
+// RFC 2198 section 5
+// RFC 5109 section 14.1
+// RFC 8627 section 5.2
+var notCodecs = []string{"telephone-event", "CN", "rtx", "red", "ulpfec", "flexfec"}
+
+func codecsOf(m *sdp.Media) []format {
 	maps, _ := m.Codecs()
 
-	var out []db.Codec
+	var out []format
 
 	for _, r := range maps {
-		if strings.EqualFold(r.Encoding, "telephone-event") || strings.EqualFold(r.Encoding, "CN") {
+		if slices.ContainsFunc(notCodecs, func(n string) bool { return strings.EqualFold(r.Encoding, n) }) {
 			continue
 		}
 
 		c := db.Codec{Media: m.Type(), Encoding: r.Encoding, ClockRate: r.ClockRate}
 
 		if c.Media == "audio" {
-			c.Channels = 1
-
-			if r.Params != "" {
-				n, err := strconv.Atoi(r.Params)
-				if err != nil || n < 1 {
-					continue
-				}
-
-				c.Channels = n
+			n, err := strconv.Atoi(r.Channels())
+			if err != nil || n < 1 {
+				continue
 			}
+
+			c.Channels = n
 		}
 
-		out = append(out, c)
+		fmtp, _ := m.Fmtp(strconv.Itoa(int(r.Payload)))
+		out = append(out, format{Codec: c, fmtp: sdp.ParseFormatParams(fmtp)})
 	}
 
 	return out

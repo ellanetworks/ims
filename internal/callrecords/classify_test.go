@@ -92,18 +92,27 @@ func TestDuration(t *testing.T) {
 	}
 }
 
-func TestAcceptedMedia(t *testing.T) {
+func TestNegotiatedMedia(t *testing.T) {
 	answer := strings.Join([]string{
 		"v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0",
 		"m=audio 5000 RTP/AVP 116", "m=video 0 RTP/AVP 99", "m=audio 5002 RTP/AVP 116", "m=text 5004 RTP/AVP 98",
 	}, "\r\n") + "\r\n"
 
-	if got := AcceptedMedia([]byte(answer)); !slices.Equal(got, []string{"audio", "text"}) {
-		t.Fatalf("AcceptedMedia = %v, want audio and text, not the rejected video", got)
+	if got, _ := Negotiated(nil, []byte(answer)); !slices.Equal(got, []string{"audio", "text"}) {
+		t.Fatalf("Negotiated media = %v, want audio and text, not the rejected video", got)
 	}
 
-	if got := AcceptedMedia([]byte("not SDP")); got != nil {
-		t.Fatalf("AcceptedMedia of no SDP = %v", got)
+	if got, _ := Negotiated(nil, []byte("not SDP")); got != nil {
+		t.Fatalf("Negotiated media of no SDP = %v", got)
+	}
+
+	bundled := strings.Join([]string{
+		"v=0", "o=- 1 1 IN IP4 10.0.0.2", "s=-", "c=IN IP4 10.0.0.2", "t=0 0", "a=group:BUNDLE a v",
+		"m=audio 5000 RTP/AVP 116", "a=mid:a", "m=video 0 RTP/AVP 99", "a=mid:v", "a=bundle-only",
+	}, "\r\n") + "\r\n"
+
+	if got, _ := Negotiated(nil, []byte(bundled)); !slices.Equal(got, []string{"audio", "video"}) {
+		t.Fatalf("Negotiated media = %v, want audio and the bundle-only video", got)
 	}
 }
 
@@ -113,7 +122,7 @@ func sdpOf(media ...string) []byte {
 	}, media...), "\r\n") + "\r\n")
 }
 
-func TestAcceptedCodecs(t *testing.T) {
+func TestNegotiatedCodecs(t *testing.T) {
 	volteOffer := sdpOf(
 		"m=audio 5000 RTP/AVP 116 107 97 111 110",
 		"a=rtpmap:116 AMR-WB/16000/1", "a=fmtp:116 mode-change-capability=2;max-red=0",
@@ -207,6 +216,34 @@ func TestAcceptedCodecs(t *testing.T) {
 			answer: sdpOf("m=audio 0 RTP/AVP 0", "m=audio 6000 RTP/AVP 0"),
 		},
 		{
+			name:   "AMR-WB in a different payload format configuration",
+			offer:  sdpOf("m=audio 5000 RTP/AVP 107", "a=rtpmap:107 AMR-WB/16000", "a=fmtp:107 octet-align=1"),
+			answer: sdpOf("m=audio 6000 RTP/AVP 107", "a=rtpmap:107 AMR-WB/16000"),
+		},
+		{
+			name: "AMR-WB in the octet-aligned configuration",
+			offer: sdpOf("m=audio 5000 RTP/AVP 116 107", "a=rtpmap:116 AMR-WB/16000", "a=rtpmap:107 AMR-WB/16000",
+				"a=fmtp:107 octet-align=1; mode-change-capability=2"),
+			answer: sdpOf("m=audio 6000 RTP/AVP 107", "a=rtpmap:107 AMR-WB/16000", "a=fmtp:107 octet-align=1"),
+			want:   []db.Codec{amrWB},
+		},
+		{
+			name: "retransmission, redundancy and FEC left out",
+			offer: sdpOf("m=video 5000 RTP/AVPF 99 97 98 100 101", "a=rtpmap:99 H264/90000", "a=rtpmap:97 rtx/90000",
+				"a=fmtp:97 apt=99", "a=rtpmap:98 red/90000", "a=rtpmap:100 ulpfec/90000", "a=rtpmap:101 flexfec/90000"),
+			answer: sdpOf("m=video 6000 RTP/AVPF 99 97 98 100 101", "a=rtpmap:99 H264/90000", "a=rtpmap:97 rtx/90000",
+				"a=fmtp:97 apt=99", "a=rtpmap:98 red/90000", "a=rtpmap:100 ulpfec/90000", "a=rtpmap:101 flexfec/90000"),
+			want: []db.Codec{{Media: "video", Encoding: "H264", ClockRate: 90000}},
+		},
+		{
+			name: "a bundle-only stream",
+			offer: sdpOf("a=group:BUNDLE a v", "m=audio 5000 RTP/AVP 116", "a=mid:a", "a=rtpmap:116 AMR-WB/16000",
+				"m=video 0 RTP/AVP 99", "a=mid:v", "a=bundle-only", "a=rtpmap:99 H264/90000"),
+			answer: sdpOf("a=group:BUNDLE a v", "m=audio 6000 RTP/AVP 116", "a=mid:a", "a=rtpmap:116 AMR-WB/16000",
+				"m=video 0 RTP/AVP 99", "a=mid:v", "a=bundle-only", "a=rtpmap:99 H264/90000"),
+			want: []db.Codec{amrWB, {Media: "video", Encoding: "H264", ClockRate: 90000}},
+		},
+		{
 			name:   "no SDP answer",
 			offer:  volteOffer,
 			answer: []byte("not SDP"),
@@ -219,8 +256,8 @@ func TestAcceptedCodecs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := AcceptedCodecs(tt.offer, tt.answer); !slices.Equal(got, tt.want) {
-				t.Fatalf("AcceptedCodecs = %+v, want %+v", got, tt.want)
+			if _, got := Negotiated(tt.offer, tt.answer); !slices.Equal(got, tt.want) {
+				t.Fatalf("Negotiated codecs = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
