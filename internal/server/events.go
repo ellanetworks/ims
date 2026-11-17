@@ -15,24 +15,39 @@ type events struct {
 	wake    chan struct{}
 }
 
-func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oidc.Live, secrets *secrets) func() {
+func subscribeEvents(database *db.DB) *events {
 	e := &events{wake: make(chan struct{}, 1)}
+	database.OnEvents(e.add)
 
-	database.OnEvents(func(ev db.Events) {
-		e.mu.Lock()
-		e.pending.Settings = e.pending.Settings || ev.Settings || ev.Replaced
-		e.pending.OIDC = e.pending.OIDC || ev.OIDC || ev.Replaced
-		e.pending.MCPTT = e.pending.MCPTT || ev.MCPTT || ev.Replaced
-		e.pending.Replaced = e.pending.Replaced || ev.Replaced
-		e.pending.Members = e.pending.Members || ev.Members
-		e.mu.Unlock()
+	return e
+}
 
-		select {
-		case e.wake <- struct{}{}:
-		default:
-		}
-	})
+func (e *events) add(ev db.Events) {
+	e.mu.Lock()
+	e.pending.Settings = e.pending.Settings || ev.Settings || ev.Replaced
+	e.pending.OIDC = e.pending.OIDC || ev.OIDC || ev.Replaced
+	e.pending.MCPTT = e.pending.MCPTT || ev.MCPTT || ev.Replaced
+	e.pending.Replaced = e.pending.Replaced || ev.Replaced
+	e.pending.Members = e.pending.Members || ev.Members
+	e.mu.Unlock()
 
+	select {
+	case e.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (e *events) take() db.Events {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ev := e.pending
+	e.pending = db.Events{}
+
+	return ev
+}
+
+func (s *Server) followEvents(ctx context.Context, e *events, database *db.DB, oidcLive *oidc.Live, secrets *secrets) func() {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
@@ -46,12 +61,7 @@ func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oi
 			case <-e.wake:
 			}
 
-			e.mu.Lock()
-			ev := e.pending
-			e.pending = db.Events{}
-			e.mu.Unlock()
-
-			s.applyEvents(ctx, ev, database, oidcLive, secrets)
+			s.applyEvents(ctx, e.take(), database, oidcLive, secrets)
 		}
 	}()
 
@@ -62,7 +72,7 @@ func (s *Server) followEvents(ctx context.Context, database *db.DB, oidcLive *oi
 }
 
 func (s *Server) applyEvents(ctx context.Context, ev db.Events, database *db.DB, oidcLive *oidc.Live, secrets *secrets) {
-	if (ev.Members || ev.Replaced) && s.drain != nil {
+	if ev.Members || ev.Replaced {
 		s.drain.changed()
 	}
 
@@ -81,7 +91,7 @@ func (s *Server) applyEvents(ctx context.Context, ev db.Events, database *db.DB,
 		}
 	}
 
-	if (ev.Members || ev.Replaced || ev.Settings) && s.peers != nil {
+	if ev.Members || ev.Replaced || ev.Settings {
 		s.peers.refresh(ctx)
 	}
 

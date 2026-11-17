@@ -43,6 +43,7 @@ type DB struct {
 	appliedCh   chan struct{}
 	leaderTime  atomic.Int64
 	schema      atomic.Int64
+	subsMu      sync.Mutex
 	subscribers []func(Events)
 }
 
