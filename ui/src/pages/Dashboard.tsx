@@ -483,14 +483,20 @@ function trunksHealth(trunks: SIPTrunk[]): {
     return { hint: "No SIP trunks are configured.", value: "None" };
   }
   const up = trunks.filter((t) => t.status.state === "up").length;
-  const down = trunks.filter((t) => t.status.state !== "up");
+  const down = trunks.filter(
+    (t) => t.status.state === "down" || t.status.state === "unusable",
+  );
   const color =
-    down.length === 0 ? undefined : up === 0 ? "error.main" : "warning.main";
+    down.length === 0
+      ? undefined
+      : down.length === trunks.length
+        ? "error.main"
+        : "warning.main";
   return {
     hint:
       down.length === 0
         ? "Trunks answering keepalives out of all trunks."
-        : `Not up: ${down.map((t) => t.name).join(", ")}.`,
+        : `Down: ${down.map((t) => t.name).join(", ")}.`,
     value: <Ratio value={`${up}/${trunks.length}`} color={color} />,
     caption: "Up",
   };

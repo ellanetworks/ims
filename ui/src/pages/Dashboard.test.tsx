@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import Dashboard, { formatBytes } from "@/pages/Dashboard";
 import type { CallRecordCounts } from "@/queries/callRecords";
@@ -21,6 +21,8 @@ ellaims_trunk_active_calls{trunk="twilio"} 1
 `;
 
 const ALERT_COLOR = "rgb(211, 47, 47)";
+
+const WARNING_COLOR = "rgb(237, 108, 2)";
 
 const TRUNKS = [
   {
@@ -148,8 +150,20 @@ const findPanel = async (name: string) => {
   return panel(name);
 };
 
-const isAlert = (element: HTMLElement) =>
-  getComputedStyle(element).color === ALERT_COLOR;
+const colorOf = (element: HTMLElement) => getComputedStyle(element).color;
+
+const stat = (label: string) =>
+  within(panel("Now")).getByText(label).parentElement as HTMLElement;
+
+const outcomeRows = (table: HTMLElement) =>
+  within(table)
+    .getAllByRole("row")
+    .slice(1)
+    .map((row) =>
+      within(row)
+        .getAllByRole("cell")
+        .map((cell) => cell.textContent),
+    );
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -176,18 +190,34 @@ describe("Dashboard", () => {
     );
 
     const peerCard = await findPanel("Diameter Peers");
-    const peerCount = await within(peerCard).findByText("2");
-    expect(isAlert(peerCount)).toBe(true);
+    const peerCount = await within(peerCard).findByText("1/2");
+    expect(colorOf(peerCount)).toBe(WARNING_COLOR);
+    expect(peerCard).toHaveTextContent("Open · HSS open");
     expect(peerCard.closest("a")).toHaveAttribute("href", "/cores");
   });
 
-  it("shows the number of SIP trunks", async () => {
+  it("alerts when the HSS is down", async () => {
+    serve({
+      peers: [
+        peer({ status: { state: "down", error: "connection refused" } }),
+        { ...smsc, status: { state: "open" } },
+      ],
+    });
+    renderDashboard();
+
+    const peerCard = await findPanel("Diameter Peers");
+    const peerCount = await within(peerCard).findByText("1/2");
+    expect(colorOf(peerCount)).toBe(ALERT_COLOR);
+    expect(peerCard).toHaveTextContent("Open · HSS down");
+  });
+
+  it("shows the SIP trunks that are up", async () => {
     serve();
     renderDashboard();
 
     const trunkCard = await findPanel("SIP Trunks");
-    const trunkCount = await within(trunkCard).findByText("2");
-    expect(isAlert(trunkCount)).toBe(true);
+    const trunkCount = await within(trunkCard).findByText("1/2");
+    expect(colorOf(trunkCount)).toBe(WARNING_COLOR);
     expect(trunkCard.closest("a")).toHaveAttribute("href", "/sip-trunks");
 
     fireEvent.click(trunkCount);
@@ -196,7 +226,7 @@ describe("Dashboard", () => {
     );
   });
 
-  it("shows the counts without alert when all are up", async () => {
+  it("shows the counts without alert when none are down", async () => {
     serve({
       peers: [peer()],
       trunks: [TRUNKS[0], { ...TRUNKS[1], status: { state: "unknown" } }],
@@ -204,43 +234,31 @@ describe("Dashboard", () => {
     renderDashboard();
 
     const trunkCount = await within(await findPanel("SIP Trunks")).findByText(
-      "2",
+      "1/2",
     );
-    expect(isAlert(trunkCount)).toBe(false);
-    const peerCount = await within(panel("Diameter Peers")).findByText("1");
-    expect(isAlert(peerCount)).toBe(false);
+    expect(colorOf(trunkCount)).not.toBe(WARNING_COLOR);
+    expect(colorOf(trunkCount)).not.toBe(ALERT_COLOR);
+    const peerCount = await within(panel("Diameter Peers")).findByText("1/1");
+    expect(colorOf(peerCount)).not.toBe(WARNING_COLOR);
+    expect(colorOf(peerCount)).not.toBe(ALERT_COLOR);
   });
 
   it("counts the active trunk calls", async () => {
     serve();
     renderDashboard();
 
-    const trunkCalls = await findPanel("Active Trunk Calls");
-    expect(await within(trunkCalls).findByText("3")).toBeInTheDocument();
-    expect(trunkCalls.closest("a")).toHaveAttribute("href", "/calls");
-
-    fireEvent.click(within(trunkCalls).getByText("3"));
-    expect(await screen.findByTestId("location")).toHaveTextContent("/calls");
+    await within(await findPanel("Now")).findByText("1,234");
+    expect(stat("Trunk Calls")).toHaveTextContent("3");
   });
 
-  it("hides the SIP trunks without trunks", async () => {
+  it("shows no SIP trunks and no trunk calls without trunks", async () => {
     serve({ trunks: [] });
     renderDashboard();
 
-    await within(await findPanel("Active Calls")).findByText("7");
-    await within(panel("Diameter Peers")).findByText("2");
-    await waitFor(() =>
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.some(([url]) => String(url).endsWith("/sip-trunks")),
-      ).toBe(true),
-    );
+    await within(await findPanel("Now")).findByText("1,234");
+    await within(panel("SIP Trunks")).findByText("None");
     expect(
-      screen.queryByRole("heading", { name: "SIP Trunks" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "Active Trunk Calls" }),
+      within(panel("Now")).queryByText("Trunk Calls"),
     ).not.toBeInTheDocument();
   });
 
@@ -250,33 +268,30 @@ describe("Dashboard", () => {
 
     const peerCount = await within(
       await findPanel("Diameter Peers"),
-    ).findByText("0");
-    expect(isAlert(peerCount)).toBe(false);
+    ).findByText("None");
+    expect(colorOf(peerCount)).not.toBe(ALERT_COLOR);
   });
 
   it("shows traffic and system figures from the metrics", async () => {
     serve();
     renderDashboard();
 
-    const registered = await findPanel("Registered Subscribers");
-    expect(await within(registered).findByText("1,234")).toBeInTheDocument();
-    expect(registered.closest("a")).toHaveAttribute("href", "/registrations");
-
-    const active = panel("Active Calls");
-    expect(within(active).getByText("7")).toBeInTheDocument();
-    expect(active.closest("a")).toHaveAttribute("href", "/calls");
+    await within(await findPanel("Now")).findByText("1,234");
+    expect(stat("Registered")).toHaveTextContent("1,234");
+    expect(stat("Active Calls")).toHaveTextContent("7");
 
     expect(within(panel("Process Memory")).getByText("64 MiB")).toBeVisible();
     expect(within(panel("Database Size")).getByText("1.5 MiB")).toBeVisible();
-    expect(within(panel("Up Since")).getByText(/2023/)).toBeVisible();
+    expect(within(panel("Uptime")).getByText(/^\d+ d \d+ h$/)).toBeVisible();
   });
 
   it("shows N/A for a metric the IMS does not expose", async () => {
     serve({ metrics: () => new Response("", { status: 200 }) });
     renderDashboard();
 
-    const registered = await findPanel("Registered Subscribers");
-    expect(await within(registered).findByText("N/A")).toBeInTheDocument();
+    await within(await findPanel("Now")).findAllByText("N/A");
+    expect(stat("Registered")).toHaveTextContent("N/A");
+    expect(stat("Active Calls")).toHaveTextContent("N/A");
   });
 
   it("says when the metrics fail to load", async () => {
@@ -300,14 +315,13 @@ describe("Dashboard", () => {
     const table = await screen.findByRole("table", {
       name: "Calls in the last 24 hours",
     });
-    const rows = await within(table).findAllByRole("row");
-    expect(rows.slice(1).map((r) => r.textContent)).toEqual([
-      "answered60",
-      "cancelled10",
-      "busy20",
-      "no answer5",
-      "failed5",
-      "Total100",
+    await within(table).findByText("Answered");
+    expect(outcomeRows(table)).toEqual([
+      ["Answered", "60", "60%"],
+      ["Not Answered", "35", "35%"],
+      ["Unreachable", "0", "0%"],
+      ["Failed", "5", "5%"],
+      ["Total", "100", ""],
     ]);
 
     const request = urls.find(
@@ -319,36 +333,32 @@ describe("Dashboard", () => {
     expect(request?.searchParams.has("end")).toBe(false);
 
     expect(
-      within(panel("Calls in the Last 24 Hours")).getByRole("link", {
-        name: "Calls in the Last 24 Hours",
+      within(panel("Last 24 Hours")).getByRole("link", {
+        name: "Last 24 Hours",
       }),
     ).toHaveAttribute("href", "/calls?range=24h");
-    expect(within(rows[3]).getByRole("link")).toHaveAttribute(
+    expect(
+      within(table).getByText("Not Answered").closest("a"),
+    ).toHaveAttribute(
       "href",
-      "/calls?outcome=busy&range=24h",
+      "/calls?outcome=no_answer,busy,cancelled,rejected&range=24h",
     );
   });
 
-  it("always shows the answered and the failed calls", async () => {
+  it("shows every outcome group, even without calls", async () => {
     serve({ counts: { ...counts, answered: 0, failed: 0, busy: 3 } });
     renderDashboard();
 
     const table = await screen.findByRole("table", {
       name: "Calls in the last 24 hours",
     });
-    await within(table).findByText("busy");
-    expect(
-      within(table)
-        .getAllByRole("row")
-        .slice(1)
-        .map((r) => r.textContent),
-    ).toEqual([
-      "answered0",
-      "cancelled10",
-      "busy3",
-      "no answer5",
-      "failed0",
-      "Total18",
+    await within(table).findByText("Answered");
+    expect(outcomeRows(table)).toEqual([
+      ["Answered", "0", "0%"],
+      ["Not Answered", "18", "100%"],
+      ["Unreachable", "0", "0%"],
+      ["Failed", "0", "0%"],
+      ["Total", "18", ""],
     ]);
   });
 
@@ -401,13 +411,13 @@ describe("Dashboard", () => {
 
     const sms = await findPanel("SMS over IP");
     expect(await within(sms).findByText("Disabled")).toBeInTheDocument();
-    expect(
-      within(sms).getByText("No IP-SM-GW number: phones get no SMS over IP."),
-    ).toBeInTheDocument();
+    expect(within(sms).queryByText("IP-SM-GW Number")).not.toBeInTheDocument();
 
     const ptt = await findPanel("Push-to-Talk");
     expect(await within(ptt).findByText("Disabled")).toBeInTheDocument();
-    expect(ptt).toHaveTextContent("No mcptt section in ims.yaml.");
+    expect(
+      within(ptt).queryByText("Registered Clients"),
+    ).not.toBeInTheDocument();
     expect(urls.some((u) => u.pathname.startsWith("/api/v1/mcptt/"))).toBe(
       false,
     );
