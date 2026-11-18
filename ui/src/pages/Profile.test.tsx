@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import Profile from "@/pages/Profile";
 import type { APIToken } from "@/queries/api_tokens";
 import { page } from "@/test/fixtures";
@@ -11,6 +12,13 @@ const token: APIToken = {
   created_at: "2026-09-29T10:00:00.000Z",
   last_used_at: "2026-09-30T10:00:00.000Z",
 };
+
+const renderProfile = (path = "/profile") =>
+  renderWithClient(
+    <MemoryRouter initialEntries={[path]}>
+      <Profile />
+    </MemoryRouter>,
+  );
 
 const serve = () => {
   const calls: { method: string; path: string; body?: unknown }[] = [];
@@ -73,7 +81,7 @@ afterEach(() => {
 describe("Profile", () => {
   it("shows the account and its API tokens", async () => {
     serve();
-    renderWithClient(<Profile />);
+    renderProfile();
 
     expect(await screen.findByText("admin@example.com")).toBeInTheDocument();
     expect(screen.getByText("Admin")).toBeInTheDocument();
@@ -86,7 +94,7 @@ describe("Profile", () => {
 
   it("creates an API token, and shows it once", async () => {
     const calls = serve();
-    renderWithClient(<Profile />);
+    renderProfile();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Create Token" }),
@@ -113,7 +121,7 @@ describe("Profile", () => {
 
   it("deletes an API token after confirmation", async () => {
     const calls = serve();
-    renderWithClient(<Profile />);
+    renderProfile();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete OTA platform" }),
@@ -134,7 +142,7 @@ describe("Profile", () => {
 
   it("changes the password with the current one", async () => {
     const calls = serve();
-    renderWithClient(<Profile />);
+    renderProfile();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Change Password" }),
@@ -157,7 +165,7 @@ describe("Profile", () => {
 
   it("shows a wrong current password, and keeps the dialog", async () => {
     const calls = serve();
-    renderWithClient(<Profile />);
+    renderProfile();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Change Password" }),
@@ -190,7 +198,7 @@ describe("Profile notifications", () => {
         }),
       ),
     );
-    renderWithClient(<Profile />);
+    renderProfile();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete OTA platform" }),
@@ -223,7 +231,7 @@ describe("Profile notifications", () => {
         }),
       ),
     );
-    renderWithClient(<Profile />);
+    renderProfile();
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Change Password" }),
@@ -240,5 +248,75 @@ describe("Profile notifications", () => {
         within(dialog).queryByText(/Current password is incorrect/),
       ).not.toBeInTheDocument(),
     );
+  });
+});
+
+describe("Profile single sign-on link", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+  });
+
+  const serveLink = (user: Record<string, unknown>) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        stubApi({
+          "/api/v1/users/me": () =>
+            json(200, {
+              result: {
+                email: "nm@example.com",
+                role_id: 3,
+                password_set: true,
+                ...user,
+              },
+            }),
+          "/api/v1/users/me/api-tokens": () => json(200, { result: page([]) }),
+          "/api/v1/auth/oidc": () =>
+            json(200, { result: { enabled: true, display_name: "Keycloak" } }),
+        }),
+      ),
+    );
+
+  it("offers to link an account that is not linked", async () => {
+    serveLink({ oidc_linked: false });
+    renderProfile();
+
+    const link = await screen.findByRole("link", {
+      name: "Link Keycloak account",
+    });
+    expect(link).toHaveAttribute("href", "/api/v1/auth/oidc/login?link=1");
+  });
+
+  it("does not offer to link a linked account", async () => {
+    serveLink({ oidc_linked: true });
+    renderProfile();
+
+    expect(await screen.findByText("nm@example.com")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Link Keycloak account/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says why a link failed", async () => {
+    serveLink({ oidc_linked: false });
+    renderProfile("/profile?error=linked_elsewhere");
+
+    expect(
+      await screen.findByText(
+        "That account at your identity provider, or yours, is already linked.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says a link succeeded", async () => {
+    sessionStorage.setItem("ims.oidcLinking", "1");
+    serveLink({ oidc_linked: true });
+    renderProfile();
+
+    expect(
+      await screen.findByText(/Your account is linked/),
+    ).toBeInTheDocument();
+    expect(sessionStorage.getItem("ims.oidcLinking")).toBeNull();
   });
 });

@@ -26,7 +26,6 @@ export const roleDescriptions: Record<RoleID, string> = {
 export interface User {
   email: string;
   role_id: RoleID;
-  role_pinned: boolean;
   password_set: boolean;
   oidc_linked: boolean;
 }
@@ -61,25 +60,16 @@ export const listUsers = ({ page = 1, perPage = 25 }: PageParams = {}) =>
 
 export const getUser = (email: string) => apiFetch<User>(userPath(email));
 
-export const createUser = (
-  email: string,
-  password: string,
-  roleId: RoleID,
-  rolePinned?: boolean,
-) =>
+export const createUser = (email: string, password: string, roleId: RoleID) =>
   apiFetch<void>("/api/v1/users", {
     method: "POST",
-    body: { email, password, role_id: roleId, role_pinned: rolePinned },
+    body: { email, password, role_id: roleId },
   });
 
-export const updateUserRole = (
-  email: string,
-  roleId: RoleID,
-  rolePinned?: boolean,
-) =>
+export const updateUserRole = (email: string, roleId: RoleID) =>
   apiFetch<void>(userPath(email), {
     method: "PUT",
-    body: { role_id: roleId, role_pinned: rolePinned },
+    body: { role_id: roleId },
   });
 
 export const removeUserPassword = (email: string) =>

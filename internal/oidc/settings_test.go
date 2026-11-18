@@ -122,11 +122,18 @@ func TestValidate(t *testing.T) {
 }
 
 type fakeStore struct {
-	saved db.OIDC
-	err   error
+	saved     db.OIDC
+	err       error
+	normalize func(db.OIDC) db.OIDC
 }
 
-func (s *fakeStore) GetOIDC(context.Context) (db.OIDC, error) { return s.saved, nil }
+func (s *fakeStore) GetOIDC(context.Context) (db.OIDC, error) {
+	if s.normalize != nil {
+		return s.normalize(s.saved), nil
+	}
+
+	return s.saved, nil
+}
 
 func (s *fakeStore) UpdateOIDC(_ context.Context, o db.OIDC) error {
 	if s.err != nil {
@@ -180,6 +187,25 @@ func TestLive(t *testing.T) {
 		if err := l.Update(ctx, o); err != nil || l.Get().ExternalURL != want || store.saved.ExternalURL != want {
 			t.Errorf("Update with external URL %q: %v, stored %q, want %q", in, err, store.saved.ExternalURL, want)
 		}
+	}
+
+	store.normalize = func(o db.OIDC) db.OIDC {
+		o.DisplayName = "stored"
+		return o
+	}
+
+	if err := l.Update(ctx, valid()); err != nil || l.Get().DisplayName != "stored" {
+		t.Fatalf("Update keeps %q, %v, want the stored settings", l.Get().DisplayName, err)
+	}
+
+	store.normalize = nil
+
+	reloaded := valid()
+	reloaded.DisplayName = "reloaded"
+	l.Reload(reloaded)
+
+	if l.Get().DisplayName != "reloaded" {
+		t.Fatalf("after Reload: %q", l.Get().DisplayName)
 	}
 
 	store.err = errors.New("disk full")

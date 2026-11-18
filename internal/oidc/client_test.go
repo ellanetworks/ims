@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+
+	"github.com/ellanetworks/ims/internal/db"
 )
 
 func fields(t *testing.T, s string) map[string]json.RawMessage {
@@ -141,5 +143,44 @@ func TestMergeUserInfo(t *testing.T) {
 			got.GroupsOverage != tc.want.GroupsOverage {
 			t.Errorf("%s: %+v, %v, want %+v", name, got, err, tc.want)
 		}
+	}
+}
+
+func TestRoleFor(t *testing.T) {
+	c := &Client{settings: db.OIDC{GroupRoles: []db.GroupRole{
+		{Group: "viewers", Role: db.RoleReadOnly},
+		{Group: "noc", Role: db.RoleNetworkManager},
+		{Group: "admins", Role: db.RoleAdmin},
+	}}}
+
+	for _, tc := range []struct {
+		groups []string
+		role   db.Role
+	}{
+		{nil, 0},
+		{[]string{"other"}, 0},
+		{[]string{"viewers"}, db.RoleReadOnly},
+		{[]string{"viewers", "noc"}, db.RoleNetworkManager},
+		{[]string{"noc", "viewers", "other"}, db.RoleNetworkManager},
+		{[]string{"admins", "noc", "viewers"}, db.RoleAdmin},
+	} {
+		if role, ok := c.RoleFor(tc.groups); role != tc.role || ok != (tc.role != 0) {
+			t.Errorf("RoleFor(%v) = %d, %v, want %d", tc.groups, role, ok, tc.role)
+		}
+	}
+}
+
+func TestLogoutURL(t *testing.T) {
+	c := &Client{settings: db.OIDC{ExternalURL: "https://ims.example.com", ClientID: "ims"}}
+
+	if got := c.LogoutURL(); got != "" {
+		t.Fatalf("LogoutURL without an end session endpoint = %q", got)
+	}
+
+	c.discovery.EndSessionEndpoint = "https://idp.example.com/logout?realm=ims"
+
+	want := "https://idp.example.com/logout?client_id=ims&post_logout_redirect_uri=https%3A%2F%2Fims.example.com%2Flogin&realm=ims"
+	if got := c.LogoutURL(); got != want {
+		t.Fatalf("LogoutURL = %q, want %q", got, want)
 	}
 }

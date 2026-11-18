@@ -11,7 +11,6 @@ import { json, renderWithClient, stubApi } from "@/test/render";
 const user = (overrides: Partial<User> = {}): User => ({
   email: "nm@example.com",
   role_id: 3,
-  role_pinned: false,
   password_set: true,
   oidc_linked: true,
   ...overrides,
@@ -93,8 +92,8 @@ afterEach(() => {
 });
 
 describe("Users and single sign-on", () => {
-  it("lists how each user signs in, and pinned roles", async () => {
-    serve(user({ password_set: false, role_pinned: true }));
+  it("lists how each user signs in", async () => {
+    serve(user({ password_set: false }));
     renderAt("/users");
 
     const grid = await screen.findByRole("grid", { name: "Users" });
@@ -102,13 +101,10 @@ describe("Users and single sign-on", () => {
     expect(
       within(grid).getByText("Password, Single sign-on"),
     ).toBeInTheDocument();
-    expect(
-      within(grid).getByText("Network Manager (pinned)"),
-    ).toBeInTheDocument();
   });
 
   it.each([
-    ["linked and not pinned", user(), oidcSettings(), true],
+    ["linked", user(), oidcSettings(), true],
     ["not linked", user({ oidc_linked: false }), oidcSettings(), false],
     ["off", user(), oidcSettings({ enabled: false }), false],
     ["without mappings", user(), oidcSettings({ mapped: false }), false],
@@ -133,7 +129,6 @@ describe("Users and single sign-on", () => {
     renderAt("/users/nm%40example.com");
 
     expect(await screen.findByText("From groups")).toBeInTheDocument();
-    expect(screen.queryByText("Pinned")).not.toBeInTheDocument();
   });
 
   it("creates a user without a password", async () => {
@@ -208,41 +203,6 @@ describe("Users and single sign-on", () => {
             email: "pw@example.com",
             password: "correct horse",
             role_id: 2,
-          },
-        },
-      ]),
-    );
-  });
-
-  it("pins the role of a user created with group mapping on", async () => {
-    const calls = serve(user());
-    renderAt("/users");
-
-    fireEvent.click(await screen.findByRole("button", { name: "Create" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Email", { exact: false }), {
-      target: { value: "boss@example.com" },
-    });
-    fireEvent.click(
-      await within(dialog).findByRole("switch", { name: "Password" }),
-    );
-    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: /Role/ }));
-    fireEvent.click(await screen.findByRole("option", { name: /Admin/ }));
-    fireEvent.click(
-      await within(dialog).findByRole("checkbox", { name: /Pin role/ }),
-    );
-    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
-
-    await waitFor(() =>
-      expect(calls).toEqual([
-        {
-          method: "POST",
-          path: "/api/v1/users",
-          body: {
-            email: "boss@example.com",
-            password: "",
-            role_id: 1,
-            role_pinned: true,
           },
         },
       ]),
@@ -352,137 +312,13 @@ describe("Users and single sign-on", () => {
     );
   });
 
-  it("pins the role of a user not linked yet", async () => {
-    const calls = serve(user({ oidc_linked: false }));
-    renderAt("/users/nm%40example.com");
-
-    fireEvent.click(await screen.findByRole("button", { name: "Edit role" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(
-      await within(dialog).findByRole("checkbox", { name: /Pin role/ }),
-    );
-    fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
-
-    await waitFor(() =>
-      expect(calls).toEqual([
-        {
-          method: "PUT",
-          path: "/api/v1/users/nm%40example.com",
-          body: { role_id: 3, role_pinned: true },
-        },
-      ]),
-    );
-  });
-
-  it("pins a role from groups when it is changed", async () => {
-    const calls = serve(user());
-    const { client } = renderAt("/users/nm%40example.com");
-
-    await waitFor(() => expect(client.getQueryData(["oidc"])).toBeDefined());
-    fireEvent.click(await screen.findByRole("button", { name: "Edit role" }));
-    const dialog = await screen.findByRole("dialog");
-    const pin = within(dialog).getByRole("checkbox", { name: /Pin role/ });
-    const note = "Pinned, or groups would replace it at the next login.";
-    const chooseRole = async (name: RegExp) => {
-      fireEvent.mouseDown(
-        within(dialog).getByRole("combobox", { name: /Role/ }),
-      );
-      fireEvent.click(await screen.findByRole("option", { name }));
-    };
-
-    expect(pin).not.toBeChecked();
-    await chooseRole(/Read Only/);
-    expect(pin).toBeChecked();
-    expect(pin).toBeDisabled();
-    expect(pin).toHaveAccessibleDescription(note);
-
-    await chooseRole(/Network Manager/);
-    expect(pin).not.toBeChecked();
-    expect(pin).toBeEnabled();
-    expect(within(dialog).queryByText(note)).not.toBeInTheDocument();
-
-    await chooseRole(/Read Only/);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
-
-    await waitFor(() =>
-      expect(calls).toEqual([
-        {
-          method: "PUT",
-          path: "/api/v1/users/nm%40example.com",
-          body: { role_id: 2, role_pinned: true },
-        },
-      ]),
-    );
-  });
-
-  it("shows the server's reason when a role comes from groups", async () => {
+  it("does not let a role from groups be edited", async () => {
     serve(user());
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        stubApi({
-          "/api/v1/users/nm%40example.com": (_url, init) =>
-            init?.method === "PUT"
-              ? json(409, {
-                  error:
-                    "This user's role comes from their identity provider groups. Pin the role to change it.",
-                })
-              : json(200, { result: user() }),
-          "/api/v1/users/nm%40example.com/api-tokens": () =>
-            json(200, { result: page([]) }),
-        }),
-      ),
-    );
-    renderAt("/users/nm%40example.com");
-
-    fireEvent.click(await screen.findByRole("button", { name: "Edit role" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: /Role/ }));
-    fireEvent.click(await screen.findByRole("option", { name: /Read Only/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
-
-    expect(
-      await within(dialog).findByText(/Pin the role to change it/),
-    ).toBeInTheDocument();
-  });
-
-  it("lets a pinned role be unpinned without group mapping", async () => {
-    const calls = serve(
-      user({ role_pinned: true }),
-      undefined,
-      oidcSettings({ mapped: false }),
-    );
-    renderAt("/users/nm%40example.com");
-
-    fireEvent.click(await screen.findByRole("button", { name: "Edit role" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: /Pin role/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
-
-    await waitFor(() =>
-      expect(calls).toEqual([
-        {
-          method: "PUT",
-          path: "/api/v1/users/nm%40example.com",
-          body: { role_id: 3, role_pinned: false },
-        },
-      ]),
-    );
-  });
-
-  it("does not offer pinning without group mapping", async () => {
-    serve(user(), undefined, oidcSettings({ mapped: false }));
     const { client } = renderAt("/users/nm%40example.com");
 
     await waitFor(() => expect(client.getQueryData(["oidc"])).toBeDefined());
-    fireEvent.click(await screen.findByRole("button", { name: "Edit role" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).queryByRole("checkbox", { name: /Pin role/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(dialog).queryByRole("button", { name: "Unlink" }),
-    ).not.toBeInTheDocument();
+    expect(await screen.findByText("From groups")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit role" })).toBeDisabled();
   });
 
   it("does not offer a password change to a user without a password", async () => {

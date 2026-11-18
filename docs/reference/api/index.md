@@ -29,7 +29,7 @@ These paths take no token: `GET /api/v1/livez`, `GET /api/v1/readyz`, `GET /api/
 
 Only an Admin manages users and the [cluster](cluster.md), and [backs up and restores](backup.md). Every user reads its own user, changes its own password, and manages its own API tokens.
 
-An API token has the role of its user, but cannot create API tokens, change a password, or manage users or [single sign-on](oidc.md).
+An API token has the role of its user, but cannot create API tokens, change a password, manage users, or update the [single sign-on](oidc.md#update-the-oidc-settings) settings.
 
 ## Responses
 
@@ -74,5 +74,5 @@ GET /api/v1/openapi.yaml
 - 410 - The node was removed from the cluster. See [Remove a Member](cluster.md#remove-a-member).
 - 429 - Too many requests. `Retry-After` is the seconds to wait.
 - 500 - Internal server error.
-- 502 - The identity provider cannot be reached or used, see [Test an identity provider](oidc.md#test-an-identity-provider), or no cluster member answered a join, see [Join a Cluster](cluster.md#join-a-cluster).
+- 502 - The identity provider cannot be reached or used, see [Update the OIDC settings](oidc.md#update-the-oidc-settings), or no cluster member answered a join, see [Join a Cluster](cluster.md#join-a-cluster).
 - 503 - Service unavailable, or not ready. See [Check readiness](status.md#check-readiness).

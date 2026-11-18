@@ -43,7 +43,7 @@ func TestUserLifecycle(t *testing.T) {
 		}
 	}
 
-	if err := d.UpdateUserRole(ctx, id, RoleReadOnly, false); err != nil {
+	if err := d.UpdateUserRole(ctx, id, RoleReadOnly); err != nil {
 		t.Fatalf("UpdateUserRole: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestUserNotFound(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"GetUser":            func() error { _, err := d.GetUser(ctx, "nobody@example.com"); return err },
 		"GetUserByID":        func() error { _, err := d.GetUserByID(ctx, 42); return err },
-		"UpdateUserRole":     func() error { return d.UpdateUserRole(ctx, 42, RoleAdmin, false) },
+		"UpdateUserRole":     func() error { return d.UpdateUserRole(ctx, 42, RoleAdmin) },
 		"UpdateUserPassword": func() error { return d.UpdateUserPassword(ctx, 42, "hash", nil) },
 		"DeleteUser":         func() error { return d.DeleteUser(ctx, 42) },
 	} {
@@ -111,7 +111,7 @@ func TestUserRoleIsChecked(t *testing.T) {
 
 	id := createTestUser(t, d, "x@example.com", RoleAdmin)
 
-	if err := d.UpdateUserRole(ctx, id, 4, false); err == nil {
+	if err := d.UpdateUserRole(ctx, id, 4); err == nil {
 		t.Error("UpdateUserRole to role 4: no error")
 	}
 }
@@ -194,7 +194,7 @@ func TestUserUpdatesEndSessions(t *testing.T) {
 			exists(current), exists(stale), exists(others))
 	}
 
-	if err := d.UpdateUserRole(ctx, id, RoleReadOnly, false); err != nil {
+	if err := d.UpdateUserRole(ctx, id, RoleReadOnly); err != nil {
 		t.Fatal(err)
 	}
 
@@ -293,12 +293,8 @@ func TestCreateUserIsCapped(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 
-	if _, err := d.CreateUser(ctx, NewUser{Email: "a@example.com", Role: RoleReadOnly, RolePinned: true}, 2); err != nil {
+	if _, err := d.CreateUser(ctx, NewUser{Email: "a@example.com", Role: RoleReadOnly}, 2); err != nil {
 		t.Fatal(err)
-	}
-
-	if u, err := d.GetUser(ctx, "a@example.com"); err != nil || !u.RolePinned {
-		t.Fatalf("user created pinned = %+v, %v", u, err)
 	}
 
 	if _, err := d.CreateUser(ctx, NewUser{Email: "b@example.com", Role: RoleReadOnly}, 2); err != nil {
@@ -314,7 +310,7 @@ func TestCreateUserIsCapped(t *testing.T) {
 	}
 }
 
-func TestUserRolePinned(t *testing.T) {
+func TestUpdateUserRoleToTheSameRole(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
@@ -328,18 +324,16 @@ func TestUserRolePinned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, pinned := range []bool{true, false} {
-		if err := d.UpdateUserRole(ctx, id, RoleReadOnly, pinned); err != nil {
-			t.Fatalf("UpdateUserRole pinned %t: %v", pinned, err)
-		}
+	if err := d.UpdateUserRole(ctx, id, RoleReadOnly); err != nil {
+		t.Fatal(err)
+	}
 
-		if u, err := d.GetUserByID(ctx, id); err != nil || u.RolePinned != pinned || u.Role != RoleReadOnly {
-			t.Fatalf("after UpdateUserRole pinned %t: %+v, %v", pinned, u, err)
-		}
+	if u, err := d.GetUserByID(ctx, id); err != nil || u.Role != RoleReadOnly {
+		t.Fatalf("after UpdateUserRole: %+v, %v", u, err)
 	}
 
 	if _, err := d.GetSessionByTokenHash(ctx, []byte("session")); err != nil {
-		t.Fatalf("session after pinning the same role: %v, want kept", err)
+		t.Fatalf("session after setting the same role: %v, want kept", err)
 	}
 }
 
@@ -363,7 +357,7 @@ func TestLastAdminWithAPasswordIsKept(t *testing.T) {
 
 	refused := map[string]func() error{
 		"DeleteUser":                 func() error { return d.DeleteUser(ctx, admin) },
-		"UpdateUserRole":             func() error { return d.UpdateUserRole(ctx, admin, RoleReadOnly, false) },
+		"UpdateUserRole":             func() error { return d.UpdateUserRole(ctx, admin, RoleReadOnly) },
 		"UpdateUserPassword to none": func() error { return d.UpdateUserPassword(ctx, admin, "", nil) },
 	}
 
@@ -378,10 +372,10 @@ func TestLastAdminWithAPasswordIsKept(t *testing.T) {
 	}
 
 	for name, call := range map[string]func() error{
-		"UpdateUserRole of the admin to admin":      func() error { return d.UpdateUserRole(ctx, admin, RoleAdmin, false) },
+		"UpdateUserRole of the admin to admin":      func() error { return d.UpdateUserRole(ctx, admin, RoleAdmin) },
 		"UpdateUserPassword of the admin":           func() error { return d.UpdateUserPassword(ctx, admin, "other", nil) },
 		"UpdateUserPassword to none of a non-admin": func() error { return d.UpdateUserPassword(ctx, nm, "", nil) },
-		"UpdateUserRole of an admin without one":    func() error { return d.UpdateUserRole(ctx, sso, RoleReadOnly, false) },
+		"UpdateUserRole of an admin without one":    func() error { return d.UpdateUserRole(ctx, sso, RoleReadOnly) },
 		"DeleteUser of a user without one":          func() error { return d.DeleteUser(ctx, sso2) },
 		"DeleteUser of a non-admin":                 func() error { return d.DeleteUser(ctx, ro) },
 	} {
@@ -396,7 +390,7 @@ func TestLastAdminWithAPasswordIsKept(t *testing.T) {
 
 	second := createTestUser(t, d, "second@example.com", RoleAdmin)
 
-	if err := d.UpdateUserRole(ctx, admin, RoleReadOnly, false); err != nil {
+	if err := d.UpdateUserRole(ctx, admin, RoleReadOnly); err != nil {
 		t.Fatalf("UpdateUserRole with another admin with a password: %v", err)
 	}
 

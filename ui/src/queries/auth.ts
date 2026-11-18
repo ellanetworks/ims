@@ -24,5 +24,14 @@ export const refresh = () =>
     anonymous: true,
   });
 
-export const logout = () =>
-  apiFetch<void>("/api/v1/auth/logout", { method: "POST", anonymous: true });
+export interface LogoutResponse {
+  redirect_url: string;
+}
+
+export const logout = async (): Promise<string | undefined> => {
+  const resp = await apiFetch<LogoutResponse | undefined>(
+    "/api/v1/auth/logout",
+    { method: "POST", anonymous: true },
+  );
+  return resp?.redirect_url || undefined;
+};

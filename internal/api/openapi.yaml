@@ -2083,8 +2083,27 @@ paths:
       operationId: logout
       security: []
       summary: Log out
-      description: Ends the session of the cookie, if any, and clears the cookie.
+      description: >-
+        Ends the session of the cookie, if any, and clears the cookie. For a single sign-on session, when the
+        identity provider has an end_session_endpoint, returns the URL that logs out of the identity provider.
       responses:
+        "200":
+          description: Logged out of a single sign-on session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    type: object
+                    required: [redirect_url]
+                    properties:
+                      redirect_url:
+                        type: string
+                        description: >-
+                          The identity provider's end_session_endpoint, with client_id and
+                          post_logout_redirect_uri.
         "204":
           description: Logged out
 
@@ -2121,8 +2140,11 @@ paths:
       description: >-
         For a browser. Redirects to the identity provider with the authorization code flow, PKCE, a state and a
         nonce, which a short-lived encrypted cookie keeps. When OIDC is off or the provider cannot be reached, it
-        redirects to /login with an error.
+        redirects to /login with an error. With link=1 and the session cookie, it links the identity provider
+        account to the session's user instead of logging in, and returns to /profile.
       security: []
+      parameters:
+        - {name: link, in: query, schema: {type: string, enum: ["1"]}}
       responses:
         "303":
           $ref: "#/components/responses/OIDCRedirect"
@@ -2136,7 +2158,7 @@ paths:
         The redirect URL registered with the identity provider. Each login completes once. On success, it sets the
         session cookie and redirects to /. Otherwise it redirects to /login?error= with one of rate_limited,
         unavailable, failed, denied, not_set_up, email_not_verified, linked_elsewhere, no_group, groups_overage,
-        too_many_users, or error.
+        too_many_users, link_required, or error. A link redirects to /profile, or /profile?error=.
       security: []
       parameters:
         - {name: code, in: query, schema: {type: string}}
@@ -2525,7 +2547,7 @@ paths:
       tags: [Single sign-on]
       operationId: getOIDC
       summary: Get the OIDC settings
-      description: The client secret is never returned. Needs a login, not an API token.
+      description: The client secret is never returned.
       responses:
         "200":
           $ref: "#/components/responses/OIDCSettings"
@@ -2539,8 +2561,10 @@ paths:
       summary: Update the OIDC settings
       description: >-
         Replaces all the settings. An empty or missing client_secret keeps the current one, unless the issuer or
-        the client ID changes (400). Disabling OIDC or changing the issuer ends all OIDC sessions. Needs a login,
-        not an API token.
+        the client ID changes (400). Enabling OIDC fetches the provider's OpenID configuration and signing keys
+        first, and answers 502 when the provider cannot be used, including when its token endpoint accepts neither
+        client_secret_basic nor client_secret_post. Disabling OIDC or changing the issuer ends all OIDC sessions.
+        Needs a login, not an API token.
       requestBody:
         required: true
         content:
@@ -2558,39 +2582,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalError"
-
-  /api/v1/oidc/discovery:
-    post:
-      tags: [Single sign-on]
-      operationId: discoverOIDC
-      summary: Test an identity provider
-      description: >-
-        Fetches the provider's OpenID configuration and signing keys, and checks that the provider can be used:
-        502 when it cannot, including when its token endpoint accepts neither client_secret_basic nor
-        client_secret_post. Changes no setting. Needs a login, not an API token.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DiscoverOIDCParams"
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [result]
-                properties:
-                  result:
-                    $ref: "#/components/schemas/OIDCDiscovery"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
         "502":
           $ref: "#/components/responses/BadGateway"
 
@@ -2669,7 +2660,7 @@ paths:
       summary: Change the role of a user
       description: >-
         A role change ends the sessions of the user. An admin cannot change its own role. When OIDC group mapping
-        is on, the role of a linked user comes from their groups, so changing it needs role_pinned set to true.
+        is on, the role of a linked user comes from their groups and cannot be changed (409).
       parameters:
         - $ref: "#/components/parameters/Email"
       requestBody:
@@ -3234,16 +3225,13 @@ components:
 
     User:
       type: object
-      required: [email, role_id, role_pinned, password_set, oidc_linked]
+      required: [email, role_id, password_set, oidc_linked]
       properties:
         email:
           type: string
           format: email
         role_id:
           $ref: "#/components/schemas/RoleID"
-        role_pinned:
-          type: boolean
-          description: The role was set by an admin and is not updated from OIDC groups.
         password_set:
           type: boolean
           description: The user can sign in with a password.
@@ -3279,9 +3267,6 @@ components:
           description: Empty or missing for a user who signs in only through OIDC.
         role_id:
           $ref: "#/components/schemas/RoleID"
-        role_pinned:
-          type: boolean
-          description: Keeps the role from being updated from OIDC groups. Missing means false.
 
     UpdateUserParams:
       type: object
@@ -3290,9 +3275,6 @@ components:
       properties:
         role_id:
           $ref: "#/components/schemas/RoleID"
-        role_pinned:
-          type: boolean
-          description: Keeps the role from being updated from OIDC groups. Missing keeps the current value.
 
     UpdatePasswordParams:
       type: object
@@ -4159,8 +4141,9 @@ components:
 
     OIDCSettings:
       type: object
-      required: [enabled, external_url, redirect_url, issuer, client_id, client_secret_set, display_name, scopes,
-        session_lifetime_seconds, trust_unverified_email, ca_certificate, groups_claim, group_roles]
+      required: [enabled, external_url, redirect_url, post_logout_redirect_url, issuer, client_id, client_secret_set,
+        display_name, scopes, session_lifetime_seconds, trust_unverified_email, ca_certificate, ca_certificates,
+        groups_claim, group_roles]
       properties:
         enabled:
           type: boolean
@@ -4172,6 +4155,10 @@ components:
           type: string
           description: The redirect URL to register with the identity provider. Empty without an external URL.
           examples: ["https://ims.example.com/api/v1/auth/oidc/callback"]
+        post_logout_redirect_url:
+          type: string
+          description: The post-logout redirect URL to register with the identity provider. Empty without an external URL.
+          examples: ["https://ims.example.com/login"]
         issuer:
           type: string
           examples: ["https://idp.example.com/realms/ims"]
@@ -4199,12 +4186,24 @@ components:
         ca_certificate:
           type: string
           description: PEM certificates that the provider's TLS certificate must chain to. Empty uses the system's.
+        ca_certificates:
+          type: array
+          description: The certificates in ca_certificate.
+          items:
+            type: object
+            required: [subject, not_after]
+            properties:
+              subject:
+                type: string
+              not_after:
+                type: string
+                format: date-time
         groups_claim:
           type: string
           examples: [groups]
         group_roles:
           type: array
-          description: In order. The first group the user is in gives the role.
+          description: A user in several mapped groups gets the highest of their roles.
           items:
             $ref: "#/components/schemas/OIDCGroupRole"
 
@@ -4257,51 +4256,6 @@ components:
           maxItems: 100
           items:
             $ref: "#/components/schemas/OIDCGroupRole"
-
-    DiscoverOIDCParams:
-      type: object
-      required: [issuer]
-      additionalProperties: false
-      properties:
-        issuer:
-          type: string
-        ca_certificate:
-          type: string
-
-    OIDCDiscovery:
-      type: object
-      required: [issuer, authorization_endpoint, token_endpoint, userinfo_endpoint, jwks_uri, signing_algorithms,
-        token_endpoint_auth_method, keys, pkce, issuer_parameter]
-      properties:
-        issuer:
-          type: string
-        authorization_endpoint:
-          type: string
-        token_endpoint:
-          type: string
-        userinfo_endpoint:
-          type: string
-          description: Empty when the provider has none.
-        jwks_uri:
-          type: string
-        token_endpoint_auth_method:
-          type: string
-          enum: [client_secret_basic, client_secret_post]
-          description: How Ella IMS sends the client secret to the token endpoint.
-        signing_algorithms:
-          type: array
-          description: The asymmetric algorithms the provider signs ID tokens with.
-          items:
-            type: string
-        keys:
-          type: integer
-          description: The number of public signing keys.
-        pkce:
-          type: boolean
-          description: The provider advertises PKCE with S256.
-        issuer_parameter:
-          type: boolean
-          description: The provider sends the iss parameter in authorization responses (RFC 9207).
 
     Error:
       type: object

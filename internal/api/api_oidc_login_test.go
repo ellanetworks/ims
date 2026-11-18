@@ -65,7 +65,10 @@ func (idp *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error": "invalid_grant"}`))
 	default:
-		access := rand.Text()
+		access := issued.access
+		if access == "" {
+			access = rand.Text()
+		}
 
 		idp.mu.Lock()
 		idp.userInfos[access] = issued.userInfo
@@ -130,6 +133,8 @@ func (a *testAPI) configureOIDC(t *testing.T, idp *fakeIdP, change func(map[stri
 	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, o)); code != http.StatusOK {
 		t.Fatalf("PUT /api/v1/oidc = %d %q", code, msg)
 	}
+
+	idp.discoveries.Store(0)
 }
 
 type oidcLogin struct {
@@ -139,6 +144,8 @@ type oidcLogin struct {
 	callback func(q url.Values)
 	cookie   func(c *http.Cookie) *http.Cookie
 	between  func()
+	link     *http.Cookie
+	access   string
 }
 
 type oidcResult struct {
@@ -148,6 +155,7 @@ type oidcResult struct {
 	callback url.Values
 	cookie   *http.Cookie
 	browser  string
+	location string
 }
 
 var browsers atomic.Int64
@@ -167,8 +175,23 @@ func (a *testAPI) startOIDC(t *testing.T) (url.Values, *http.Cookie) {
 func (a *testAPI) startOIDCFrom(t *testing.T, browser string) (url.Values, *http.Cookie) {
 	t.Helper()
 
-	req := request(http.MethodGet, "/api/v1/auth/oidc/login", "", "")
+	return a.startOIDCLink(t, browser, nil)
+}
+
+func (a *testAPI) startOIDCLink(t *testing.T, browser string, session *http.Cookie) (url.Values, *http.Cookie) {
+	t.Helper()
+
+	path := "/api/v1/auth/oidc/login"
+	if session != nil {
+		path += "?link=1"
+	}
+
+	req := request(http.MethodGet, path, "", "")
 	req.RemoteAddr = browser
+
+	if session != nil {
+		req.AddCookie(session)
+	}
 
 	rec := serve(a.handler, req)
 	if rec.Code != http.StatusSeeOther {
@@ -195,7 +218,7 @@ func (a *testAPI) oidcLogin(t *testing.T, idp *fakeIdP, l oidcLogin) oidcResult 
 	t.Helper()
 
 	browser := newBrowser()
-	q, cookie := a.startOIDCFrom(t, browser)
+	q, cookie := a.startOIDCLink(t, browser, l.link)
 
 	claims := map[string]any{
 		"iss": idp.issuer, "sub": "sub-nm", "aud": "ims", "iat": a.now.Unix(), "exp": a.now.Add(5 * time.Minute).Unix(),
@@ -233,7 +256,7 @@ func (a *testAPI) oidcLogin(t *testing.T, idp *fakeIdP, l oidcLogin) oidcResult 
 
 	idp.mu.Lock()
 	idp.codes["code"] = issuedCode{
-		challenge: q.Get("code_challenge"), idToken: idp.sign(t, signer, claims), userInfo: userInfo,
+		challenge: q.Get("code_challenge"), idToken: idp.sign(t, signer, claims), userInfo: userInfo, access: l.access,
 	}
 	idp.mu.Unlock()
 
@@ -250,18 +273,22 @@ func (a *testAPI) oidcLogin(t *testing.T, idp *fakeIdP, l oidcLogin) oidcResult 
 		cookie = l.cookie(cookie)
 	}
 
-	return a.oidcCallback(t, browser, callback, cookie)
+	return a.oidcCallback(t, browser, callback, cookie, l.link)
 }
 
-func (a *testAPI) oidcCallback(t *testing.T, browser string, callback url.Values, cookie *http.Cookie) oidcResult {
+func (a *testAPI) oidcCallback(t *testing.T, browser string, callback url.Values, cookies ...*http.Cookie) oidcResult {
 	t.Helper()
 
 	req := request(http.MethodGet, "/api/v1/auth/oidc/callback?"+callback.Encode(), "", "")
 	req.RemoteAddr = browser
 
-	if cookie != nil {
-		req.AddCookie(cookie)
+	for _, c := range cookies {
+		if c != nil {
+			req.AddCookie(c)
+		}
 	}
+
+	cookie := cookies[0]
 
 	rec := serve(a.handler, req)
 	if rec.Code != http.StatusSeeOther {
@@ -270,14 +297,16 @@ func (a *testAPI) oidcCallback(t *testing.T, browser string, callback url.Values
 
 	res := oidcResult{rec: rec, outcome: "success", callback: callback, cookie: cookie, browser: browser}
 
-	if location := rec.Header().Get("Location"); location != "/" {
+	if location := rec.Header().Get("Location"); location != "/" && location != "/profile" {
 		u, err := url.Parse(location)
-		if err != nil || u.Path != "/login" {
+		if err != nil || u.Path != "/login" && u.Path != "/profile" {
 			t.Fatalf("callback redirects to %q", location)
 		}
 
 		res.outcome = u.Query().Get("error")
 	}
+
+	res.location = rec.Header().Get("Location")
 
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == "ims_session" && c.MaxAge >= 0 && c.Value != "" {
@@ -353,7 +382,7 @@ func TestOIDCLoginLinksByEmailThenBySubject(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	res := a.oidcLogin(t, idp, oidcLogin{})
 	if res.outcome != "success" || res.session == nil {
@@ -368,7 +397,7 @@ func TestOIDCLoginLinksByEmailThenBySubject(t *testing.T) {
 		t.Fatalf("refresh after an OIDC login = %d", code)
 	}
 
-	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); !got.OIDCLinked || !got.PasswordSet {
+	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); !got.OIDCLinked || got.PasswordSet {
 		t.Fatalf("user after linking = %+v", got)
 	}
 
@@ -382,7 +411,7 @@ func TestOIDCLoginLinksByEmailThenBySubject(t *testing.T) {
 		t.Fatalf("identity = %+v, %v", i, err)
 	}
 
-	a.createUser(t, "renamed@example.com", db.RoleAdmin)
+	a.createSSOUser(t, "renamed@example.com", db.RoleAdmin)
 
 	res = a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{"email": "renamed@example.com"}})
 	if res.outcome != "success" {
@@ -506,8 +535,17 @@ func TestOIDCLoginRefusals(t *testing.T) {
 			return oidcLogin{claims: map[string]any{"email_verified": "false"}}
 		}, "email_not_verified"},
 		"an expired token": {func(a *testAPI) oidcLogin {
-			return oidcLogin{claims: map[string]any{"exp": a.now.Add(-time.Minute).Unix()}}
+			return oidcLogin{claims: map[string]any{"exp": a.now.Add(-2 * time.Minute).Unix()}}
 		}, "failed"},
+		"a matching at_hash": {func(*testAPI) oidcLogin {
+			return oidcLogin{access: "the access token", claims: map[string]any{"at_hash": atHash("the access token")}}
+		}, "success"},
+		"a wrong at_hash": {func(*testAPI) oidcLogin {
+			return oidcLogin{access: "the access token", claims: map[string]any{"at_hash": atHash("another token")}}
+		}, "failed"},
+		"a token expired within the leeway": {func(a *testAPI) oidcLogin {
+			return oidcLogin{claims: map[string]any{"exp": a.now.Add(-30 * time.Second).Unix()}}
+		}, "success"},
 		"a symmetric signature": {func(*testAPI) oidcLogin { return oidcLogin{signer: hmacSigner} }, "failed"},
 		"a subject too long": {func(*testAPI) oidcLogin {
 			return oidcLogin{claims: map[string]any{"sub": strings.Repeat("s", 256)}}
@@ -528,7 +566,7 @@ func TestOIDCLoginRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			a := newTestAPI(t)
 			a.configureOIDC(t, idp, nil)
-			a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+			a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 			res := a.oidcLogin(t, idp, tc.login(a))
 			if res.outcome != tc.outcome {
@@ -553,7 +591,7 @@ func TestOIDCLoginTrustsUnverifiedEmailOnRequest(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, func(o map[string]any) { o["trust_unverified_email"] = true })
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	for _, verified := range []any{false, "false"} {
 		res := a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{"sub": "sub-attacker", "email": testAdmin, "email_verified": verified}})
@@ -575,7 +613,7 @@ func TestOIDCLoginLinksOnce(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	if res := a.oidcLogin(t, idp, oidcLogin{}); res.outcome != "success" {
 		t.Fatalf("first login: %q", res.outcome)
@@ -598,7 +636,7 @@ func TestOIDCLoginEndsWithTheSettings(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	res := a.oidcLogin(t, idp, oidcLogin{})
 	if res.outcome != "success" {
@@ -686,20 +724,23 @@ func TestOIDCLoginRolesFromGroups(t *testing.T) {
 		t.Fatalf("audit detail = %q", got)
 	}
 
-	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/users/new@example.com", `{"role_id": 3, "role_pinned": true}`); code != http.StatusOK {
-		t.Fatalf("pin = %d %q", code, msg)
-	}
-
-	if got := login("sub-new", "new@example.com", []string{"other"}); got != "success" || role("new@example.com").RoleID != db.RoleNetworkManager {
-		t.Fatalf("login of a pinned user: %q, role %d", got, role("new@example.com").RoleID)
-	}
-
 	res := a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{
 		"sub": "sub-big", "email": "big@example.com", "groups": nil,
 		"_claim_names": map[string]string{"groups": "src1"}, "_claim_sources": map[string]any{"src1": map[string]string{"endpoint": "https://graph"}},
 	}})
 	if res.outcome != "groups_overage" {
 		t.Fatalf("group overage: %q", res.outcome)
+	}
+
+	admin, err := a.store.GetUser(context.Background(), testAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.store.CreateIdentity(context.Background(), admin.ID, db.NewIdentity{
+		Issuer: idp.issuer, Subject: "sub-admin", At: a.now,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	if got := login("sub-admin", testAdmin, []string{"ops"}); got != "success" || role(testAdmin).RoleID != db.RoleAdmin {
@@ -729,4 +770,163 @@ func TestOIDCLoginCreatesUsersUpToTheLimit(t *testing.T) {
 	if res.outcome != "too_many_users" {
 		t.Fatalf("outcome %q, want too_many_users", res.outcome)
 	}
+}
+
+func TestOIDCLoginLinksAUserWithAPasswordFromTheProfile(t *testing.T) {
+	a := newTestAPI(t)
+	idp := newFakeIdP(t)
+	a.configureOIDC(t, idp, nil)
+	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+
+	if res := a.oidcLogin(t, idp, oidcLogin{}); res.outcome != "link_required" || res.session != nil {
+		t.Fatalf("login of a user with a password: %q, session %v", res.outcome, res.session)
+	}
+
+	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); got.OIDCLinked {
+		t.Fatalf("user after a refused login = %+v", got)
+	}
+
+	_, session := a.login(t, "nm@example.com", testPassword)
+
+	res := a.oidcLogin(t, idp, oidcLogin{link: session})
+	if res.location != "/profile" || res.session != nil {
+		t.Fatalf("link: Location %q, session %v", res.location, res.session)
+	}
+
+	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); !got.OIDCLinked || !got.PasswordSet {
+		t.Fatalf("user after the link = %+v", got)
+	}
+
+	if events := a.auditEvents(t, "link_user_oidc"); len(events) != 1 {
+		t.Fatalf("link events = %q", events)
+	}
+
+	if res := a.oidcLogin(t, idp, oidcLogin{}); res.outcome != "success" || res.session == nil {
+		t.Fatalf("login after the link: %q", res.outcome)
+	}
+
+	_, other := a.login(t, testAdmin, testPassword)
+	if res := a.oidcLogin(t, idp, oidcLogin{link: other}); res.location != "/profile?error=linked_elsewhere" {
+		t.Fatalf("link of an identity linked to another user: Location %q", res.location)
+	}
+}
+
+func TestOIDCLinkNeedsASession(t *testing.T) {
+	a := newTestAPI(t)
+	idp := newFakeIdP(t)
+	a.configureOIDC(t, idp, nil)
+
+	rec := serve(a.handler, request(http.MethodGet, "/api/v1/auth/oidc/login?link=1", "", ""))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/profile?error=failed" {
+		t.Fatalf("link without a session = %d, Location %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	_, session := a.login(t, "nm@example.com", testPassword)
+
+	res := a.oidcLogin(t, idp, oidcLogin{link: session, between: func() {
+		if code, _, msg := a.do(t, http.MethodPut, "/api/v1/users/nm@example.com/password", `{"password": "another password"}`); code != http.StatusOK {
+			t.Fatalf("change the password = %d %q", code, msg)
+		}
+	}})
+	if res.location != "/profile?error=failed" {
+		t.Fatalf("link after the session ended: Location %q", res.location)
+	}
+
+	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); got.OIDCLinked {
+		t.Fatalf("user = %+v", got)
+	}
+}
+
+func TestOIDCLoginTakesTheHighestRole(t *testing.T) {
+	a := newTestAPI(t)
+	idp := newFakeIdP(t)
+	a.configureOIDC(t, idp, func(o map[string]any) {
+		o["group_roles"] = []map[string]any{
+			{"group": "viewers", "role_id": 2},
+			{"group": "noc", "role_id": 3},
+			{"group": "admins", "role_id": 1},
+		}
+	})
+
+	for _, tc := range []struct {
+		groups  []string
+		outcome string
+		role    db.Role
+	}{
+		{[]string{"viewers", "noc"}, "success", db.RoleNetworkManager},
+		{[]string{"noc", "admins", "viewers"}, "success", db.RoleAdmin},
+		{[]string{"viewers"}, "success", db.RoleReadOnly},
+	} {
+		sub := "sub-" + strings.Join(tc.groups, "-")
+		email := strings.Join(tc.groups, "-") + "@example.com"
+
+		res := a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{"sub": sub, "email": email, "groups": tc.groups}})
+		if res.outcome != tc.outcome {
+			t.Errorf("groups %v: %q, want %q", tc.groups, res.outcome, tc.outcome)
+			continue
+		}
+
+		if tc.role != 0 {
+			if got := decode[api.User](t, a.get(t, "/api/v1/users/"+email)); got.RoleID != tc.role {
+				t.Errorf("groups %v: role %d, want %d", tc.groups, got.RoleID, tc.role)
+			}
+		}
+	}
+}
+
+func TestOIDCLogoutRedirectsToTheIdentityProvider(t *testing.T) {
+	a := newTestAPI(t)
+	idp := newFakeIdP(t)
+	idp.metadata["end_session_endpoint"] = idp.issuer + "/logout?realm=ims"
+	a.configureOIDC(t, idp, nil)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
+
+	logout := func(session *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+
+		req := request(http.MethodPost, "/api/v1/auth/logout", "", "")
+		req.AddCookie(session)
+
+		return serve(a.handler, req)
+	}
+
+	res := a.oidcLogin(t, idp, oidcLogin{})
+	if res.outcome != "success" {
+		t.Fatalf("login: %q", res.outcome)
+	}
+
+	rec := logout(res.session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout = %d %s", rec.Code, rec.Body)
+	}
+
+	var resp struct {
+		Result api.LogoutResponse `json:"result"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := url.Parse(resp.Result.RedirectURL)
+	if err != nil || u.Scheme+"://"+u.Host+u.Path != idp.issuer+"/logout" {
+		t.Fatalf("redirect URL = %q", resp.Result.RedirectURL)
+	}
+
+	if q := u.Query(); q.Get("realm") != "ims" || q.Get("client_id") != "ims" ||
+		q.Get("post_logout_redirect_uri") != "https://ims.example.com/login" {
+		t.Fatalf("redirect URL query = %v", q)
+	}
+
+	_, session := a.login(t, testAdmin, testPassword)
+	if rec := logout(session); rec.Code != http.StatusNoContent {
+		t.Fatalf("logout of a password session = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func atHash(access string) string {
+	sum := sha256.Sum256([]byte(access))
+
+	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
 }

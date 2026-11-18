@@ -88,7 +88,7 @@ func TestCallRecordLifecycle(t *testing.T) {
 }
 
 func TestCallRecordCodecs(t *testing.T) {
-	d := openTestDB(t)
+	d := openBaselineDB(t)
 
 	amrWB := Codec{Media: "audio", Encoding: "AMR-WB", ClockRate: 16000, Channels: 1}
 	evs := Codec{Media: "audio", Encoding: "EVS", ClockRate: 16000, Channels: 1}
