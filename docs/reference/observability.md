@@ -94,3 +94,21 @@ Audit events are logs at level `info` with `msg` set to `audit event`.
 ## Profiles
 
 Ella IMS exposes the [net/http/pprof](https://pkg.go.dev/net/http/pprof) API at [`/api/v1/pprof/`](api/pprof.md).
+
+## Dashboards
+
+Ella IMS ships with a [Grafana](https://grafana.com/) dashboard. Import its JSON file from the repository.
+
+### Overview
+
+This dashboard uses Prometheus metrics to show the health of Ella IMS on one screen: service status, call and registration traffic, and performance.
+
+<figure markdown="span">
+  ![Overview Dashboard](../images/dashboard_overview.png){ width="800" }
+  <figcaption>Grafana dashboard for Overview.</figcaption>
+</figure>
+
+- Data Sources: Prometheus
+- Dashboard JSON: [observability/grafana/dashboards/overview.json](https://github.com/ellanetworks/ims/blob/main/observability/grafana/dashboards/overview.json)
+
+To import it, open **Dashboards > New > Import** in Grafana and upload the JSON file.
