@@ -111,4 +111,4 @@ This dashboard uses Prometheus metrics to show the health of Ella IMS on one scr
 - Data Sources: Prometheus
 - Dashboard JSON: [observability/grafana/dashboards/overview.json](https://github.com/ellanetworks/ims/blob/main/observability/grafana/dashboards/overview.json)
 
-To import it, open **Dashboards > New > Import** in Grafana, upload the JSON file, and pick your Prometheus data source. To provision it from files instead, use the [provisioning file](https://github.com/ellanetworks/ims/blob/main/observability/grafana/provisioning/dashboards/dashboards.yml).
+To import it, open **Dashboards > New > Import** in Grafana and upload the JSON file. Then pick your Prometheus data source in the dashboard's **Data source** list. To provision it from files instead, use the [provisioning file](https://github.com/ellanetworks/ims/blob/main/observability/grafana/provisioning/dashboards/dashboards.yml).

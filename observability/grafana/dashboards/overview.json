@@ -1465,7 +1465,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "max(100 * rate(process_cpu_seconds_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]) / on (job, instance) go_sched_gomaxprocs_threads{job=~\"$job\",instance=~\"$instance\"})",
+          "expr": "max((100 * rate(process_cpu_seconds_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]) / on (job, instance) go_sched_gomaxprocs_threads{job=~\"$job\",instance=~\"$instance\"}) and on (job, instance) ellaims_build_info{job=~\"$job\",instance=~\"$instance\"})",
           "legendFormat": "CPU",
           "range": true,
           "instant": false,
@@ -1477,7 +1477,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "max(process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})",
+          "expr": "max((process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"}) and on (job, instance) ellaims_build_info{job=~\"$job\",instance=~\"$instance\"})",
           "legendFormat": "Memory",
           "range": true,
           "instant": false,
