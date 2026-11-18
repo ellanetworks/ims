@@ -1,14 +1,4 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_MIMIR",
-      "label": "Mimir",
-      "description": "",
-      "type": "datasource",
-      "pluginId": "prometheus",
-      "pluginName": "Prometheus"
-    }
-  ],
   "__elements": {},
   "__requires": [
     {
@@ -53,7 +43,7 @@
     ]
   },
   "description": "Monitor your Ella IMS deployment: registrations, calls, SIP signaling, Diameter peers, SIP trunks and system load.",
-  "editable": true,
+  "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
@@ -75,7 +65,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Subscribers registered in the IMS now: private identities (IMPIs) with a binding that has not expired, summed across the selected nodes.",
       "fieldConfig": {
@@ -127,7 +117,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "sum(ellaims_registered_subscribers{job=~\"$job\",instance=~\"$instance\"})",
@@ -144,7 +134,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Calls in progress: attempted and not yet ended, summed across the selected nodes.",
       "fieldConfig": {
@@ -196,7 +186,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "sum(ellaims_active_calls{job=~\"$job\",instance=~\"$instance\"})",
@@ -213,7 +203,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Share of REGISTER requests (initial registrations and re-registrations) that the IMS accepted. The 401 challenge of IMS-AKA and de-registrations are not counted. Over the selected time range. TS 32.409 registration success rate.",
       "fieldConfig": {
@@ -283,7 +273,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "(\n  100 * (\n    sum(increase(ellaims_registration_attempts_total{job=~\"$job\",instance=~\"$instance\",result=\"accept\"}[$__range]))\n    /\n    sum(increase(ellaims_registration_attempts_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))\n  )\n  and\n  sum(increase(ellaims_registration_attempts_total{job=~\"$job\",instance=~\"$instance\"}[$__range])) > 0\n)\nor vector(-1)",
@@ -300,7 +290,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Session establishment success rate: share of ended call attempts the network set up, every outcome except failed and unavailable (480). Busy, declined, cancelled and not answered are user outcomes, as in TS 32.409. Over the selected time range.",
       "fieldConfig": {
@@ -370,7 +360,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "(\n  100 * (\n    sum(increase(ellaims_calls_total{job=~\"$job\",instance=~\"$instance\",outcome!~\"failed|unavailable\"}[$__range]))\n    /\n    sum(increase(ellaims_calls_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))\n  )\n  and\n  sum(increase(ellaims_calls_total{job=~\"$job\",instance=~\"$instance\"}[$__range])) > 0\n)\nor vector(-1)",
@@ -387,7 +377,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Configured Diameter connections that are not open (HSS on Cx, Sh and S6c; PCRF on Rx; SMSC, MME and SMSF on SGd), per node, peer and application.",
       "fieldConfig": {
@@ -453,7 +443,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "count(ellaims_diameter_peer_up{job=~\"$job\",instance=~\"$instance\"} == 0) or vector(0)",
@@ -470,7 +460,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "SIP trunks that do not answer their OPTIONS keepalives, per node. Trunks without keepalives, disabled, or not probed yet are not counted.",
       "fieldConfig": {
@@ -536,7 +526,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "count(ellaims_trunk_up{job=~\"$job\",instance=~\"$instance\"} == 0) or vector(0)",
@@ -566,7 +556,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Calls that ended, per minute, by outcome from their final INVITE response: answered (2xx), busy (486/600), rejected (603), cancelled by the caller (487), no_answer (408 after ringing), unavailable (480), failed (anything else).",
       "fieldConfig": {
@@ -753,7 +743,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "60 * sum by (outcome) (rate(ellaims_calls_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))",
@@ -770,7 +760,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Final answers to REGISTER per minute, by result: accept, auth_failure (authentication failed), reject.",
       "fieldConfig": {
@@ -897,7 +887,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "60 * sum by (result) (rate(ellaims_registration_attempts_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))",
@@ -914,7 +904,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Final responses other than 2xx that the P-CSCF sent to phones per second, by status class. The 401 challenges of IMS-AKA registration are left out (4xx to REGISTER).",
       "fieldConfig": {
@@ -1056,7 +1046,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "sum by (class) (rate(ellaims_sip_responses_total{job=~\"$job\",instance=~\"$instance\",class!=\"2xx\",method!=\"REGISTER\"}[$__rate_interval]) or rate(ellaims_sip_responses_total{job=~\"$job\",instance=~\"$instance\",class=~\"3xx|5xx|6xx\",method=\"REGISTER\"}[$__rate_interval]))",
@@ -1086,7 +1076,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "Time from a request of a phone to the final response the P-CSCF sent, all methods but INVITE (its final response waits for the callee), HSS and policy round trips included.",
       "fieldConfig": {
@@ -1213,7 +1203,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.5, sum by (le) (rate(ellaims_sip_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])))",
@@ -1225,7 +1215,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le) (rate(ellaims_sip_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])))",
@@ -1237,7 +1227,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.99, sum by (le) (rate(ellaims_sip_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])))",
@@ -1254,7 +1244,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "95th percentile of requests to the HSS (cx, sh, s6c), the policy function (rx, n5) and SMS peers (sgd), by interface. Interfaces without requests are not shown.",
       "fieldConfig": {
@@ -1335,7 +1325,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "(histogram_quantile(0.95, sum by (le, interface) (rate(ellaims_peer_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])))) and on (interface) (sum by (interface) (rate(ellaims_peer_request_duration_seconds_count{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])) > 0)",
@@ -1352,7 +1342,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_MIMIR}"
+        "uid": "$datasource"
       },
       "description": "CPU used by the IMS process as a share of GOMAXPROCS (left axis), and resident memory (right axis), highest of the selected nodes.",
       "fieldConfig": {
@@ -1472,7 +1462,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "max(100 * rate(process_cpu_seconds_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]) / on (job, instance) go_sched_gomaxprocs_threads{job=~\"$job\",instance=~\"$instance\"})",
@@ -1484,7 +1474,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_MIMIR}"
+            "uid": "$datasource"
           },
           "editorMode": "code",
           "expr": "max(process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})",
@@ -1511,42 +1501,15 @@
   "templating": {
     "list": [
       {
-        "current": {
-          "selected": true,
-          "text": "Mimir",
-          "value": "mimir"
-        },
+        "current": {},
         "includeAll": false,
-        "label": "Mimir",
-        "name": "DS_MIMIR",
+        "label": "Data source",
+        "name": "datasource",
         "options": [],
         "query": "prometheus",
         "refresh": 1,
         "regex": "",
         "type": "datasource"
-      },
-      {
-        "current": {},
-        "datasource": {
-          "type": "prometheus",
-          "uid": "${DS_MIMIR}"
-        },
-        "definition": "label_values(ellaims_build_info, job)",
-        "description": "Select the Ella IMS job.",
-        "includeAll": false,
-        "label": "Job",
-        "multi": false,
-        "name": "job",
-        "options": [],
-        "query": {
-          "query": "label_values(ellaims_build_info, job)",
-          "refId": "StandardVariableQuery"
-        },
-        "refresh": 2,
-        "regex": "",
-        "sort": 1,
-        "type": "query",
-        "hide": 0
       },
       {
         "current": {
@@ -1560,7 +1523,39 @@
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_MIMIR}"
+          "uid": "$datasource"
+        },
+        "definition": "label_values(ellaims_build_info, job)",
+        "description": "Select one or more Ella IMS jobs. All shows every job.",
+        "includeAll": true,
+        "label": "Job",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(ellaims_build_info, job)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query",
+        "hide": 0,
+        "allValue": ".+"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
         },
         "definition": "label_values(ellaims_build_info{job=~\"$job\"}, instance)",
         "description": "Select one or more Ella IMS nodes (host:port). All shows the whole cluster.",
