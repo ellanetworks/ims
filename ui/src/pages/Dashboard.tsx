@@ -7,6 +7,7 @@ import {
   CardContent,
   CardHeader,
   Chip,
+  type ChipProps,
   Skeleton,
   Stack,
   Table,
@@ -21,18 +22,22 @@ import {
 import Grid from "@mui/material/Grid";
 import { useQuery } from "@tanstack/react-query";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
-import { OutcomeChip } from "@/components/CallOutcomeChip";
 import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMCPTTStatus } from "@/hooks/useMCPTT";
+import { countCallRecords, type CallOutcome } from "@/queries/callRecords";
 import {
-  CALL_OUTCOMES,
-  countCallRecords,
-  type CallOutcome,
-} from "@/queries/callRecords";
-import { listDiameterPeers, peerName } from "@/queries/diameter";
+  answersAsLeader,
+  getCluster,
+  type ClusterStatus,
+} from "@/queries/cluster";
+import {
+  type DiameterPeer,
+  listDiameterPeers,
+  peerName,
+} from "@/queries/diameter";
 import { getIPSMGW, listSMSRoutes } from "@/queries/ipsmgw";
 import {
   countClientRegistrations,
@@ -42,7 +47,7 @@ import {
 import { getMetrics, sumOf } from "@/queries/metrics";
 import { getOperator } from "@/queries/operator";
 import { getSIPStatus } from "@/queries/sip";
-import { listSIPTrunks } from "@/queries/sipTrunks";
+import { listSIPTrunks, type SIPTrunk } from "@/queries/sipTrunks";
 import { pcscfAddresses } from "@/utils/addresses";
 import { formatDateTime } from "@/utils/dates";
 
@@ -70,10 +75,52 @@ export const formatBytes = (bytes: number): string => {
   return `${sizeFormat.format(n)} ${BYTE_UNITS[i]}`;
 };
 
-const ALWAYS_SHOWN: CallOutcome[] = ["answered", "failed"];
+export const formatUptime = (seconds: number): string => {
+  const s = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(s / 86_400);
+  const hours = Math.floor((s % 86_400) / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  if (days > 0) return `${days} d ${hours} h`;
+  if (hours > 0) return `${hours} h ${minutes} min`;
+  return `${minutes} min`;
+};
 
-const lastDayLink = (outcome?: CallOutcome) =>
-  `/calls?${outcome ? `outcome=${outcome}&` : ""}range=24h`;
+interface OutcomeGroup {
+  label: string;
+  hint: string;
+  outcomes: CallOutcome[];
+  color: Exclude<ChipProps["color"], undefined>;
+}
+
+export const OUTCOME_GROUPS: OutcomeGroup[] = [
+  {
+    label: "Answered",
+    hint: "The callee answered.",
+    outcomes: ["answered"],
+    color: "success",
+  },
+  {
+    label: "Not Answered",
+    hint: "The network set the call up, but it was not answered: no answer, busy, cancelled by the caller, or rejected by the callee.",
+    outcomes: ["no_answer", "busy", "cancelled", "rejected"],
+    color: "default",
+  },
+  {
+    label: "Unreachable",
+    hint: "The callee had no registration. Many of these can point to registration problems.",
+    outcomes: ["unavailable"],
+    color: "warning",
+  },
+  {
+    label: "Failed",
+    hint: "The call failed because of an error in the network.",
+    outcomes: ["failed"],
+    color: "error",
+  },
+];
+
+const lastDayLink = (outcomes?: CallOutcome[]) =>
+  `/calls?${outcomes ? `outcome=${outcomes.join(",")}&` : ""}range=24h`;
 
 const headerSx = {
   backgroundColor: "backgroundSubtle",
@@ -99,6 +146,7 @@ interface PanelProps extends Omit<CardProps, "title"> {
   error?: boolean;
   minHeight?: number;
   alignTop?: boolean;
+  compact?: boolean;
   children?: ReactNode;
 }
 
@@ -110,6 +158,7 @@ function Panel({
   error,
   minHeight = 160,
   alignTop,
+  compact,
   children,
   ...cardProps
 }: PanelProps) {
@@ -117,7 +166,7 @@ function Panel({
     <Card
       {...cardProps}
       sx={{
-        height: "100%",
+        height: compact ? "auto" : "100%",
         display: "flex",
         flexDirection: "column",
         borderRadius: 3,
@@ -136,31 +185,33 @@ function Panel({
         }
         action={loading || error ? undefined : action}
         slotProps={{ title: { component: "h3" } }}
-        sx={headerSx}
+        sx={compact ? { ...headerSx, borderRadius: 3 } : headerSx}
       />
-      <CardContent
-        sx={{
-          flexGrow: 1,
-          display: "flex",
-          alignItems: alignTop ? "flex-start" : "center",
-          justifyContent: alignTop ? "flex-start" : "center",
-          minHeight,
-        }}
-      >
-        {loading ? (
-          <Skeleton
-            variant="rounded"
-            width={alignTop ? "100%" : 120}
-            height={alignTop ? minHeight - 32 : 40}
-          />
-        ) : error ? (
-          <Typography variant="body2" color="error">
-            Failed to load data.
-          </Typography>
-        ) : (
-          children
-        )}
-      </CardContent>
+      {!compact && (
+        <CardContent
+          sx={{
+            flexGrow: 1,
+            display: "flex",
+            alignItems: alignTop ? "flex-start" : "center",
+            justifyContent: alignTop ? "flex-start" : "center",
+            minHeight,
+          }}
+        >
+          {loading ? (
+            <Skeleton
+              variant="rounded"
+              width={alignTop ? "100%" : 120}
+              height={alignTop ? minHeight - 32 : 40}
+            />
+          ) : error ? (
+            <Typography variant="body2" color="error">
+              Failed to load data.
+            </Typography>
+          ) : (
+            children
+          )}
+        </CardContent>
+      )}
     </Card>
   );
 }
@@ -168,18 +219,27 @@ function Panel({
 interface KpiCardProps {
   title: string;
   hint?: string;
-  value?: string;
-  alert?: boolean;
+  value?: ReactNode;
+  caption?: ReactNode;
   loading?: boolean;
   error?: boolean;
   to?: string;
 }
 
-function KpiCard({ title, hint, value, alert, to, ...state }: KpiCardProps) {
+function KpiCard({ title, hint, value, caption, to, ...state }: KpiCardProps) {
   const content = (
-    <Typography variant="h4" color={alert ? "error" : undefined}>
-      {value}
-    </Typography>
+    <Box sx={{ textAlign: "center" }}>
+      {typeof value === "string" ? (
+        <Typography variant="h4">{value}</Typography>
+      ) : (
+        value
+      )}
+      {caption && (
+        <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+          {caption}
+        </Typography>
+      )}
+    </Box>
   );
 
   const card = to ? (
@@ -257,16 +317,16 @@ function ServiceState({ enabled }: { enabled: boolean }) {
   );
 }
 
-function Hint({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="body2" color="textSecondary">
-      {children}
-    </Typography>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  const stat = (
     <Box sx={{ textAlign: "center" }}>
       <Typography variant="h4">{value}</Typography>
       <Typography variant="body2" color="textSecondary">
@@ -274,15 +334,175 @@ function Stat({ label, value }: { label: string; value: string }) {
       </Typography>
     </Box>
   );
+  return hint ? (
+    <Tooltip title={hint} arrow describeChild>
+      {stat}
+    </Tooltip>
+  ) : (
+    stat
+  );
 }
 
-const THIRD = { xs: 12, md: 4 };
+function Ratio({
+  value,
+  color,
+}: {
+  value: string;
+  color?: "warning.main" | "error.main";
+}) {
+  return (
+    <Typography variant="h4" sx={{ color }}>
+      {value}
+    </Typography>
+  );
+}
 
-const HALF = { xs: 12, md: 6 };
+function ShareBar({
+  share,
+  color,
+}: {
+  share: number;
+  color: OutcomeGroup["color"];
+}) {
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+      <Box
+        aria-hidden
+        sx={{
+          flexGrow: 1,
+          height: 8,
+          borderRadius: 4,
+          bgcolor: "action.hover",
+          overflow: "hidden",
+        }}
+      >
+        <Box
+          sx={{
+            width: `${share}%`,
+            height: "100%",
+            bgcolor: color === "default" ? "grey.500" : `${color}.main`,
+          }}
+        />
+      </Box>
+      <Typography
+        variant="body2"
+        color="textSecondary"
+        sx={{ minWidth: 40, textAlign: "right" }}
+      >
+        {Math.round(share)}%
+      </Typography>
+    </Box>
+  );
+}
+
+const HA_HINTS = {
+  single: "A single node. Add nodes to keep the IMS working when one fails.",
+  healthy: "Healthy voters out of the cluster's total.",
+  degraded: "At least one node is unhealthy.",
+  noLeader:
+    "No node holds leadership. The cluster cannot accept writes until enough voters recover.",
+  follower: "Cluster health is shown on the leader.",
+  unknown: "Cluster health could not be read from this node.",
+};
+
+function clusterHealth(status?: ClusterStatus): {
+  hint: string;
+  value: ReactNode;
+} {
+  if (!status) {
+    return { hint: HA_HINTS.unknown, value: <Chip label="Unknown" /> };
+  }
+  if (!status.clustered) {
+    return { hint: HA_HINTS.single, value: <Ratio value="1/1" /> };
+  }
+  if (!status.leader_id) {
+    return {
+      hint: HA_HINTS.noLeader,
+      value: <Chip label="No leader" color="error" />,
+    };
+  }
+  if (!answersAsLeader(status)) {
+    return { hint: HA_HINTS.follower, value: <Chip label="Follower" /> };
+  }
+  if (status.healthy === undefined) {
+    return { hint: HA_HINTS.unknown, value: <Chip label="Unknown" /> };
+  }
+  const voters = (status.members ?? []).filter((m) => m.suffrage === "voter");
+  const healthy = voters.filter((m) => m.healthy).length;
+  return {
+    hint: status.healthy ? HA_HINTS.healthy : HA_HINTS.degraded,
+    value: (
+      <Ratio
+        value={`${healthy}/${voters.length}`}
+        color={status.healthy ? undefined : "error.main"}
+      />
+    ),
+  };
+}
+
+function peersHealth(peers: DiameterPeer[]): {
+  hint: string;
+  value: ReactNode;
+  caption?: string;
+} {
+  if (peers.length === 0) {
+    return { hint: "No Diameter peers are configured.", value: "None" };
+  }
+  const notOpen = peers.filter((p) => p.status.state !== "open");
+  const hss = peers.filter((p) => p.applications.includes("cx"));
+  const hssOpen = hss.some((p) => p.status.state === "open");
+  const color =
+    notOpen.length === 0
+      ? undefined
+      : notOpen.length === peers.length || (hss.length > 0 && !hssOpen)
+        ? "error.main"
+        : "warning.main";
+  const hssCaption =
+    hss.length === 0 ? "No HSS peer" : hssOpen ? "HSS open" : "HSS down";
+  return {
+    hint:
+      notOpen.length === 0
+        ? "Peers with an open connection out of all peers."
+        : `Not open: ${notOpen.map(peerName).join(", ")}.`,
+    value: (
+      <Ratio
+        value={`${peers.length - notOpen.length}/${peers.length}`}
+        color={color}
+      />
+    ),
+    caption: `Open · ${hssCaption}`,
+  };
+}
+
+function trunksHealth(trunks: SIPTrunk[]): {
+  hint: string;
+  value: ReactNode;
+  caption?: string;
+} {
+  if (trunks.length === 0) {
+    return { hint: "No SIP trunks are configured.", value: "None" };
+  }
+  const up = trunks.filter((t) => t.status.state === "up").length;
+  const down = trunks.filter((t) => t.status.state !== "up");
+  const color =
+    down.length === 0 ? undefined : up === 0 ? "error.main" : "warning.main";
+  return {
+    hint:
+      down.length === 0
+        ? "Trunks answering keepalives out of all trunks."
+        : `Not up: ${down.map((t) => t.name).join(", ")}.`,
+    value: <Ratio value={`${up}/${trunks.length}`} color={color} />,
+    caption: "Up",
+  };
+}
 
 const QUARTER = { xs: 12, sm: 6, md: 3 };
 
-const TRAFFIC_THIRD = { xs: 12, sm: 6, md: 4 };
+const THIRD = { xs: 12, md: 4 };
+
+const TWO_THIRDS = { xs: 12, md: 8 };
+
+const HALF = { xs: 12, md: 6 };
 
 const failedToLoad = (q: { error: Error | null; data: unknown }) =>
   !!q.error && q.data === undefined;
@@ -304,8 +524,12 @@ export default function Dashboard() {
     enabled: auth.can("sip_trunk:read"),
     refetchInterval: DASHBOARD_REFRESH_MS,
   });
-  const hasTrunks = (trunks.data?.length ?? 0) > 0;
-  const trafficSize = hasTrunks ? QUARTER : TRAFFIC_THIRD;
+  const cluster = useQuery({
+    queryKey: ["cluster"],
+    queryFn: getCluster,
+    enabled: auth.can("cluster:read"),
+    refetchInterval: DASHBOARD_REFRESH_MS,
+  });
   const ipsmgw = useQuery({ queryKey: ["ip-sm-gw"], queryFn: getIPSMGW });
   const smsRoutes = useQuery({
     queryKey: ["sms-routes"],
@@ -352,13 +576,19 @@ export default function Dashboard() {
     n === undefined ? "N/A" : nf.format(n);
 
   const byOutcome = counts.data;
-  const total = byOutcome
-    ? CALL_OUTCOMES.reduce((sum, o) => sum + byOutcome[o], 0)
-    : 0;
-  const outcomes = byOutcome
-    ? CALL_OUTCOMES.filter((o) => ALWAYS_SHOWN.includes(o) || byOutcome[o] > 0)
-    : [];
+  const groups = OUTCOME_GROUPS.map((group) => ({
+    ...group,
+    calls: byOutcome
+      ? group.outcomes.reduce((sum, o) => sum + byOutcome[o], 0)
+      : 0,
+  }));
+  const total = groups.reduce((sum, g) => sum + g.calls, 0);
 
+  const diameterHealth = peersHealth(peers.data ?? []);
+  const trunkHealth = trunksHealth(trunks.data ?? []);
+  const haHealth = clusterHealth(cluster.data);
+
+  const smsOn = !!ipsmgw.data?.number;
   const smscs = (peers.data ?? []).filter((p) =>
     (smsRoutes.data ?? []).some((r) => r.peers.includes(p.id)),
   );
@@ -369,7 +599,7 @@ export default function Dashboard() {
       <PageHeader id="dashboard-title" title="Dashboard" />
 
       <Section title="Overview" first>
-        <Grid size={hasTrunks ? HALF : { xs: 12, md: 8 }}>
+        <Grid size={QUARTER}>
           <Panel
             title="This IMS"
             to="/cores"
@@ -398,60 +628,48 @@ export default function Dashboard() {
             </Fields>
           </Panel>
         </Grid>
-        <Grid size={hasTrunks ? QUARTER : THIRD}>
+        <Grid size={QUARTER}>
           <KpiCard
             title="Diameter Peers"
             to="/cores"
+            hint={diameterHealth.hint}
             loading={peers.isPending}
             error={failedToLoad(peers)}
-            value={count(peers.data?.length)}
-            alert={peers.data?.some((p) => p.status.state !== "open")}
+            value={diameterHealth.value}
+            caption={diameterHealth.caption}
           />
         </Grid>
-        {hasTrunks && (
+        {auth.can("sip_trunk:read") && (
           <Grid size={QUARTER}>
             <KpiCard
               title="SIP Trunks"
               to="/sip-trunks"
-              value={count(trunks.data?.length)}
-              alert={trunks.data?.some((t) => t.status.state === "down")}
+              hint={trunkHealth.hint}
+              loading={trunks.isPending}
+              error={failedToLoad(trunks)}
+              value={trunkHealth.value}
+              caption={trunkHealth.caption}
+            />
+          </Grid>
+        )}
+        {auth.can("cluster:read") && (
+          <Grid size={QUARTER}>
+            <KpiCard
+              title="High Availability"
+              to="/cluster"
+              hint={haHealth.hint}
+              loading={cluster.isPending}
+              error={failedToLoad(cluster)}
+              value={haHealth.value}
             />
           </Grid>
         )}
       </Section>
 
-      <Section title="Traffic">
-        <Grid size={trafficSize}>
-          <KpiCard
-            title="Registered Subscribers"
-            hint="Subscribers with a registration that has not expired."
-            to="/registrations"
-            {...metricCard}
-            value={count(registered)}
-          />
-        </Grid>
-        <Grid size={trafficSize}>
-          <KpiCard
-            title="Active Calls"
-            hint="Calls in progress, ringing or answered."
-            to="/calls"
-            {...metricCard}
-            value={count(activeCalls)}
-          />
-        </Grid>
-        {hasTrunks && (
-          <Grid size={trafficSize}>
-            <KpiCard
-              title="Active Trunk Calls"
-              to="/calls"
-              {...metricCard}
-              value={count(activeTrunkCalls)}
-            />
-          </Grid>
-        )}
-        <Grid size={trafficSize}>
+      <Section title="Calls">
+        <Grid size={TWO_THIRDS}>
           <Panel
-            title="Calls in the Last 24 Hours"
+            title="Last 24 Hours"
             to={lastDayLink()}
             loading={counts.isPending}
             error={failedToLoad(counts)}
@@ -465,29 +683,44 @@ export default function Dashboard() {
                     <TableCell sx={headSx} align="right">
                       Calls
                     </TableCell>
+                    <TableCell sx={{ ...headSx, width: "50%" }}>
+                      Share
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {byOutcome &&
-                    outcomes.map((outcome) => (
+                    groups.map((group) => (
                       <TableRow
-                        key={outcome}
+                        key={group.label}
                         hover
-                        onClick={() => navigate(lastDayLink(outcome))}
+                        onClick={() => navigate(lastDayLink(group.outcomes))}
                         sx={{ cursor: "pointer" }}
                       >
                         <TableCell>
-                          <Box
-                            component={RouterLink}
-                            to={lastDayLink(outcome)}
-                            onClick={(e) => e.stopPropagation()}
-                            sx={{ textDecoration: "none" }}
-                          >
-                            <OutcomeChip outcome={outcome} />
-                          </Box>
+                          <Tooltip title={group.hint} arrow describeChild>
+                            <Box
+                              component={RouterLink}
+                              to={lastDayLink(group.outcomes)}
+                              onClick={(e) => e.stopPropagation()}
+                              sx={{ textDecoration: "none" }}
+                            >
+                              <Chip
+                                label={group.label}
+                                color={group.color}
+                                size="small"
+                              />
+                            </Box>
+                          </Tooltip>
                         </TableCell>
                         <TableCell align="right">
-                          {nf.format(byOutcome[outcome])}
+                          {nf.format(group.calls)}
+                        </TableCell>
+                        <TableCell>
+                          <ShareBar
+                            share={total ? (100 * group.calls) / total : 0}
+                            color={group.color}
+                          />
                         </TableCell>
                       </TableRow>
                     ))}
@@ -496,10 +729,42 @@ export default function Dashboard() {
                     <TableCell align="right" sx={{ fontWeight: 600 }}>
                       {nf.format(total)}
                     </TableCell>
+                    <TableCell />
                   </TableRow>
                 </TableBody>
               </Table>
             </TableContainer>
+          </Panel>
+        </Grid>
+        <Grid size={THIRD}>
+          <Panel title="Now" {...metricCard}>
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-around",
+                flexWrap: "wrap",
+                gap: 2,
+                width: "100%",
+              }}
+            >
+              <Stat
+                label="Registered"
+                hint="Subscribers with a registration that has not expired."
+                value={count(registered)}
+              />
+              <Stat
+                label="Active Calls"
+                hint="Calls in progress, ringing or answered."
+                value={count(activeCalls)}
+              />
+              {(trunks.data?.length ?? 0) > 0 && (
+                <Stat
+                  label="Trunk Calls"
+                  hint="Active calls through a SIP trunk, part of the active calls."
+                  value={count(activeTrunkCalls ?? 0)}
+                />
+              )}
+            </Box>
           </Panel>
         </Grid>
       </Section>
@@ -515,51 +780,46 @@ export default function Dashboard() {
               failedToLoad(peers) ||
               failedToLoad(smsRoutes)
             }
-            action={
-              ipsmgw.data && <ServiceState enabled={!!ipsmgw.data.number} />
-            }
+            action={ipsmgw.data && <ServiceState enabled={smsOn} />}
+            compact={ipsmgw.data !== undefined && !smsOn}
             alignTop
           >
-            {ipsmgw.data?.number ? (
-              <Fields>
-                <Field label="IP-SM-GW Number">{ipsmgw.data.number}</Field>
-                <Field label="SMSCs">
-                  {smscs.length > 0 ? (
-                    <Box
-                      component="ul"
-                      sx={{
-                        m: 0,
-                        p: 0,
-                        listStyle: "none",
-                        display: "grid",
-                        gap: 0.5,
-                      }}
-                    >
-                      {smscs.map((p) => (
-                        <Stack
-                          component="li"
-                          key={p.id}
-                          direction="row"
-                          sx={{ alignItems: "center", gap: 1 }}
-                        >
-                          <span>
-                            <DomainName name={peerName(p)} />
-                          </span>
-                          <PeerStateChip
-                            state={p.status.state}
-                            error={p.status.error}
-                          />
-                        </Stack>
-                      ))}
-                    </Box>
-                  ) : (
-                    <Chip label="no SMSC peer" color="error" size="small" />
-                  )}
-                </Field>
-              </Fields>
-            ) : (
-              <Hint>No IP-SM-GW number: phones get no SMS over IP.</Hint>
-            )}
+            <Fields>
+              <Field label="IP-SM-GW Number">{ipsmgw.data?.number}</Field>
+              <Field label="SMSCs">
+                {smscs.length > 0 ? (
+                  <Box
+                    component="ul"
+                    sx={{
+                      m: 0,
+                      p: 0,
+                      listStyle: "none",
+                      display: "grid",
+                      gap: 0.5,
+                    }}
+                  >
+                    {smscs.map((p) => (
+                      <Stack
+                        component="li"
+                        key={p.id}
+                        direction="row"
+                        sx={{ alignItems: "center", gap: 1 }}
+                      >
+                        <span>
+                          <DomainName name={peerName(p)} />
+                        </span>
+                        <PeerStateChip
+                          state={p.status.state}
+                          error={p.status.error}
+                        />
+                      </Stack>
+                    ))}
+                  </Box>
+                ) : (
+                  <Chip label="no SMSC peer" color="error" size="small" />
+                )}
+              </Field>
+            </Fields>
           </Panel>
         </Grid>
         <Grid size={HALF}>
@@ -578,27 +838,18 @@ export default function Dashboard() {
             action={
               mcptt.status !== undefined && <ServiceState enabled={mcpttOn} />
             }
-            alignTop={!mcpttOn}
+            compact={mcptt.status !== undefined && !mcpttOn}
           >
-            {mcpttOn ? (
-              <Box
-                sx={{
-                  display: "flex",
-                  justifyContent: "space-around",
-                  width: "100%",
-                }}
-              >
-                <Stat
-                  label="Registered Clients"
-                  value={count(pttClients.data)}
-                />
-                <Stat label="Group Calls" value={count(pttCalls.data)} />
-              </Box>
-            ) : (
-              <Hint>
-                No <code>mcptt</code> section in <code>ims.yaml</code>.
-              </Hint>
-            )}
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-around",
+                width: "100%",
+              }}
+            >
+              <Stat label="Registered Clients" value={count(pttClients.data)} />
+              <Stat label="Group Calls" value={count(pttCalls.data)} />
+            </Box>
           </Panel>
         </Grid>
       </Section>
@@ -622,13 +873,17 @@ export default function Dashboard() {
         </Grid>
         <Grid size={THIRD}>
           <KpiCard
-            title="Up Since"
-            hint="Time when the IMS process was started."
+            title="Uptime"
+            hint={
+              startedAt === undefined
+                ? "Time since the IMS process was started."
+                : `Started ${formatDateTime(new Date(startedAt * 1000).toISOString())}.`
+            }
             {...metricCard}
             value={
               startedAt === undefined
                 ? "N/A"
-                : formatDateTime(new Date(startedAt * 1000).toISOString())
+                : formatUptime(metrics.dataUpdatedAt / 1000 - startedAt)
             }
           />
         </Grid>
