@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   FormControlLabel,
   IconButton,
-  InputAdornment,
   MenuItem,
   Stack,
   Switch,
@@ -13,25 +12,15 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import {
-  Add as AddIcon,
-  ArrowDownward as ArrowDownwardIcon,
-  ArrowUpward as ArrowUpwardIcon,
-  CheckCircle as CheckCircleIcon,
-  ContentCopy as ContentCopyIcon,
-  Delete as DeleteIcon,
-  Error as ErrorIcon,
-} from "@mui/icons-material";
+import { Add as AddIcon, Delete as DeleteIcon } from "@mui/icons-material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import EditDialog from "@/components/EditDialog";
 import PasswordField from "@/components/PasswordField";
 import RoleField from "@/components/RoleField";
-import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { useSnackbar } from "@/contexts/SnackbarContext";
 import {
   caCertificateError,
   currentUpdate,
-  discoverOIDC,
   groupErrors,
   httpsURLError,
   MAX_DISPLAY_NAME_BYTES,
@@ -39,7 +28,6 @@ import {
   MAX_SESSION_LIFETIME_SECONDS,
   MAX_VALUE_BYTES,
   MIN_SESSION_LIFETIME_SECONDS,
-  OIDC_CALLBACK_PATH,
   type OIDCSettings,
   scopesError,
   splitScopes,
@@ -68,8 +56,6 @@ interface MappingRow {
   role_id: RoleID;
 }
 
-type Direction = "up" | "down";
-
 function useUpdateOIDC(onClose: () => void) {
   const queryClient = useQueryClient();
   const { showSnackbar } = useSnackbar();
@@ -84,33 +70,47 @@ function useUpdateOIDC(onClose: () => void) {
   });
 }
 
-function RedirectURLField({ value }: { value: string }) {
-  const copy = useCopyToClipboard();
+export function OIDCExternalURLDialog({
+  settings,
+  onClose,
+}: {
+  settings: OIDCSettings;
+  onClose: () => void;
+}) {
+  const [externalURL, setExternalURL] = useState(
+    settings.external_url ||
+      (window.location.protocol === "https:" ? window.location.origin : ""),
+  );
+  const mutation = useUpdateOIDC(onClose);
+  const error = httpsURLError(externalURL.trim(), {
+    origin: true,
+    missing: settings.enabled ? "Enter the external URL." : undefined,
+  });
+
   return (
-    <TextField
-      label="Redirect URL"
-      value={value}
-      helperText="Register this at the identity provider."
-      slotProps={{
-        input: {
-          readOnly: true,
-          sx: { fontFamily: "monospace" },
-          endAdornment: (
-            <InputAdornment position="end">
-              <Tooltip title="Copy">
-                <IconButton
-                  edge="end"
-                  aria-label="Copy the redirect URL"
-                  onClick={() => void copy(value, "Redirect URL")}
-                >
-                  <ContentCopyIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </InputAdornment>
-          ),
-        },
-      }}
-    />
+    <EditDialog
+      title="Edit External URL"
+      valid={error === undefined}
+      pending={mutation.isPending}
+      error={mutation.error}
+      onSubmit={() =>
+        mutation.mutate({
+          ...currentUpdate(settings),
+          external_url: externalURL.trim().replace(/\/$/, ""),
+        })
+      }
+      onClose={onClose}
+    >
+      <TextField
+        label="External URL"
+        value={externalURL}
+        onChange={(e) => setExternalURL(e.target.value)}
+        error={error !== undefined}
+        helperText={error ?? "The https address users open Ella IMS at."}
+        required={settings.enabled}
+        autoFocus
+      />
+    </EditDialog>
   );
 }
 
@@ -126,10 +126,6 @@ export function OIDCProviderDialog({
   const [issuer, setIssuer] = useState(settings.issuer);
   const [clientID, setClientID] = useState(settings.client_id);
   const [clientSecret, setClientSecret] = useState("");
-  const [externalURL, setExternalURL] = useState(
-    settings.external_url ||
-      (window.location.protocol === "https:" ? window.location.origin : ""),
-  );
   const [scopes, setScopes] = useState(settings.scopes.join(" "));
   const [lifetimeUnit, setLifetimeUnit] = useState(() =>
     largestUnit(settings.session_lifetime_seconds),
@@ -144,16 +140,11 @@ export function OIDCProviderDialog({
     ? Number(lifetime.trim()) * lifetimeUnit
     : NaN;
   const scopeList = splitScopes(scopes);
-  const origin = externalURL.trim().replace(/\/$/, "");
   const identityChanged =
     issuer.trim() !== settings.issuer || clientID.trim() !== settings.client_id;
   const signsOut = enabled && issuer.trim() !== settings.issuer;
 
   const mutation = useUpdateOIDC(onClose);
-
-  const test = useMutation({
-    mutationFn: () => discoverOIDC(issuer.trim(), caCertificate.trim()),
-  });
 
   const errors = {
     displayName: textError(
@@ -180,10 +171,6 @@ export function OIDCProviderDialog({
           : enabled
             ? "Enter the client secret."
             : undefined),
-    externalURL: httpsURLError(externalURL.trim(), {
-      origin: true,
-      missing: enabled ? "Enter the external URL." : undefined,
-    }),
     scopes: scopesError(scopeList),
     lifetime:
       !Number.isSafeInteger(lifetimeSeconds) ||
@@ -204,7 +191,6 @@ export function OIDCProviderDialog({
       onSubmit={() =>
         mutation.mutate({
           ...currentUpdate(settings),
-          external_url: origin,
           issuer: issuer.trim(),
           client_id: clientID.trim(),
           client_secret: clientSecret,
@@ -225,25 +211,19 @@ export function OIDCProviderDialog({
       }
     >
       <TextField
-        label="External URL"
-        value={externalURL}
-        onChange={(e) => setExternalURL(e.target.value)}
-        error={errors.externalURL !== undefined}
+        label="Display name"
+        value={displayName}
+        onChange={(e) => setDisplayName(e.target.value)}
+        error={errors.displayName !== undefined}
         helperText={
-          errors.externalURL ?? "The https address users open Ella IMS at."
+          errors.displayName ?? 'Shown on the login page: "Log in with …".'
         }
         required={enabled}
       />
-      {origin !== "" && errors.externalURL === undefined && (
-        <RedirectURLField value={origin + OIDC_CALLBACK_PATH} />
-      )}
       <TextField
         label="Issuer URL"
         value={issuer}
-        onChange={(e) => {
-          setIssuer(e.target.value);
-          test.reset();
-        }}
+        onChange={(e) => setIssuer(e.target.value)}
         error={errors.issuer !== undefined}
         helperText={
           errors.issuer ?? "Such as https://idp.example.com/realms/ims."
@@ -253,10 +233,7 @@ export function OIDCProviderDialog({
       <TextField
         label="CA certificate"
         value={caCertificate}
-        onChange={(e) => {
-          setCACertificate(e.target.value);
-          test.reset();
-        }}
+        onChange={(e) => setCACertificate(e.target.value)}
         error={errors.caCertificate !== undefined}
         helperText={
           errors.caCertificate ??
@@ -267,53 +244,6 @@ export function OIDCProviderDialog({
         maxRows={8}
         slotProps={{ htmlInput: { style: { fontFamily: "monospace" } } }}
       />
-      <Box component="output" sx={{ display: "block" }}>
-        <Stack
-          component="span"
-          direction="row"
-          spacing={1}
-          sx={{ alignItems: "center" }}
-        >
-          <Button
-            variant="outlined"
-            onClick={() => test.mutate()}
-            disabled={
-              issuer.trim() === "" ||
-              errors.issuer !== undefined ||
-              errors.caCertificate !== undefined ||
-              test.isPending
-            }
-          >
-            {test.isPending ? "Testing…" : "Test"}
-          </Button>
-          {test.isSuccess && (
-            <>
-              <CheckCircleIcon color="success" fontSize="small" />
-              <Typography variant="body2" component="span">
-                Works
-              </Typography>
-            </>
-          )}
-          {test.isError && (
-            <>
-              <ErrorIcon color="error" fontSize="small" />
-              <Typography variant="body2" component="span">
-                Failed
-              </Typography>
-            </>
-          )}
-        </Stack>
-        {test.isError && (
-          <Typography
-            variant="body2"
-            component="span"
-            color="error"
-            sx={{ display: "block", mt: 0.5, overflowWrap: "anywhere" }}
-          >
-            {errorMessage(test.error)}
-          </Typography>
-        )}
-      </Box>
       <TextField
         label="Client ID"
         value={clientID}
@@ -334,16 +264,6 @@ export function OIDCProviderDialog({
             : undefined)
         }
         autoComplete="new-password"
-      />
-      <TextField
-        label="Display name"
-        value={displayName}
-        onChange={(e) => setDisplayName(e.target.value)}
-        error={errors.displayName !== undefined}
-        helperText={
-          errors.displayName ?? 'Shown on the login page: "Log in with …".'
-        }
-        required={enabled}
       />
       <TextField
         label="Scopes"
@@ -410,25 +330,6 @@ export function OIDCGroupsDialog({
   const [rows, setRows] = useState<MappingRow[]>(() =>
     settings.group_roles.map((g, id) => ({ id, ...g })),
   );
-  const moveButtons = useRef(new Map<string, HTMLButtonElement | null>());
-  const pendingFocus = useRef<{ id: number; direction: Direction } | null>(
-    null,
-  );
-
-  useEffect(() => {
-    const target = pendingFocus.current;
-    if (!target) return;
-    pendingFocus.current = null;
-    const order: Direction[] =
-      target.direction === "up" ? ["up", "down"] : ["down", "up"];
-    for (const direction of order) {
-      const button = moveButtons.current.get(`${target.id}:${direction}`);
-      if (button && !button.disabled) {
-        button.focus();
-        return;
-      }
-    }
-  });
 
   const trimmedGroups = rows.map((r) => r.group.trim());
   const mutation = useUpdateOIDC(onClose);
@@ -448,19 +349,6 @@ export function OIDCGroupsDialog({
     setRows((current) =>
       current.map((row, j) => (j === i ? { ...row, ...change } : row)),
     );
-  const move = (i: number, direction: Direction) => {
-    const by = direction === "up" ? -1 : 1;
-    pendingFocus.current = { id: rows[i].id, direction };
-    setRows((current) => {
-      const next = [...current];
-      [next[i], next[i + by]] = [next[i + by], next[i]];
-      return next;
-    });
-  };
-  const moveButton =
-    (id: number, direction: Direction) => (node: HTMLButtonElement | null) => {
-      moveButtons.current.set(`${id}:${direction}`, node);
-    };
 
   return (
     <EditDialog
@@ -481,15 +369,17 @@ export function OIDCGroupsDialog({
       onClose={onClose}
     >
       <Typography variant="body2" color="textSecondary">
-        Optional. Users in a mapped group are created at their first sign-in.
-        The first matching group gives the role.
+        Optional. Users in a mapped group are created at their first sign-in. A
+        user in several mapped groups gets the highest of their roles.
       </Typography>
       <TextField
         label="Groups claim"
         value={groupsClaim}
         onChange={(e) => setGroupsClaim(e.target.value)}
         error={claimError !== undefined}
-        helperText={claimError ?? "Such as groups."}
+        placeholder="groups"
+        helperText={claimError ?? "The claim that holds the user's groups."}
+        slotProps={{ inputLabel: { shrink: true } }}
       />
       {rows.map((row, i) => (
         <Stack
@@ -525,30 +415,6 @@ export function OIDCGroupsDialog({
             direction="row"
             sx={{ justifyContent: "flex-end", pt: { sm: 1 } }}
           >
-            <Tooltip title="Move up">
-              <span>
-                <IconButton
-                  ref={moveButton(row.id, "up")}
-                  aria-label={`Move group ${i + 1} up`}
-                  disabled={i === 0}
-                  onClick={() => move(i, "up")}
-                >
-                  <ArrowUpwardIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title="Move down">
-              <span>
-                <IconButton
-                  ref={moveButton(row.id, "down")}
-                  aria-label={`Move group ${i + 1} down`}
-                  disabled={i === rows.length - 1}
-                  onClick={() => move(i, "down")}
-                >
-                  <ArrowDownwardIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
             <Tooltip title="Remove">
               <IconButton
                 aria-label={`Remove group ${i + 1}`}

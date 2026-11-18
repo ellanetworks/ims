@@ -19,6 +19,7 @@ import (
 
 const (
 	CallbackPath       = "/api/v1/auth/oidc/callback"
+	PostLogoutPath     = "/login"
 	MinSessionLifetime = 5 * time.Minute
 	MaxSessionLifetime = 30 * 24 * time.Hour
 	MaxScopes          = 20
@@ -67,16 +68,29 @@ func (l *Live) Update(ctx context.Context, o db.OIDC) error {
 	o = clone(o)
 	o.ExternalURL = externalOrigin(o.ExternalURL)
 
+	if err := l.store.UpdateOIDC(ctx, o); err != nil {
+		return fmt.Errorf("save OIDC settings: %w", err)
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := l.store.UpdateOIDC(ctx, o); err != nil {
-		return fmt.Errorf("save OIDC settings: %w", err)
+	if stored, err := l.store.GetOIDC(ctx); err == nil {
+		o = clone(stored)
 	}
 
 	l.current.Store(&o)
 
 	return nil
+}
+
+func (l *Live) Reload(o db.OIDC) {
+	o = clone(o)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.current.Store(&o)
 }
 
 func clone(o db.OIDC) db.OIDC {
@@ -88,6 +102,10 @@ func clone(o db.OIDC) db.OIDC {
 
 func RedirectURL(o db.OIDC) string {
 	return o.ExternalURL + CallbackPath
+}
+
+func PostLogoutRedirectURL(o db.OIDC) string {
+	return o.ExternalURL + PostLogoutPath
 }
 
 func Validate(o db.OIDC) error {
@@ -240,14 +258,29 @@ func ValidateCACertificate(s string) error {
 }
 
 func certPool(s string) (*x509.CertPool, error) {
+	certs, err := CACertificates(s)
+	if err != nil {
+		return nil, err
+	}
+
+	pool := x509.NewCertPool()
+
+	for _, cert := range certs {
+		pool.AddCert(cert)
+	}
+
+	return pool, nil
+}
+
+func CACertificates(s string) ([]*x509.Certificate, error) {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
 		lines[i] = strings.TrimSpace(line)
 	}
 
-	pool := x509.NewCertPool()
 	rest := []byte(strings.Join(lines, "\n"))
-	n := 0
+
+	var certs []*x509.Certificate
 
 	for {
 		var block *pem.Block
@@ -266,16 +299,14 @@ func certPool(s string) (*x509.CertPool, error) {
 			return nil, fmt.Errorf("ca_certificate: %w", err)
 		}
 
-		pool.AddCert(cert)
-
-		n++
+		certs = append(certs, cert)
 	}
 
-	if strings.TrimSpace(string(rest)) != "" || n == 0 {
+	if strings.TrimSpace(string(rest)) != "" || len(certs) == 0 {
 		return nil, errors.New("ca_certificate must hold one or more PEM certificates")
 	}
 
-	return pool, nil
+	return certs, nil
 }
 
 func validateText(name, s string, maxLength int, required bool) error {
@@ -289,9 +320,4 @@ func validateText(name, s string, maxLength int, required bool) error {
 	}
 
 	return nil
-}
-
-func (l *Live) Reload(o db.OIDC) {
-	o = clone(o)
-	l.current.Store(&o)
 }

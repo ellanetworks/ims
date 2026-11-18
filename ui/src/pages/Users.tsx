@@ -16,7 +16,6 @@ import { listUsers, roleLabels, type User } from "@/queries/users";
 import { GRID_SX } from "@/utils/layout";
 
 const roleSource = (user: User, oidc?: OIDCSettings) => {
-  if (user.role_pinned) return " (pinned)";
   if (roleFromGroups(user, oidc)) return " (from groups)";
   return "";
 };

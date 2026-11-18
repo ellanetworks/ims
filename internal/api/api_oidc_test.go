@@ -50,6 +50,14 @@ func validOIDC() map[string]any {
 	}
 }
 
+func idpOIDC(idp *fakeIdP) map[string]any {
+	o := validOIDC()
+	o["issuer"] = idp.issuer
+	o["ca_certificate"] = idp.ca()
+
+	return o
+}
+
 func body(t *testing.T, v any) string {
 	t.Helper()
 
@@ -63,6 +71,8 @@ func body(t *testing.T, v any) string {
 
 func TestOIDCSettings(t *testing.T) {
 	a := newTestAPI(t)
+	idp := newFakeIdP(t)
+	ca := idp.server.Certificate()
 
 	code, result, msg := a.do(t, http.MethodGet, "/api/v1/oidc", "")
 	if code != http.StatusOK {
@@ -74,7 +84,7 @@ func TestOIDCSettings(t *testing.T) {
 		t.Fatalf("default settings = %+v", got)
 	}
 
-	code, result, msg = a.do(t, http.MethodPut, "/api/v1/oidc", body(t, validOIDC()))
+	code, result, msg = a.do(t, http.MethodPut, "/api/v1/oidc", body(t, idpOIDC(idp)))
 	if code != http.StatusOK {
 		t.Fatalf("PUT = %d %q", code, msg)
 	}
@@ -87,14 +97,19 @@ func TestOIDCSettings(t *testing.T) {
 		Enabled:                true,
 		ExternalURL:            "https://ims.example.com",
 		RedirectURL:            "https://ims.example.com/api/v1/auth/oidc/callback",
-		Issuer:                 "https://idp.example.com/realms/ims",
+		PostLogoutRedirectURL:  "https://ims.example.com/login",
+		Issuer:                 idp.issuer,
 		ClientID:               "ims",
 		ClientSecretSet:        true,
 		DisplayName:            "Keycloak",
 		Scopes:                 []string{"openid", "email", "profile"},
 		SessionLifetimeSeconds: 28800,
-		GroupsClaim:            "groups",
-		GroupRoles:             []api.OIDCGroupRole{{Group: "noc", RoleID: 3}, {Group: "ops", RoleID: 2}},
+		CACertificate:          idp.ca(),
+		CACertificates: []api.OIDCCACert{{
+			Subject: ca.Subject.String(), NotAfter: ca.NotAfter.UTC().Format(time.RFC3339),
+		}},
+		GroupsClaim: "groups",
+		GroupRoles:  []api.OIDCGroupRole{{Group: "noc", RoleID: 3}, {Group: "ops", RoleID: 2}},
 	}
 
 	for name, raw := range map[string]json.RawMessage{"PUT": result, "GET": a.get(t, "/api/v1/oidc")} {
@@ -103,7 +118,7 @@ func TestOIDCSettings(t *testing.T) {
 		}
 	}
 
-	keep := validOIDC()
+	keep := idpOIDC(idp)
 	delete(keep, "client_secret")
 	keep["display_name"] = "Corporate SSO"
 
@@ -191,7 +206,7 @@ func TestOIDCSettingsAreValidated(t *testing.T) {
 	}
 }
 
-func TestOIDCSettingsNeedAnAdminLogin(t *testing.T) {
+func TestOIDCSettingsAccess(t *testing.T) {
 	a := newTestAPI(t)
 
 	nm := a.userLogin(t, "nm@example.com", db.RoleNetworkManager)
@@ -199,15 +214,17 @@ func TestOIDCSettingsNeedAnAdminLogin(t *testing.T) {
 
 	for _, tc := range []struct {
 		method, path, body string
+		tokenAllowed       bool
 	}{
-		{http.MethodGet, "/api/v1/oidc", ""},
-		{http.MethodPut, "/api/v1/oidc", body(t, validOIDC())},
-		{http.MethodPost, "/api/v1/oidc/discovery", `{"issuer": "https://idp.example.com"}`},
+		{http.MethodGet, "/api/v1/oidc", "", true},
+		{http.MethodPut, "/api/v1/oidc", body(t, validOIDC()), false},
 	} {
-		for name, token := range map[string]string{"a network manager": nm, "an admin API token": adminToken} {
-			if code, _, _ := a.doAs(t, token, tc.method, tc.path, tc.body); code != http.StatusForbidden {
-				t.Errorf("%s %s as %s = %d, want %d", tc.method, tc.path, name, code, http.StatusForbidden)
-			}
+		if code, _, _ := a.doAs(t, nm, tc.method, tc.path, tc.body); code != http.StatusForbidden {
+			t.Errorf("%s %s as a network manager = %d, want %d", tc.method, tc.path, code, http.StatusForbidden)
+		}
+
+		if code, _, _ := a.doAs(t, adminToken, tc.method, tc.path, tc.body); (code == http.StatusForbidden) == tc.tokenAllowed {
+			t.Errorf("%s %s as an admin API token = %d, allowed %t", tc.method, tc.path, code, tc.tokenAllowed)
 		}
 	}
 }
@@ -236,6 +253,7 @@ type fakeIdP struct {
 type issuedCode struct {
 	challenge string
 	idToken   string
+	access    string
 	userInfo  map[string]any
 }
 
@@ -316,47 +334,56 @@ func (idp *fakeIdP) ca() string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: idp.server.Certificate().Raw}))
 }
 
-func TestDiscoverOIDC(t *testing.T) {
+func (a *testAPI) enableOIDC(t *testing.T, issuer, ca string) (int, string) {
+	t.Helper()
+
+	o := validOIDC()
+	o["issuer"] = issuer
+	o["ca_certificate"] = ca
+
+	code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, o))
+
+	return code, msg
+}
+
+func TestOIDCEnableNeedsDiscovery(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 
-	discover := func(issuer, ca string) (int, json.RawMessage, string) {
-		return a.do(t, http.MethodPost, "/api/v1/oidc/discovery",
-			body(t, map[string]string{"issuer": issuer, "ca_certificate": ca}))
+	disable := func() {
+		t.Helper()
+
+		o := validOIDC()
+		o["enabled"] = false
+
+		if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, o)); code != http.StatusOK {
+			t.Fatalf("disable = %d %q", code, msg)
+		}
 	}
 
-	code, result, msg := discover(idp.issuer, idp.ca())
-	if code != http.StatusOK {
-		t.Fatalf("discovery = %d %q", code, msg)
+	if code, msg := a.enableOIDC(t, idp.issuer, idp.ca()); code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, msg)
 	}
 
-	want := api.OIDCDiscovery{
-		Issuer:                  idp.issuer,
-		AuthorizationEndpoint:   idp.issuer + "/auth",
-		TokenEndpoint:           idp.issuer + "/token",
-		UserInfoEndpoint:        idp.issuer + "/userinfo",
-		JWKSURI:                 idp.issuer + "/keys",
-		SigningAlgorithms:       []string{"ES256"},
-		TokenEndpointAuthMethod: "client_secret_basic",
-		Keys:                    1,
-		PKCE:                    true,
-		IssuerParameter:         true,
-	}
-	if got := decode[api.OIDCDiscovery](t, result); body(t, got) != body(t, want) {
-		t.Fatalf("discovery = %+v, want %+v", got, want)
-	}
+	disable()
 
-	if code, _, msg := discover(idp.issuer, ""); code != http.StatusBadGateway {
+	defer func() {
+		if got := decode[api.OIDCSettings](t, a.get(t, "/api/v1/oidc")); got.Enabled {
+			t.Errorf("enabled after failed discoveries: %+v", got)
+		}
+	}()
+
+	if code, msg := a.enableOIDC(t, idp.issuer, ""); code != http.StatusBadGateway {
 		t.Errorf("discovery without trusting the provider's CA = %d %q, want %d", code, msg, http.StatusBadGateway)
 	}
 
-	if code, _, msg := discover(idp.issuer+"/", idp.ca()); code != http.StatusBadGateway ||
+	if code, msg := a.enableOIDC(t, idp.issuer+"/", idp.ca()); code != http.StatusBadGateway ||
 		!strings.Contains(msg, "did not match") {
 		t.Errorf("discovery with another issuer = %d %q, want %d about the issuer", code, msg, http.StatusBadGateway)
 	}
 
 	for name, issuer := range map[string]string{"an http issuer": "http://idp.example.com", "no issuer": ""} {
-		if code, _, msg := discover(issuer, ""); code != http.StatusBadRequest {
+		if code, msg := a.enableOIDC(t, issuer, ""); code != http.StatusBadRequest {
 			t.Errorf("discovery with %s = %d %q, want %d", name, code, msg, http.StatusBadRequest)
 		}
 	}
@@ -378,8 +405,8 @@ func TestDiscoverOIDC(t *testing.T) {
 
 		change()
 
-		if code, _, msg := discover(idp.issuer, idp.ca()); code != http.StatusBadGateway {
-			t.Errorf("discovery with %s = %d %q, want %d", name, code, msg, http.StatusBadGateway)
+		if code, msg := a.enableOIDC(t, idp.issuer, idp.ca()); code != http.StatusBadGateway {
+			t.Errorf("enable with %s = %d %q, want %d", name, code, msg, http.StatusBadGateway)
 		}
 
 		idp.metadata, idp.keys = saved, savedKeys
@@ -486,12 +513,13 @@ func TestUsersWithoutAPassword(t *testing.T) {
 func TestUnlinkUser(t *testing.T) {
 	a := newTestAPI(t)
 	ctx := context.Background()
+	idp := newFakeIdP(t)
 
-	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, validOIDC())); code != http.StatusOK {
+	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, idpOIDC(idp))); code != http.StatusOK {
 		t.Fatalf("PUT /api/v1/oidc = %d %q", code, msg)
 	}
 
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	u, err := a.store.GetUser(ctx, "nm@example.com")
 	if err != nil {
@@ -499,7 +527,7 @@ func TestUnlinkUser(t *testing.T) {
 	}
 
 	if _, err := a.store.CreateIdentity(ctx, u.ID, db.NewIdentity{
-		Issuer: "https://idp.example.com/realms/ims", Subject: "sub", At: a.now,
+		Issuer: idp.issuer, Subject: "sub", At: a.now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -521,16 +549,17 @@ func TestUnlinkUser(t *testing.T) {
 	}
 }
 
-func TestRoleFromGroupsNeedsAPin(t *testing.T) {
+func TestRoleFromGroupsCannotBeChanged(t *testing.T) {
 	a := newTestAPI(t)
 	ctx := context.Background()
+	idp := newFakeIdP(t)
 
-	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, validOIDC())); code != http.StatusOK {
+	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, idpOIDC(idp))); code != http.StatusOK {
 		t.Fatalf("PUT /api/v1/oidc = %d %q", code, msg)
 	}
 
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
-	a.createUser(t, "local@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "local@example.com", db.RoleNetworkManager)
 
 	u, err := a.store.GetUser(ctx, "nm@example.com")
 	if err != nil {
@@ -538,7 +567,7 @@ func TestRoleFromGroupsNeedsAPin(t *testing.T) {
 	}
 
 	if _, err := a.store.CreateIdentity(ctx, u.ID, db.NewIdentity{
-		Issuer: "https://idp.example.com/realms/ims", Subject: "sub", At: a.now,
+		Issuer: idp.issuer, Subject: "sub", At: a.now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -553,25 +582,5 @@ func TestRoleFromGroupsNeedsAPin(t *testing.T) {
 
 	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/users/nm@example.com", `{"role_id": 2}`); code != http.StatusConflict {
 		t.Fatalf("change the role of a user with groups = %d %q, want %d", code, msg, http.StatusConflict)
-	}
-
-	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/users/nm@example.com", `{"role_id": 2, "role_pinned": true}`); code != http.StatusOK {
-		t.Fatalf("change and pin the role = %d %q", code, msg)
-	}
-
-	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); got.RoleID != db.RoleReadOnly || !got.RolePinned {
-		t.Fatalf("user = %+v", got)
-	}
-
-	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/users/nm@example.com", `{"role_id": 3}`); code != http.StatusOK {
-		t.Fatalf("change a pinned role = %d %q", code, msg)
-	}
-
-	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/users/nm@example.com", `{"role_id": 3, "role_pinned": false}`); code != http.StatusOK {
-		t.Fatalf("unpin = %d %q", code, msg)
-	}
-
-	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); got.RolePinned {
-		t.Fatalf("user after unpinning = %+v", got)
 	}
 }

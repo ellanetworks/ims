@@ -53,7 +53,7 @@ func TestOIDCLoginChecksTheSettingsWhenItEnds(t *testing.T) {
 			a := newTestAPI(t)
 			idp, other := newFakeIdP(t), newFakeIdP(t)
 			a.configureOIDC(t, idp, nil)
-			a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+			a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 			var code atomic.Int64
 
@@ -85,7 +85,7 @@ func TestOIDCLoginIsSingleUse(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	res := a.oidcLogin(t, idp, oidcLogin{})
 	if res.outcome != "success" {
@@ -162,13 +162,7 @@ func TestOIDCTokenRequestAuthenticatesOnce(t *testing.T) {
 			}
 
 			a.configureOIDC(t, idp, nil)
-			a.createUser(t, "nm@example.com", db.RoleNetworkManager)
-
-			code, result, msg := a.do(t, http.MethodPost, "/api/v1/oidc/discovery",
-				body(t, map[string]string{"issuer": idp.issuer, "ca_certificate": idp.ca()}))
-			if got := decode[api.OIDCDiscovery](t, result); code != http.StatusOK || got.TokenEndpointAuthMethod != tc.want {
-				t.Fatalf("discovery = %d %q, method %q, want %q", code, msg, got.TokenEndpointAuthMethod, tc.want)
-			}
+			a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 			if res := a.oidcLogin(t, idp, oidcLogin{}); res.outcome != "success" || idp.authMethod != tc.want {
 				t.Fatalf("login: %q with %q, want success with %q", res.outcome, idp.authMethod, tc.want)
@@ -193,11 +187,10 @@ func TestOIDCTokenRequestAuthenticatesOnce(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	idp.metadata["token_endpoint_auth_methods_supported"] = []string{"private_key_jwt"}
-	a.configureOIDC(t, idp, nil)
 
-	rec := serve(a.handler, request(http.MethodGet, "/api/v1/auth/oidc/login", "", ""))
-	if rec.Header().Get("Location") != "/login?error=unavailable" {
-		t.Fatalf("start with a provider without client secrets: Location %q", rec.Header().Get("Location"))
+	if code, msg := a.enableOIDC(t, idp.issuer, idp.ca()); code != http.StatusBadGateway ||
+		!strings.Contains(msg, "neither client_secret_basic nor client_secret_post") {
+		t.Fatalf("enable with a provider without client secrets = %d %q", code, msg)
 	}
 }
 
@@ -250,7 +243,7 @@ func TestOIDCLoginReadsUserInfo(t *testing.T) {
 					o["group_roles"] = []map[string]any{{"group": "ops", "role_id": 2}}
 				}
 			})
-			a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+			a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 			if res := a.oidcLogin(t, idp, tc.login); res.outcome != tc.outcome {
 				t.Fatalf("outcome %q, want %q", res.outcome, tc.outcome)
@@ -271,7 +264,7 @@ func TestOIDCLoginReadsUserInfo(t *testing.T) {
 	idp := newFakeIdP(t)
 	delete(idp.metadata, "userinfo_endpoint")
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	if res := a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{"email": nil}}); res.outcome != "not_set_up" {
 		t.Fatalf("no email and no UserInfo endpoint: %q", res.outcome)
@@ -294,7 +287,7 @@ func TestOIDCProviderRedirects(t *testing.T) {
 		http.Redirect(w, r, capture.issuer+"/token-capture", http.StatusTemporaryRedirect)
 	}
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	if res := a.oidcLogin(t, idp, oidcLogin{}); res.outcome != "failed" || captured.Load() != 0 {
 		t.Fatalf("a redirected token request: outcome %q, %d requests to the target", res.outcome, captured.Load())
@@ -308,8 +301,7 @@ func TestOIDCProviderRedirects(t *testing.T) {
 		return true
 	}
 
-	code, _, msg := a.do(t, http.MethodPost, "/api/v1/oidc/discovery",
-		body(t, map[string]string{"issuer": other.issuer, "ca_certificate": other.ca()}))
+	code, msg := a.enableOIDC(t, other.issuer, other.ca())
 	if code != http.StatusBadGateway || !strings.Contains(msg, "not https") {
 		t.Fatalf("discovery redirected to http = %d %q", code, msg)
 	}
@@ -321,8 +313,7 @@ func TestOIDCProviderRedirects(t *testing.T) {
 		return true
 	}
 
-	code, _, msg = a.do(t, http.MethodPost, "/api/v1/oidc/discovery",
-		body(t, map[string]string{"issuer": other.issuer, "ca_certificate": other.ca()}))
+	code, msg = a.enableOIDC(t, other.issuer, other.ca())
 	if code != http.StatusBadGateway || len(msg) > 300 {
 		t.Fatalf("discovery of a failing provider = %d, %d bytes of message", code, len(msg))
 	}
@@ -334,6 +325,9 @@ func TestOIDCProviderResponsesAreCapped(t *testing.T) {
 
 	var written atomic.Int64
 
+	a.configureOIDC(t, idp, nil)
+
+	idp.mu.Lock()
 	idp.onDiscover = func(w http.ResponseWriter) bool {
 		w.WriteHeader(http.StatusOK)
 
@@ -350,14 +344,12 @@ func TestOIDCProviderResponsesAreCapped(t *testing.T) {
 
 		return true
 	}
+	idp.mu.Unlock()
 
-	code, _, msg := a.do(t, http.MethodPost, "/api/v1/oidc/discovery",
-		body(t, map[string]string{"issuer": idp.issuer, "ca_certificate": idp.ca()}))
+	code, msg := a.enableOIDC(t, idp.issuer, idp.ca())
 	if code != http.StatusBadGateway || !strings.Contains(msg, "larger than") {
-		t.Fatalf("discovery of a 1 GiB document = %d %q", code, msg)
+		t.Fatalf("enable with a 1 GiB document = %d %q", code, msg)
 	}
-
-	a.configureOIDC(t, idp, nil)
 
 	rec := serve(a.handler, request(http.MethodGet, "/api/v1/auth/oidc/login", "", ""))
 	if rec.Header().Get("Location") != "/login?error=unavailable" {
@@ -411,11 +403,14 @@ func TestOIDCProviderIsFetchedOnce(t *testing.T) {
 	}
 
 	down := newFakeIdP(t)
+	a.configureOIDC(t, down, nil)
+
+	down.mu.Lock()
 	down.onDiscover = func(w http.ResponseWriter) bool {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return true
 	}
-	a.configureOIDC(t, down, nil)
+	down.mu.Unlock()
 
 	start := func() string {
 		req := request(http.MethodGet, "/api/v1/auth/oidc/login", "", "")
@@ -446,7 +441,7 @@ func TestOIDCLoginIgnoresUnicodeCaseFolding(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "kate@example.com", db.RoleAdmin)
+	a.createSSOUser(t, "kate@example.com", db.RoleAdmin)
 
 	res := a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{"sub": "sub-kelvin", "email": "Kate@example.com"}})
 	if res.outcome != "not_set_up" || a.linked(t, "kate@example.com") {
@@ -468,7 +463,7 @@ func TestOIDCRefusedLoginDoesNotLink(t *testing.T) {
 	a.configureOIDC(t, idp, func(o map[string]any) {
 		o["group_roles"] = []map[string]any{{"group": "noc", "role_id": 3}}
 	})
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	for _, claims := range []map[string]any{
 		{"groups": []string{"other"}},
@@ -485,31 +480,23 @@ func TestOIDCRefusedLoginDoesNotLink(t *testing.T) {
 	}
 }
 
-func TestCreatePinnedUser(t *testing.T) {
+func TestCreateSSOUserTakesTheRoleFromGroups(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, func(o map[string]any) {
 		o["group_roles"] = []map[string]any{{"group": "ops", "role_id": 2}}
 	})
 
-	if code, _, msg := a.do(t, http.MethodPost, "/api/v1/users", `{"email": "nm@example.com", "role_id": 3, "role_pinned": true}`); code != http.StatusCreated {
-		t.Fatalf("create a pinned user = %d %q", code, msg)
-	}
-
-	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); !got.RolePinned || got.RoleID != db.RoleNetworkManager {
-		t.Fatalf("user = %+v", got)
+	if code, _, msg := a.do(t, http.MethodPost, "/api/v1/users", `{"email": "nm@example.com", "role_id": 3}`); code != http.StatusCreated {
+		t.Fatalf("create = %d %q", code, msg)
 	}
 
 	if res := a.oidcLogin(t, idp, oidcLogin{claims: map[string]any{"groups": []string{"ops"}}}); res.outcome != "success" {
 		t.Fatalf("login: %q", res.outcome)
 	}
 
-	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); got.RoleID != db.RoleNetworkManager || !got.OIDCLinked {
+	if got := decode[api.User](t, a.get(t, "/api/v1/users/nm@example.com")); got.RoleID != db.RoleReadOnly || !got.OIDCLinked {
 		t.Fatalf("user after the first login = %+v", got)
-	}
-
-	if events := strings.Join(a.auditEvents(t, "create_user"), "\n"); !strings.Contains(events, "pinned true") {
-		t.Fatalf("audit events = %q", events)
 	}
 }
 
@@ -517,7 +504,7 @@ func TestRemoveWhatTheUserDoesNotHave(t *testing.T) {
 	a := newTestAPI(t)
 	idp := newFakeIdP(t)
 	a.configureOIDC(t, idp, nil)
-	a.createUser(t, "nm@example.com", db.RoleNetworkManager)
+	a.createSSOUser(t, "nm@example.com", db.RoleNetworkManager)
 
 	if code, _, msg := a.do(t, http.MethodDelete, "/api/v1/users/nm@example.com/oidc", ""); code != http.StatusNotFound {
 		t.Fatalf("unlink a user without a link = %d %q, want %d", code, msg, http.StatusNotFound)
@@ -539,8 +526,9 @@ func TestRemoveWhatTheUserDoesNotHave(t *testing.T) {
 		t.Fatalf("login: %q", res.outcome)
 	}
 
-	o := validOIDC()
-	o["issuer"], o["client_secret"] = "https://other.example.com", "another secret"
+	other := newFakeIdP(t)
+	o := idpOIDC(other)
+	o["client_secret"] = "another secret"
 
 	if code, _, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, o)); code != http.StatusOK {
 		t.Fatalf("PUT /api/v1/oidc = %d %q", code, msg)
@@ -553,12 +541,13 @@ func TestRemoveWhatTheUserDoesNotHave(t *testing.T) {
 
 func TestOIDCExternalURLIsAnOrigin(t *testing.T) {
 	a := newTestAPI(t)
+	idp := newFakeIdP(t)
 
 	for in, want := range map[string]string{
 		"https://IMS.example.com:8443/": "https://ims.example.com:8443",
 		"https://ims.example.com/":      "https://ims.example.com",
 	} {
-		o := validOIDC()
+		o := idpOIDC(idp)
 		o["external_url"] = in
 
 		code, result, msg := a.do(t, http.MethodPut, "/api/v1/oidc", body(t, o))

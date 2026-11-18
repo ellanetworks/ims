@@ -24,6 +24,7 @@ type Login struct {
 	Issuer    string `json:"i"`
 	ClientID  string `json:"c"`
 	ExpiresAt int64  `json:"e"`
+	LinkUser  int64  `json:"u,omitempty"`
 }
 
 func (c *Client) NewLogin(now time.Time) Login {

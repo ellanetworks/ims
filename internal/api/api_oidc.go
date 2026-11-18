@@ -17,6 +17,7 @@ type OIDCSettings struct {
 	Enabled                bool            `json:"enabled"`
 	ExternalURL            string          `json:"external_url"`
 	RedirectURL            string          `json:"redirect_url"`
+	PostLogoutRedirectURL  string          `json:"post_logout_redirect_url"`
 	Issuer                 string          `json:"issuer"`
 	ClientID               string          `json:"client_id"`
 	ClientSecretSet        bool            `json:"client_secret_set"`
@@ -25,8 +26,14 @@ type OIDCSettings struct {
 	SessionLifetimeSeconds int64           `json:"session_lifetime_seconds"`
 	TrustUnverifiedEmail   bool            `json:"trust_unverified_email"`
 	CACertificate          string          `json:"ca_certificate"`
+	CACertificates         []OIDCCACert    `json:"ca_certificates"`
 	GroupsClaim            string          `json:"groups_claim"`
 	GroupRoles             []OIDCGroupRole `json:"group_roles"`
+}
+
+type OIDCCACert struct {
+	Subject  string `json:"subject"`
+	NotAfter string `json:"not_after"`
 }
 
 type OIDCGroupRole struct {
@@ -47,24 +54,6 @@ type UpdateOIDCParams struct {
 	CACertificate          string          `json:"ca_certificate"`
 	GroupsClaim            string          `json:"groups_claim"`
 	GroupRoles             []OIDCGroupRole `json:"group_roles"`
-}
-
-type DiscoverOIDCParams struct {
-	Issuer        string `json:"issuer"`
-	CACertificate string `json:"ca_certificate"`
-}
-
-type OIDCDiscovery struct {
-	Issuer                  string   `json:"issuer"`
-	AuthorizationEndpoint   string   `json:"authorization_endpoint"`
-	TokenEndpoint           string   `json:"token_endpoint"`
-	UserInfoEndpoint        string   `json:"userinfo_endpoint"`
-	JWKSURI                 string   `json:"jwks_uri"`
-	SigningAlgorithms       []string `json:"signing_algorithms"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	Keys                    int      `json:"keys"`
-	PKCE                    bool     `json:"pkce"`
-	IssuerParameter         bool     `json:"issuer_parameter"`
 }
 
 type OIDC interface {
@@ -129,6 +118,24 @@ func UpdateOIDC(a *auth) http.Handler {
 			o.GroupRoles = append(o.GroupRoles, db.GroupRole{Group: g.Group, Role: g.RoleID})
 		}
 
+		if err := oidc.Validate(o); err != nil {
+			writeError(r.Context(), w, http.StatusBadRequest, fmt.Errorf("%w: %w", oidc.ErrInvalid, err).Error(), nil, cfg.Logger)
+			return
+		}
+
+		if o.Enabled {
+			_, err := oidc.Discover(r.Context(), o.Issuer, o.CACertificate)
+			if errors.Is(err, oidc.ErrInvalid) {
+				writeError(r.Context(), w, http.StatusBadRequest, err.Error(), nil, cfg.Logger)
+				return
+			}
+
+			if err != nil {
+				writeError(r.Context(), w, http.StatusBadGateway, clip(err.Error()), nil, cfg.Logger)
+				return
+			}
+		}
+
 		err := cfg.OIDC.Update(r.Context(), o)
 		if errors.Is(err, oidc.ErrInvalid) {
 			writeError(r.Context(), w, http.StatusBadRequest, err.Error(), nil, cfg.Logger)
@@ -147,39 +154,6 @@ func UpdateOIDC(a *auth) http.Handler {
 	})
 }
 
-func DiscoverOIDC(cfg Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var params DiscoverOIDCParams
-		if !decodeBody(w, r, &params, cfg) {
-			return
-		}
-
-		d, err := oidc.Discover(r.Context(), params.Issuer, params.CACertificate)
-		if errors.Is(err, oidc.ErrInvalid) {
-			writeError(r.Context(), w, http.StatusBadRequest, err.Error(), nil, cfg.Logger)
-			return
-		}
-
-		if err != nil {
-			writeError(r.Context(), w, http.StatusBadGateway, clip(err.Error()), nil, cfg.Logger)
-			return
-		}
-
-		writeResponse(r.Context(), w, OIDCDiscovery{
-			Issuer:                  d.Issuer,
-			AuthorizationEndpoint:   d.AuthorizationEndpoint,
-			TokenEndpoint:           d.TokenEndpoint,
-			UserInfoEndpoint:        d.UserInfoEndpoint,
-			JWKSURI:                 d.JWKSURI,
-			SigningAlgorithms:       d.SigningAlgorithms,
-			TokenEndpointAuthMethod: d.TokenEndpointAuthMethod,
-			Keys:                    d.Keys,
-			PKCE:                    d.PKCE,
-			IssuerParameter:         d.IssuerParameter,
-		}, http.StatusOK, cfg.Logger)
-	})
-}
-
 func oidcResponse(o db.OIDC) OIDCSettings {
 	resp := OIDCSettings{
 		Enabled:                o.Enabled,
@@ -193,11 +167,23 @@ func oidcResponse(o db.OIDC) OIDCSettings {
 		TrustUnverifiedEmail:   o.TrustUnverifiedEmail,
 		CACertificate:          o.CACertificate,
 		GroupsClaim:            o.GroupsClaim,
+		CACertificates:         []OIDCCACert{},
 		GroupRoles:             []OIDCGroupRole{},
+	}
+
+	if o.CACertificate != "" {
+		certs, _ := oidc.CACertificates(o.CACertificate)
+		for _, cert := range certs {
+			resp.CACertificates = append(resp.CACertificates, OIDCCACert{
+				Subject:  cert.Subject.String(),
+				NotAfter: cert.NotAfter.UTC().Format(time.RFC3339),
+			})
+		}
 	}
 
 	if o.ExternalURL != "" {
 		resp.RedirectURL = oidc.RedirectURL(o)
+		resp.PostLogoutRedirectURL = oidc.PostLogoutRedirectURL(o)
 	}
 
 	for _, g := range o.GroupRoles {

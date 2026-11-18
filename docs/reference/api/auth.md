@@ -6,7 +6,7 @@ description: RESTful API reference for logging in to Ella IMS.
 
 ## Log In
 
-This path returns an access token, and sets the session cookie, `ims_session`, or `__Host-ims_session` over TLS. The session lasts 30 days, and a user has at most 10.
+This path returns an access token, and sets the session cookie, `ims_session`, or `__Host-ims_session` over TLS, valid for 30 days. A user has at most 10 sessions.
 
 | Method | Path                 |
 | ------ | -------------------- |
@@ -18,13 +18,6 @@ This path returns an access token, and sets the session cookie, `ims_session`, o
 | ---------- | ------ | -------- | ----------- |
 | `email`    | string | Yes      | Email address, in any case. |
 | `password` | string | Yes      | Password. |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `401` | Wrong email or password. |
-| `429` | More than 20 attempts in a minute from the client address, or its IPv6 /64; or more than 100 wrong passwords in an hour for the account. |
 
 ### Sample Response
 
@@ -45,12 +38,6 @@ This path returns a new access token for the session of the cookie.
 | ------ | ---------------------- |
 | POST   | `/api/v1/auth/refresh` |
 
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `401` | No session, or the session ended. The response clears the cookie. |
-
 ### Sample Response
 
 ```json
@@ -63,21 +50,25 @@ This path returns a new access token for the session of the cookie.
 
 ## Log Out
 
-This path ends the session of the cookie, and its access tokens, and clears the cookie.
+This path ends the session of the cookie, and its access tokens, and clears the cookie. For a single sign-on session, it returns the identity provider's logout URL.
 
 | Method | Path                  |
 | ------ | --------------------- |
 | POST   | `/api/v1/auth/logout` |
 
-### Response Codes
+### Sample Response
 
-| Code  | Description |
-| ----- | ----------- |
-| `204` | Logged out, or no session. |
+```json
+{
+    "result": {
+        "redirect_url": "https://idp.example.com/realms/ims/protocol/openid-connect/logout?client_id=ims&post_logout_redirect_uri=https%3A%2F%2Fims.example.com%2Flogin"
+    }
+}
+```
 
 ## Get the Single Sign-On Option
 
-This path tells the login page whether to show the button to sign in through the identity provider.
+This path returns whether single sign-on is enabled.
 
 | Method | Path                |
 | ------ | ------------------- |
@@ -94,17 +85,23 @@ This path tells the login page whether to show the button to sign in through the
 }
 ```
 
-## Sign In Through the Identity Provider
+## Log In Through the Identity Provider
 
-The login page sends the browser to this path, which redirects it to the identity provider. It counts toward the login limit of 20 per minute per address.
+This path redirects the browser to the identity provider.
 
 | Method | Path                      |
 | ------ | ------------------------- |
 | GET    | `/api/v1/auth/oidc/login` |
 
+### Query Parameters
+
+| Name   | In    | Type   | Description |
+| ------ | ----- | ------ | ----------- |
+| `link` | query | string | `1` links the identity provider account to the user of the session cookie, and redirects to `/profile`, or `/profile?error=<error>`. |
+
 ## Return From the Identity Provider
 
-The identity provider sends the browser back to this path, the redirect URL. Each login completes once. On success, it sets the session cookie, for the [session lifetime](oidc.md#get-the-oidc-settings), and redirects to `/`. Otherwise, it redirects to `/login?error=<error>`, and the `auth_oidc_login` [audit event](../observability.md#audit-events) gives the details.
+This path is the redirect URL. On success, it sets the session cookie and redirects to `/`. Otherwise, it redirects to `/login?error=<error>`.
 
 | Method | Path                         |
 | ------ | ---------------------------- |
@@ -121,6 +118,7 @@ The identity provider sends the browser back to this path, the redirect URL. Eac
 | `not_set_up`         | The identity provider gives no email, or no user has it and no group mapping is set. |
 | `email_not_verified` | The identity provider marks the email as not verified, or does not say and [`trust_unverified_email`](oidc.md#update-the-oidc-settings) is off. |
 | `linked_elsewhere`   | The user with the email is linked to another account at the identity provider. |
+| `link_required`      | The user has a password and must link the account from their profile. |
 | `no_group`           | None of the user's groups is mapped to a role. |
 | `groups_overage`     | The user is in too many groups for the identity provider to list them. |
 | `too_many_users`     | 50 users exist. |

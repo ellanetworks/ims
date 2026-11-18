@@ -403,6 +403,7 @@ var migrations = []string{
 		CHECK ((node_id IS NULL) = (fingerprint IS NULL))
 	);`,
 	`ALTER TABLE call_records ADD COLUMN codecs TEXT;`,
+	`ALTER TABLE users DROP COLUMN role_pinned;`,
 }
 
 var localMigrations = []string{

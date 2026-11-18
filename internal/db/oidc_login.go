@@ -17,6 +17,7 @@ var (
 	ErrNoRole          = errors.New("the groups give no role")
 	ErrLinkedElsewhere = errors.New("the user is linked to another identity")
 	ErrStateUsed       = errors.New("the login was already used")
+	ErrLinkRequired    = errors.New("the user has a password and must link the account from their profile")
 )
 
 type OIDCLogin struct {
@@ -54,15 +55,15 @@ func (d *DB) LogInWithOIDC(ctx context.Context, l OIDCLogin) (res OIDCLoginResul
 }
 
 func applyLogInWithOIDC(a *applyCtx, l OIDCLogin) (OIDCLoginResult, error) {
-	return logInWithOIDC(a.ctx, a.tx, l)
+	return logInWithOIDC(a.ctx, a.tx, a.schema, l)
 }
 
-func logInWithOIDC(ctx context.Context, tx *sql.Tx, l OIDCLogin) (OIDCLoginResult, error) {
+func logInWithOIDC(ctx context.Context, tx *sql.Tx, schema int, l OIDCLogin) (OIDCLoginResult, error) {
 	if err := checkOIDC(ctx, tx, l.Issuer, l.ClientID); err != nil {
 		return OIDCLoginResult{}, err
 	}
 
-	res, err := findOIDCUser(ctx, tx, l)
+	res, err := findOIDCUser(ctx, tx, schema, l)
 	if err != nil {
 		return OIDCLoginResult{}, err
 	}
@@ -70,7 +71,7 @@ func logInWithOIDC(ctx context.Context, tx *sql.Tx, l OIDCLogin) (OIDCLoginResul
 	res.PreviousRole = res.User.Role
 
 	if !res.Created {
-		if res.User, res.RoleKept, err = syncRole(ctx, tx, res.User, l); err != nil {
+		if res.User, res.RoleKept, err = syncRole(ctx, tx, schema, res.User, l); err != nil {
 			return OIDCLoginResult{}, err
 		}
 	}
@@ -113,7 +114,7 @@ func checkOIDC(ctx context.Context, tx *sql.Tx, issuer, clientID string) error {
 	return nil
 }
 
-func findOIDCUser(ctx context.Context, tx *sql.Tx, l OIDCLogin) (OIDCLoginResult, error) {
+func findOIDCUser(ctx context.Context, tx *sql.Tx, schema int, l OIDCLogin) (OIDCLoginResult, error) {
 	var res OIDCLoginResult
 
 	err := tx.QueryRowContext(ctx, `SELECT id, user_id FROM user_identities WHERE issuer = ? AND subject = ?`, l.Issuer,
@@ -134,6 +135,10 @@ func findOIDCUser(ctx context.Context, tx *sql.Tx, l OIDCLogin) (OIDCLoginResult
 	identity := NewIdentity{Issuer: l.Issuer, Subject: l.Subject, Email: l.Email, At: l.Session.CreatedAt}
 
 	res.User, err = getUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE email = ?`, l.LinkEmail))
+	if err == nil && res.User.PasswordHash != "" && schema >= ssoLinkSchema {
+		return OIDCLoginResult{}, ErrLinkRequired
+	}
+
 	if err == nil {
 		res.IdentityID, err = createIdentity(ctx, tx, res.User.ID, identity)
 		if errors.Is(err, ErrDuplicate) {
@@ -167,9 +172,17 @@ func findOIDCUser(ctx context.Context, tx *sql.Tx, l OIDCLogin) (OIDCLoginResult
 	return res, err
 }
 
-func syncRole(ctx context.Context, tx *sql.Tx, u User, l OIDCLogin) (User, bool, error) {
+func syncRole(ctx context.Context, tx *sql.Tx, schema int, u User, l OIDCLogin) (User, bool, error) {
+	pinned := false
+
+	if schema < ssoLinkSchema {
+		if err := tx.QueryRowContext(ctx, `SELECT role_pinned FROM users WHERE id = ?`, u.ID).Scan(&pinned); err != nil {
+			return User{}, false, err
+		}
+	}
+
 	switch {
-	case !l.MapsGroups || u.RolePinned:
+	case !l.MapsGroups || pinned:
 		return u, false, nil
 	case l.Role == 0:
 		return User{}, false, ErrNoRole
@@ -188,8 +201,7 @@ func syncRole(ctx context.Context, tx *sql.Tx, u User, l OIDCLogin) (User, bool,
 		}
 	}
 
-	if err := updateUser(ctx, tx, `UPDATE users SET role_id = ? WHERE id = ? AND role_pinned = 0`, l.Role,
-		u.ID); err != nil {
+	if err := updateUser(ctx, tx, `UPDATE users SET role_id = ? WHERE id = ?`, l.Role, u.ID); err != nil {
 		return User{}, false, err
 	}
 
@@ -212,6 +224,64 @@ func (d *DB) UseOIDCState(ctx context.Context, stateHash []byte, expiresAt, now 
 	})
 
 	return err
+}
+
+type OIDCLink struct {
+	Issuer   string
+	ClientID string
+	Subject  string
+	Email    string
+	UserID   int64
+	At       time.Time
+}
+
+func (d *DB) LinkOIDCIdentity(ctx context.Context, l OIDCLink) (err error) {
+	ctx, done := d.observe(ctx, "LinkOIDCIdentity", poolWrite)
+	defer done(&err)
+
+	_, err = run[struct{}](ctx, d, cmdLinkOIDCIdentity, "link OIDC identity", l)
+
+	return err
+}
+
+func applyLinkOIDCIdentity(a *applyCtx, l OIDCLink) (struct{}, error) {
+	ctx, tx := a.ctx, a.tx
+
+	if err := checkOIDC(ctx, tx, l.Issuer, l.ClientID); err != nil {
+		return struct{}{}, err
+	}
+
+	var userID int64
+
+	err := tx.QueryRowContext(ctx, `SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?`, l.Issuer,
+		l.Subject).Scan(&userID)
+	if err == nil {
+		if userID != l.UserID {
+			return struct{}{}, ErrLinkedElsewhere
+		}
+
+		return struct{}{}, nil
+	}
+
+	if !errors.Is(err, sql.ErrNoRows) {
+		return struct{}{}, err
+	}
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = ?)`, l.UserID).Scan(&exists); err != nil {
+		return struct{}{}, err
+	}
+
+	if !exists {
+		return struct{}{}, ErrNotFound
+	}
+
+	_, err = createIdentity(ctx, tx, l.UserID, NewIdentity{Issuer: l.Issuer, Subject: l.Subject, Email: l.Email, At: l.At})
+	if errors.Is(err, ErrDuplicate) {
+		return struct{}{}, ErrLinkedElsewhere
+	}
+
+	return struct{}{}, err
 }
 
 type useOIDCState struct {
@@ -237,4 +307,5 @@ func applyUseOIDCState(a *applyCtx, p useOIDCState) (struct{}, error) {
 func init() {
 	register(cmdLogInWithOIDC, handle(applyLogInWithOIDC))
 	register(cmdUseOIDCState, handle(applyUseOIDCState))
+	register(cmdLinkOIDCIdentity, handle(applyLinkOIDCIdentity))
 }

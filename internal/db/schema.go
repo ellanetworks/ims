@@ -8,7 +8,11 @@ import (
 
 var ErrUpgradePending = fmt.Errorf("%w: the cluster has not been upgraded to support this yet", ErrBusy)
 
-var minSchema = map[CommandType]int{}
+const ssoLinkSchema = 3
+
+var minSchema = map[CommandType]int{
+	cmdLinkOIDCIdentity: ssoLinkSchema,
+}
 
 func commandSchema(t CommandType) int {
 	if s, ok := minSchema[t]; ok {

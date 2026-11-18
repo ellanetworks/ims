@@ -48,11 +48,12 @@ type AuthStore interface {
 	GetUser(ctx context.Context, email string) (db.User, error)
 	GetUserByID(ctx context.Context, id int64) (db.User, error)
 	ListUsers(ctx context.Context, page, perPage int) ([]db.User, int, error)
-	UpdateUserRole(ctx context.Context, id int64, role db.Role, pinned bool) error
+	UpdateUserRole(ctx context.Context, id int64, role db.Role) error
 	UpdateUserPassword(ctx context.Context, id int64, passwordHash string, keepSession []byte) error
 	DeleteUser(ctx context.Context, id int64) error
 	DeleteIdentities(ctx context.Context, userID int64) error
 	LogInWithOIDC(ctx context.Context, l db.OIDCLogin) (db.OIDCLoginResult, error)
+	LinkOIDCIdentity(ctx context.Context, l db.OIDCLink) error
 	UseOIDCState(ctx context.Context, stateHash []byte, expiresAt, now time.Time) error
 
 	CreateSession(ctx context.Context, s db.NewSession, maxPerUser int) (int64, error)
@@ -472,6 +473,24 @@ func (a *auth) sessionHash(r *http.Request) []byte {
 	hash := sha256.Sum256(raw)
 
 	return hash[:]
+}
+
+func (a *auth) cookieSession(r *http.Request) (db.Session, error) {
+	hash := a.sessionHash(r)
+	if hash == nil {
+		return db.Session{}, errors.New("no session cookie")
+	}
+
+	s, err := a.cfg.Auth.GetSessionByTokenHash(r.Context(), hash)
+	if err != nil {
+		return db.Session{}, err
+	}
+
+	if !a.cfg.Now().Before(s.ExpiresAt) {
+		return db.Session{}, errors.New("the session expired")
+	}
+
+	return s, nil
 }
 
 func newAPIToken() (token, tokenID string, hash []byte) {

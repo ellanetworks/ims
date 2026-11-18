@@ -17,21 +17,18 @@ const (
 type User struct {
 	Email       string  `json:"email"`
 	RoleID      db.Role `json:"role_id"`
-	RolePinned  bool    `json:"role_pinned"`
 	PasswordSet bool    `json:"password_set"`
 	OIDCLinked  bool    `json:"oidc_linked"`
 }
 
 type CreateUserParams struct {
-	Email      string  `json:"email"`
-	Password   string  `json:"password"`
-	RoleID     db.Role `json:"role_id"`
-	RolePinned bool    `json:"role_pinned"`
+	Email    string  `json:"email"`
+	Password string  `json:"password"`
+	RoleID   db.Role `json:"role_id"`
 }
 
 type UpdateUserParams struct {
-	RoleID     db.Role `json:"role_id"`
-	RolePinned *bool   `json:"role_pinned"`
+	RoleID db.Role `json:"role_id"`
 }
 
 type UpdateUserPasswordParams struct {
@@ -229,7 +226,7 @@ func CreateUser(a *auth) http.Handler {
 		}
 
 		_, err = cfg.Auth.CreateUser(r.Context(), db.NewUser{
-			Email: email, Role: params.RoleID, RolePinned: params.RolePinned, PasswordHash: hash,
+			Email: email, Role: params.RoleID, PasswordHash: hash,
 		}, MaxNumUsers)
 		if errors.Is(err, db.ErrDuplicate) {
 			writeError(r.Context(), w, http.StatusConflict, "User already exists", nil, cfg.Logger)
@@ -249,8 +246,7 @@ func CreateUser(a *auth) http.Handler {
 		}
 
 		p, _ := PrincipalFrom(r.Context())
-		a.audit(r, "create_user", p.Email, fmt.Sprintf("User %s created with role %d, pinned %t", email, params.RoleID,
-			params.RolePinned))
+		a.audit(r, "create_user", p.Email, fmt.Sprintf("User %s created with role %d", email, params.RoleID))
 		writeResponse(r.Context(), w, SuccessResponse{Message: "User created successfully"}, http.StatusCreated, cfg.Logger)
 	})
 }
@@ -288,17 +284,12 @@ func UpdateUser(a *auth) http.Handler {
 			return
 		}
 
-		pinned := u.RolePinned
-		if params.RolePinned != nil {
-			pinned = *params.RolePinned
-		}
-
-		if params.RoleID != u.Role && !pinned && a.roleFromGroups(u) {
-			writeError(r.Context(), w, http.StatusConflict, "This user's role comes from their identity provider groups. Pin the role to change it.", nil, cfg.Logger)
+		if params.RoleID != u.Role && a.roleFromGroups(u) {
+			writeError(r.Context(), w, http.StatusConflict, "This user's role comes from their identity provider groups", nil, cfg.Logger)
 			return
 		}
 
-		err := cfg.Auth.UpdateUserRole(r.Context(), u.ID, params.RoleID, pinned)
+		err := cfg.Auth.UpdateUserRole(r.Context(), u.ID, params.RoleID)
 		if errors.Is(err, db.ErrNotFound) {
 			writeError(r.Context(), w, http.StatusNotFound, "User not found", nil, cfg.Logger)
 			return
@@ -314,7 +305,7 @@ func UpdateUser(a *auth) http.Handler {
 			return
 		}
 
-		a.audit(r, "update_user", p.Email, fmt.Sprintf("Role of %s set to %d, pinned %t", u.Email, params.RoleID, pinned))
+		a.audit(r, "update_user", p.Email, fmt.Sprintf("Role of %s set to %d", u.Email, params.RoleID))
 		writeResponse(r.Context(), w, SuccessResponse{Message: "User updated successfully"}, http.StatusOK, cfg.Logger)
 	})
 }
@@ -386,7 +377,7 @@ const lastPasswordAdmin = "At least one admin must keep a password"
 
 func userResponse(u db.User) User {
 	return User{
-		Email: u.Email, RoleID: u.Role, RolePinned: u.RolePinned, PasswordSet: u.PasswordHash != "",
+		Email: u.Email, RoleID: u.Role, PasswordSet: u.PasswordHash != "",
 		OIDCLinked: u.HasIdentity,
 	}
 }
@@ -394,7 +385,7 @@ func userResponse(u db.User) User {
 func (a *auth) roleFromGroups(u db.User) bool {
 	o := a.cfg.OIDC.Get()
 
-	return o.Enabled && len(o.GroupRoles) > 0 && u.HasIdentity && !u.RolePinned
+	return o.Enabled && len(o.GroupRoles) > 0 && u.HasIdentity
 }
 
 func DeleteUserPassword(a *auth) http.Handler {

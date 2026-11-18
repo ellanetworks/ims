@@ -22,6 +22,16 @@ func (a *testAPI) createUser(t *testing.T, email string, role db.Role) {
 	}
 }
 
+func (a *testAPI) createSSOUser(t *testing.T, email string, role db.Role) {
+	t.Helper()
+
+	body, _ := json.Marshal(api.CreateUserParams{Email: email, RoleID: role})
+
+	if code, _, msg := a.do(t, http.MethodPost, "/api/v1/users", string(body)); code != http.StatusCreated {
+		t.Fatalf("create user %s = %d %q", email, code, msg)
+	}
+}
+
 func (a *testAPI) createToken(t *testing.T, token, path, body string) string {
 	t.Helper()
 

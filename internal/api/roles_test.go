@@ -89,7 +89,6 @@ func TestRoles(t *testing.T) {
 		"POST /api/v1/cluster/members/{node_id}/resume":             admin,
 		"GET /api/v1/oidc":                                          admin,
 		"PUT /api/v1/oidc":                                          admin,
-		"POST /api/v1/oidc/discovery":                               admin,
 		"GET /api/v1/users/me":                                      all,
 		"PUT /api/v1/users/me/password":                             all,
 		"GET /api/v1/users/me/api-tokens":                           all,

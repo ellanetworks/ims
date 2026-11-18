@@ -130,7 +130,11 @@ export default function Login() {
       valid={email !== "" && password !== ""}
       onSubmit={submit}
     >
-      {oidcError && <Alert severity="error">{oidcLoginError(oidcError)}</Alert>}
+      {oidcError && (
+        <Alert severity="error">
+          {oidcLoginError(oidcError, oidc.display_name)}
+        </Alert>
+      )}
       {oidc.enabled && (
         <>
           <Button

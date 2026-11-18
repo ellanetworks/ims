@@ -1,16 +1,16 @@
 ---
-description: Step-by-step instructions to let users sign in to Ella IMS through an OpenID Connect identity provider, such as Keycloak.
+description: Step-by-step instructions to let users log in to Ella IMS through an OpenID Connect identity provider, such as Keycloak.
 ---
 
 # Configure Single Sign-On
 
-This guide lets users sign in to the Ella IMS UI through an OpenID Connect identity provider. It gives the steps for Keycloak; other providers are set up the same way.
+This guide lets users log in to the Ella IMS UI through an OpenID Connect identity provider.
 
 ## Prerequisites
 
-- **Ella IMS**: served over HTTPS, at a URL with no path.
+- **Ella IMS**: reached by users over HTTPS, at a URL with no path.
 - **Identity provider**: an OpenID Connect provider, reachable from Ella IMS over HTTPS.
-- **Ella IMS account**: an Admin that signs in with a password.
+- **Ella IMS account**: an Admin that logs in with a password.
 
 The examples use these values:
 
@@ -18,24 +18,25 @@ The examples use these values:
 |---|---|
 | `https://ims.example.com` | Ella IMS's external URL |
 | `https://ims.example.com/api/v1/auth/oidc/callback` | Redirect URL: the external URL followed by `/api/v1/auth/oidc/callback` |
+| `https://ims.example.com/login` | Post-logout redirect URL: the external URL followed by `/login` |
 
 ## 1. Register Ella IMS at the identity provider
 
 === "Keycloak"
 
-    In the realm users sign in to:
+    In the realm users log in to:
 
     1. Go to **Clients** and click **Create client**.
     2. Set **Client type** to **OpenID Connect** and **Client ID** to `ims`. Click **Next**.
     3. Turn on **Client authentication**. Keep **Standard flow** checked. Click **Next**.
-    4. Set **Valid redirect URIs** to the redirect URL. Click **Save**.
+    4. Set **Valid redirect URIs** to the redirect URL and **Valid post logout redirect URIs** to the post-logout redirect URL. Click **Save**.
     5. In the client's **Credentials** tab, copy the **Client Secret**.
 
     In **Users**, turn on **Email verified** for each user.
 
 === "Other providers"
 
-    1. Register a web application, or confidential client, with the redirect URL.
+    1. Register a web application, or confidential client, with the redirect URL and the post-logout redirect URL.
     2. Create a client secret for it.
     3. Allow the `openid`, `email` and `profile` scopes.
 
@@ -43,36 +44,28 @@ The examples use these values:
 
 ## 2. Configure Ella IMS
 
-In the UI, go to **Single Sign-On** and, in **Provider**, click **Edit**. Set:
+In the UI, go to **Single Sign-On**.
 
-| Field | Value |
-|---|---|
-| **External URL** | `https://ims.example.com` |
-| **Issuer URL** | Keycloak: `https://<keycloak-host>/realms/<realm>`. Otherwise, from the provider. |
-| **CA certificate** | The PEM CA certificate of the identity provider, only if a private CA signs its certificate |
-| **Client ID** | Keycloak: `ims`. Otherwise, from the provider. |
-| **Client secret** | The secret from step 1 |
-| **Display name** | The name on the login button, such as `Keycloak` |
-| **Scopes** | `openid email profile` |
-| **Session lifetime** | `24` hours, or less to end access sooner after offboarding |
-| **Trust email addresses from this provider** | Off, unless the provider does not send `email_verified` |
+1. In **URLs**, click **Edit**, set **External URL** to `https://ims.example.com`, and click **Update**. Check that the **Redirect URL** and **Post-logout redirect URL** are the ones registered in step 1.
+2. In **Provider**, click **Edit**, set these fields, and click **Update**:
 
-Check that the **Redirect URL** under the external URL is the one registered in step 1.
+    | Field | Value |
+    |---|---|
+    | **Display name** | The name on the login button, such as `Keycloak` |
+    | **Issuer URL** | Keycloak: `https://<keycloak-host>/realms/<realm>`. Otherwise, from the provider. |
+    | **CA certificate** | The PEM CA certificate of the identity provider, only if a private CA signs its certificate |
+    | **Client ID** | Keycloak: `ims`. Otherwise, from the provider. |
+    | **Client secret** | The secret from step 1 |
+    | **Scopes** | `openid email profile` |
+    | **Session lifetime** | `24` hours |
+    | **Trust email addresses from this provider** | Off, unless the provider does not send `email_verified` |
 
-## 3. Test the identity provider
+## 3. Enable single sign-on
 
-In the dialog, click **Test**. Fix the issuer URL or the CA certificate until it shows **Works**. Click **Update**.
+On the **Single Sign-On** page, turn on **Enabled**.
 
-## 4. Enable single sign-on
-
-On the **Single Sign-On** page, click **Enable**.
-
-To turn it off, for example during an incident, click **Disable**. Everyone who logged in with single sign-on is signed out.
-
-## 5. Sign in
+## 4. Log in
 
 1. Give a user access: [create their user](manage_single_sign_on_users.md#give-a-user-access), or [map their groups to a role](manage_single_sign_on_users.md#map-groups-to-roles).
 2. In a private browser window, open `https://ims.example.com`, and click **Log in with** your display name.
-3. Sign in at the identity provider. Ella IMS opens.
-
-If the login page shows an error, the `auth_oidc_login` [audit event](../reference/observability.md#audit-events) in the logs gives the reason.
+3. Log in at the identity provider. Ella IMS opens.

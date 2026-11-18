@@ -13,6 +13,31 @@ import (
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
 
+	d := openBaselineDB(t)
+	migrateAll(t, d)
+
+	return d
+}
+
+func migrateAll(t *testing.T, d *DB) {
+	t.Helper()
+
+	migrateTo(t, d, SchemaVersion())
+}
+
+func migrateTo(t *testing.T, d *DB, target int) {
+	t.Helper()
+
+	for v := d.Schema() + 1; v <= target; v++ {
+		if err := d.Migrate(context.Background(), v); err != nil {
+			t.Fatalf("Migrate %d: %v", v, err)
+		}
+	}
+}
+
+func openBaselineDB(t *testing.T) *DB {
+	t.Helper()
+
 	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "ims.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -24,7 +49,7 @@ func openTestDB(t *testing.T) *DB {
 }
 
 func TestOpenReachesBaselineSchema(t *testing.T) {
-	d := openTestDB(t)
+	d := openBaselineDB(t)
 
 	var version int
 	if err := d.writer.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
@@ -37,7 +62,7 @@ func TestOpenReachesBaselineSchema(t *testing.T) {
 }
 
 func TestMigrateReachesLatestVersion(t *testing.T) {
-	d := openTestDB(t)
+	d := openBaselineDB(t)
 
 	for target := baselineSchema + 1; target <= len(migrations); target++ {
 		if err := d.Migrate(t.Context(), target); err != nil {

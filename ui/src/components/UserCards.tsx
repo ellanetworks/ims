@@ -88,11 +88,13 @@ export function UserAccountCard({
   fromGroups = false,
   onEditRole,
   onUnlink,
+  link,
 }: {
   user: User;
   fromGroups?: boolean;
   onEditRole?: () => void;
   onUnlink?: () => void;
+  link?: { label: string; href: string; onClick?: () => void };
 }) {
   return (
     <Card variant="outlined" sx={{ height: "100%" }}>
@@ -112,11 +114,6 @@ export function UserAccountCard({
             color={roleChipColor(user.role_id)}
             variant="outlined"
           />
-          {user.role_pinned && (
-            <Tooltip title="Not updated from the user's groups.">
-              <Chip size="small" label="Pinned" sx={{ ml: 1 }} />
-            </Tooltip>
-          )}
           {fromGroups && (
             <Tooltip title="Updated from the user's groups at each login.">
               <Chip size="small" label="From groups" sx={{ ml: 1 }} />
@@ -124,13 +121,21 @@ export function UserAccountCard({
           )}
           <Box sx={{ flex: 1 }} />
           {onEditRole && (
-            <IconButton
-              size="small"
-              onClick={onEditRole}
-              aria-label="Edit role"
-            >
-              <EditIcon fontSize="small" color="primary" />
-            </IconButton>
+            <Tooltip title={fromGroups ? "Set by the user's groups." : ""}>
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={onEditRole}
+                  disabled={fromGroups}
+                  aria-label="Edit role"
+                >
+                  <EditIcon
+                    fontSize="small"
+                    color={fromGroups ? "disabled" : "primary"}
+                  />
+                </IconButton>
+              </span>
+            </Tooltip>
           )}
         </InfoRow>
         <InfoRow label="Sign-in">
@@ -153,6 +158,11 @@ export function UserAccountCard({
           {onUnlink && user.oidc_linked && (
             <Button size="small" color="error" onClick={onUnlink}>
               Unlink
+            </Button>
+          )}
+          {link && !user.oidc_linked && (
+            <Button size="small" href={link.href} onClick={link.onClick}>
+              {link.label}
             </Button>
           )}
         </InfoRow>
