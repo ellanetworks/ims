@@ -53,7 +53,7 @@ curl -s "$ELLA_IMS_URL/api/v1/openapi.yaml" | grep -E '^  /api'
 | Cluster members, leader | `GET /api/v1/cluster` |
 | Counters and gauges | `GET /api/v1/metrics` (Prometheus text, `ellaims_*`) |
 
-Responses are `{"result": ...}` or `{"error": "..."}`. Paginated lists take `page` and `per_page` (max `100`) and return `items`, `page`, `per_page`, `total_count`. SIP trunks, SIP routes and Diameter peers return `items` only.
+Responses are `{"result": ...}` or `{"error": "..."}`. Paginated lists take `page` and `per_page` (max `100`) and return `items`, `page`, `per_page`, `total_count`. SIP trunks, SIP routes and Diameter peers return `items` only. For a count, request `per_page=1` and read `total_count`, or read the `ellaims_*` gauges from `/api/v1/metrics`.
 
 ## Live calls
 
