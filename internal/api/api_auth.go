@@ -34,6 +34,10 @@ type RefreshResponse struct {
 	Token string `json:"token"`
 }
 
+type LogoutResponse struct {
+	RedirectURL string `json:"redirect_url"`
+}
+
 type SuccessResponse struct {
 	Message string `json:"message"`
 }
@@ -203,10 +207,18 @@ func Logout(a *auth) http.Handler {
 	cfg := a.cfg
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var redirectURL string
+
 		if hash := a.sessionHash(r); hash != nil {
 			if s, err := cfg.Auth.GetSessionByTokenHash(r.Context(), hash); err == nil {
 				if u, err := cfg.Auth.GetUserByID(r.Context(), s.UserID); err == nil {
 					a.audit(r, "auth_logout", u.Email, "User logged out")
+				}
+
+				if s.Method == db.SessionOIDC {
+					if c, err := cfg.OIDC.Client(r.Context(), cfg.Now); err == nil {
+						redirectURL = c.LogoutURL()
+					}
 				}
 			}
 
@@ -217,6 +229,12 @@ func Logout(a *auth) http.Handler {
 		}
 
 		a.clearSessionCookie(w)
+
+		if redirectURL != "" {
+			writeResponse(r.Context(), w, LogoutResponse{RedirectURL: redirectURL}, http.StatusOK, cfg.Logger)
+			return
+		}
+
 		w.WriteHeader(http.StatusNoContent)
 	})
 }

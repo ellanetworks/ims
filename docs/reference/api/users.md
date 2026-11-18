@@ -19,7 +19,6 @@ Paths under `/api/v1/users/me` act on the user of the token. The others require 
     "result": {
         "email": "admin@example.com",
         "role_id": 1,
-        "role_pinned": false,
         "password_set": true,
         "oidc_linked": false
     }
@@ -32,7 +31,6 @@ Paths under `/api/v1/users/me` act on the user of the token. The others require 
 | -------------- | ------- | ----------- |
 | `email`        | string  | Email address. |
 | `role_id`      | int     | `1` to `3`. See [roles](index.md#roles). |
-| `role_pinned`  | boolean | The role is kept whatever the user's [groups](oidc.md#group-roles). |
 | `password_set` | boolean | The user has a password. |
 | `oidc_linked`  | boolean | The user is linked to an account at the current [identity provider](oidc.md). |
 
@@ -52,14 +50,6 @@ This path ends the user's other sessions. It requires an access token.
 | ------------------ | ------ | -------- | ----------- |
 | `current_password` | string | Yes      | Current password. |
 | `password`         | string | Yes      | New password, 8 to 72 bytes. |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `400` | Wrong current password, or invalid new password. |
-| `409` | The user has no password. |
-| `429` | More than 100 wrong passwords in an hour for the account, counting failed logins. |
 
 ## List Users
 
@@ -83,14 +73,12 @@ This path ends the user's other sessions. It requires an access token.
             {
                 "email": "admin@example.com",
                 "role_id": 1,
-                "role_pinned": false,
                 "password_set": true,
                 "oidc_linked": false
             },
             {
                 "email": "noc@example.com",
                 "role_id": 2,
-                "role_pinned": false,
                 "password_set": true,
                 "oidc_linked": false
             }
@@ -117,15 +105,6 @@ At most 50 users.
 | `email`    | string | Yes      | Email address. ASCII letters are stored in lower case. |
 | `password` | string | No       | 8 to 72 bytes. Without it, the user signs in only through the [identity provider](oidc.md). |
 | `role_id`  | int    | Yes      | `1` to `3`. See [roles](index.md#roles). |
-| `role_pinned` | boolean | No    | Keep the role whatever the user's [groups](oidc.md#group-roles). Default `false`. |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `201` | Created. |
-| `400` | Invalid field, or 50 users exist. |
-| `409` | A user has the email, in any case. |
 
 ## Get a User
 
@@ -135,7 +114,7 @@ At most 50 users.
 
 ## Update a User
 
-This path sets the role of a user. A role change ends the user's sessions. An Admin cannot change its own role, and the last Admin with a password stays an Admin.
+This path sets the role of a user. A role change ends the user's sessions. An Admin cannot change its own role, and the last Admin with a password stays an Admin. A role from [group roles](oidc.md#group-roles) cannot be changed.
 
 | Method | Path                      |
 | ------ | ------------------------- |
@@ -143,16 +122,9 @@ This path sets the role of a user. A role change ends the user's sessions. An Ad
 
 ### Request Body
 
-| Field         | Type    | Required | Description |
-| ------------- | ------- | -------- | ----------- |
-| `role_id`     | int     | Yes      | `1` to `3`. |
-| `role_pinned` | boolean | No       | Keep the role whatever the user's [groups](oidc.md#group-roles). Without it, the current value is kept. |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `409` | The role comes from the user's [groups](oidc.md#group-roles) and `role_pinned` is not `true`, or the user is the last Admin with a password. |
+| Field     | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `role_id` | int  | Yes      | `1` to `3`. |
 
 ## Update a User's Password
 
@@ -176,25 +148,13 @@ This path removes the password of a user, who can then sign in only through the 
 | ------ | ---------------------------------- |
 | DELETE | `/api/v1/users/{email}/password`   |
 
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `409` | The user has no password, or is the last Admin with a password. |
-
 ## Unlink a User
 
-This path unlinks a user from their account at the identity provider, and ends the sessions started through it. Their next login through the identity provider links them again by email. An Admin cannot unlink itself.
+This path unlinks a user from their account at the identity provider, and ends the sessions started through it. An Admin cannot unlink itself.
 
 | Method | Path                           |
 | ------ | ------------------------------ |
 | DELETE | `/api/v1/users/{email}/oidc`   |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `404` | No user has the email, or the user is not linked to the current identity provider. |
 
 ## Delete a User
 
@@ -203,12 +163,6 @@ This path deletes the user with its sessions and API tokens. An Admin cannot del
 | Method | Path                      |
 | ------ | ------------------------- |
 | DELETE | `/api/v1/users/{email}`   |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `409` | The user is the last Admin with a password. |
 
 ## Create an API Token
 
@@ -225,14 +179,6 @@ This path returns the token, the only time it is shown. At most 12 per user. Req
 | ------------ | ------ | -------- | ----------- |
 | `name`       | string | Yes      | 3 to 50 characters, unique among the user's tokens. |
 | `expires_at` | string | No       | RFC 3339 time in the future. Without it, the token does not expire. |
-
-### Response Codes
-
-| Code  | Description |
-| ----- | ----------- |
-| `201` | Created. |
-| `400` | Invalid field, or 12 tokens exist. |
-| `409` | The user has a token of that name. |
 
 ### Sample Request
 

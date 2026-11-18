@@ -11,6 +11,7 @@ const settings = (overrides: Partial<OIDCSettings> = {}): OIDCSettings => ({
   enabled: true,
   external_url: "https://ims.example.com",
   redirect_url: "https://ims.example.com/api/v1/auth/oidc/callback",
+  post_logout_redirect_url: "https://ims.example.com/login",
   issuer: "https://idp.example.com/realms/ims",
   client_id: "ims",
   client_secret_set: true,
@@ -19,6 +20,7 @@ const settings = (overrides: Partial<OIDCSettings> = {}): OIDCSettings => ({
   session_lifetime_seconds: 86400,
   trust_unverified_email: false,
   ca_certificate: "",
+  ca_certificates: [],
   groups_claim: "groups",
   group_roles: [
     { group: "noc", role_id: 3 },
@@ -29,26 +31,9 @@ const settings = (overrides: Partial<OIDCSettings> = {}): OIDCSettings => ({
 
 const serve = ({
   current = settings(),
-  discovery = () =>
-    json(200, {
-      result: {
-        issuer: "https://idp.example.com/realms/ims",
-        authorization_endpoint: "",
-        token_endpoint: "",
-        jwks_uri: "",
-        signing_algorithms: ["RS256"],
-        keys: 1,
-        pkce: true,
-        issuer_parameter: true,
-        token_endpoint_auth_method: "client_secret_basic",
-        userinfo_endpoint:
-          "https://idp.example.com/realms/ims/protocol/openid-connect/userinfo",
-      },
-    }),
   put,
 }: {
   current?: OIDCSettings;
-  discovery?: () => Response;
   put?: () => Response;
 } = {}) => {
   const bodies: { path: string; body: unknown }[] = [];
@@ -64,13 +49,6 @@ const serve = ({
           }
           return json(200, { result: current });
         },
-        "/api/v1/oidc/discovery": (url, init) => {
-          bodies.push({
-            path: url.pathname,
-            body: JSON.parse(String(init?.body)),
-          });
-          return discovery();
-        },
       }),
     ),
   );
@@ -85,9 +63,12 @@ const renderPage = (auth = adminAuth) =>
     auth,
   );
 
-function field(label: string): HTMLElement;
-function field(label: string, within: HTMLElement): HTMLElement | undefined;
-function field(label: string, container?: HTMLElement) {
+function field(label: string | RegExp): HTMLElement;
+function field(
+  label: string | RegExp,
+  within: HTMLElement,
+): HTMLElement | undefined;
+function field(label: string | RegExp, container?: HTMLElement) {
   if (container) {
     return (
       within(container).queryByLabelText(label, {
@@ -137,26 +118,47 @@ afterEach(() => {
 });
 
 describe("Single sign-on", () => {
-  it("shows the settings and the redirect URL, never the secret", async () => {
-    serve();
+  it("shows the settings and the redirect URLs, never the secret", async () => {
+    serve({
+      current: settings({
+        ca_certificate:
+          "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+        ca_certificates: [
+          { subject: "CN=Example CA", not_after: "2030-01-02T00:00:00Z" },
+        ],
+      }),
+    });
     renderPage();
 
     const provider = await screen.findByRole("table", { name: "Provider" });
     await within(provider).findByText("Keycloak");
+    const urls = screen.getByRole("table", { name: "URLs" });
+    expect(within(urls).getByText("https://ims.example.com")).toBeVisible();
     expect(
-      within(provider).getByText(
+      within(urls).getByText(
         "https://ims.example.com/api/v1/auth/oidc/callback",
       ),
     ).toBeInTheDocument();
-    expect(within(provider).getByText("Set")).toBeInTheDocument();
+    expect(
+      within(urls).getByText("https://ims.example.com/login"),
+    ).toBeInTheDocument();
+    expect(
+      within(urls).getByRole("button", {
+        name: "Copy the post-logout redirect URL",
+      }),
+    ).toBeInTheDocument();
+    expect(within(provider).getByText("••••••••")).toBeInTheDocument();
+    expect(
+      within(provider).getByText("CN=Example CA · expires 2030-01-02"),
+    ).toBeInTheDocument();
     expect(within(provider).getByText("1 day")).toBeInTheDocument();
 
     const groups = screen.getByRole("table", { name: "Roles from groups" });
     expect(within(groups).getByText("groups")).toBeInTheDocument();
     expect(
-      within(groups).getByText("1. noc → Network Manager"),
+      within(groups).getByText("noc → Network Manager"),
     ).toBeInTheDocument();
-    expect(within(groups).getByText("2. ops → Read Only")).toBeInTheDocument();
+    expect(within(groups).getByText("ops → Read Only")).toBeInTheDocument();
   });
 
   it("links to the how-to", async () => {
@@ -231,9 +233,9 @@ describe("Single sign-on", () => {
     ).toBeInTheDocument();
     expect(field("Issuer URL", dialog)).toBeUndefined();
     fill("Groups claim", " roles ");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Move group 2 up" }),
-    );
+    expect(
+      within(dialog).queryByRole("button", { name: /Move group/ }),
+    ).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
 
     await waitFor(() => expect(bodies).toHaveLength(1));
@@ -250,33 +252,48 @@ describe("Single sign-on", () => {
       ca_certificate: "-----BEGIN CERTIFICATE-----",
       groups_claim: "roles",
       group_roles: [
-        { group: "ops", role_id: 2 },
         { group: "noc", role_id: 3 },
+        { group: "ops", role_id: 2 },
       ],
     });
   });
 
-  it("shows the redirect URL as the external URL is typed", async () => {
-    serve({
-      current: settings({ enabled: false, external_url: "", redirect_url: "" }),
-    });
+  it("saves the external URL, keeping the provider", async () => {
+    const bodies = serve();
     renderPage();
 
-    const dialog = await openEditor();
-    expect(field("Redirect URL", dialog)).toBeUndefined();
-    fill("External URL", "https://ims.example.org");
-    expect(field("Redirect URL", dialog)).toHaveValue(
-      "https://ims.example.org/api/v1/auth/oidc/callback",
-    );
-    fill("External URL", "https://ims.example.org/");
-    expect(field("Redirect URL", dialog)).toHaveValue(
-      "https://ims.example.org/api/v1/auth/oidc/callback",
-    );
+    const dialog = await openEditor("Edit external URL");
     expect(
-      within(dialog).getByRole("button", { name: "Copy the redirect URL" }),
+      within(dialog).getByRole("heading", { name: "Edit External URL" }),
     ).toBeInTheDocument();
-    fill("External URL", "https://ims.example.org/ui");
-    expect(field("Redirect URL", dialog)).toBeUndefined();
+    expect(field("Issuer URL", dialog)).toBeUndefined();
+    fill("External URL", "https://sso.example.com/");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Update" }));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0].body).toEqual({
+      ...bodyOf(settings()),
+      external_url: "https://sso.example.com",
+    });
+  });
+
+  it("refuses an external URL the API would refuse", async () => {
+    serve();
+    renderPage();
+
+    const dialog = await openEditor("Edit external URL");
+    const update = within(dialog).getByRole("button", { name: "Update" });
+
+    for (const [value, message] of [
+      ["https://ims.example.com/ui", "With no path."],
+      ["https://ims.example.com//", "With no path."],
+      ["https://ims.example.com#top", "With no query or fragment."],
+      ["", "Enter the external URL."],
+    ] as const) {
+      fill("External URL", value);
+      expect(await within(dialog).findByText(message)).toBeInTheDocument();
+      expect(update).toBeDisabled();
+    }
   });
 
   it("warns that changing the issuer signs everyone out", async () => {
@@ -419,13 +436,6 @@ describe("Single sign-on", () => {
         `https://idp.example.com/${"x".repeat(2048)}`,
         "At most 2048 bytes.",
       ],
-      ["External URL", "https://ims.example.com/ui", "With no path."],
-      ["External URL", "https://ims.example.com//", "With no path."],
-      [
-        "External URL",
-        "https://ims.example.com#top",
-        "With no query or fragment.",
-      ],
       ["Scopes", "email profile", "Include openid and email."],
       ["Scopes", "openid profile", "Include openid and email."],
       ["Scopes", "openid email email", "email appears more than once."],
@@ -494,32 +504,6 @@ describe("Single sign-on", () => {
       within(dialog).getByRole("button", { name: "Remove group 3" }),
     );
     await waitFor(() => expect(update).toBeEnabled());
-  });
-
-  it("keeps the focus on the group moved", async () => {
-    serve();
-    renderPage();
-
-    const dialog = await openEditor("Edit roles from groups");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Move group 2 up" }),
-    );
-    expect(field("Group 1")).toHaveValue("ops");
-    await waitFor(() =>
-      expect(
-        within(dialog).getByRole("button", { name: "Move group 1 down" }),
-      ).toHaveFocus(),
-    );
-
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Move group 1 down" }),
-    );
-    expect(field("Group 2")).toHaveValue("ops");
-    await waitFor(() =>
-      expect(
-        within(dialog).getByRole("button", { name: "Move group 2 up" }),
-      ).toHaveFocus(),
-    );
   });
 
   it.each([
@@ -615,7 +599,7 @@ describe("Single sign-on", () => {
     });
     renderPage();
 
-    await openEditor();
+    await openEditor("Edit external URL");
     expect(field("External URL")).toHaveValue("");
     expect(field("External URL")).toBeValid();
   });
@@ -661,62 +645,6 @@ describe("Single sign-on", () => {
     expect(
       within(dialog).getByRole("button", { name: "Update" }),
     ).toBeDisabled();
-  });
-
-  it("tests the identity provider before saving", async () => {
-    const bodies = serve();
-    renderPage();
-
-    const dialog = await openEditor();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Test" }));
-
-    const result = await within(dialog).findByRole("status");
-    expect(await within(result).findByText("Works")).toBeInTheDocument();
-    expect(result).not.toHaveTextContent("Failed");
-    expect(bodies).toEqual([
-      {
-        path: "/api/v1/oidc/discovery",
-        body: {
-          issuer: "https://idp.example.com/realms/ims",
-          ca_certificate: "",
-        },
-      },
-    ]);
-  });
-
-  it("shows why the identity provider cannot be used", async () => {
-    serve({
-      discovery: () =>
-        json(502, { error: "the identity provider: discovery: 404 Not Found" }),
-    });
-    renderPage();
-
-    const dialog = await openEditor();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Test" }));
-
-    const result = await within(dialog).findByRole("status");
-    expect(await within(result).findByText("Failed")).toBeInTheDocument();
-    expect(
-      within(result).getByText(
-        "the identity provider: discovery: 404 Not Found",
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("clears the test result when the issuer or CA certificate changes", async () => {
-    serve();
-    renderPage();
-
-    const dialog = await openEditor();
-    for (const [label, value] of [
-      ["Issuer URL", "https://idp.example.com/realms/other"],
-      ["CA certificate", "-----BEGIN CERTIFICATE-----"],
-    ] as const) {
-      fireEvent.click(within(dialog).getByRole("button", { name: "Test" }));
-      expect(await within(dialog).findByText("Works")).toBeInTheDocument();
-      fill(label, value);
-      expect(within(dialog).queryByText("Works")).not.toBeInTheDocument();
-    }
   });
 
   it("explains the risk of trusting email addresses on hover", async () => {

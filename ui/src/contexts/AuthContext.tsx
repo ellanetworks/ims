@@ -133,10 +133,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       navigateRef.current("/login", { replace: true, state });
     };
 
-    const logout = () =>
-      logoutRequest()
-        .catch(() => {})
-        .finally(() => leave());
+    const logout = async () => {
+      let redirectURL: string | undefined;
+      try {
+        redirectURL = await logoutRequest();
+      } catch {
+        redirectURL = undefined;
+      }
+      if (redirectURL) {
+        over = true;
+        window.clearTimeout(timer);
+        setAccessToken(null);
+        queryClient.clear();
+        window.location.assign(redirectURL);
+        return;
+      }
+      leave();
+    };
 
     const schedule = (delay: number) => {
       window.clearTimeout(timer);

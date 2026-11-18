@@ -58,6 +58,12 @@ func openStore(t *testing.T) *db.DB {
 
 	t.Cleanup(func() { _ = store.Close() })
 
+	for v := store.Schema() + 1; v <= db.SchemaVersion(); v++ {
+		if err := store.Migrate(context.Background(), v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	return store
 }
 

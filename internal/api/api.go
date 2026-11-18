@@ -258,9 +258,8 @@ func routes(cfg Config, a *auth) []route {
 		{"PUT /api/v1/ip-sm-gw/routes/{id}", PermUpdateIPSMGW, UpdateSMSRoute(cfg)},
 		{"DELETE /api/v1/ip-sm-gw/routes/{id}", PermUpdateIPSMGW, DeleteSMSRoute(cfg)},
 		{"GET /api/v1/backup", PermBackup, Backup(a)},
-		{"GET /api/v1/oidc", PermReadOIDC, a.needsLogin(GetOIDC(cfg))},
+		{"GET /api/v1/oidc", PermReadOIDC, GetOIDC(cfg)},
 		{"PUT /api/v1/oidc", PermUpdateOIDC, a.needsLogin(UpdateOIDC(a))},
-		{"POST /api/v1/oidc/discovery", PermUpdateOIDC, a.needsLogin(DiscoverOIDC(cfg))},
 
 		{"GET /api/v1/users/me", PermSelf, GetMyUser(a)},
 		{"PUT /api/v1/users/me/password", PermSelf, a.needsLogin(UpdateMyPassword(a))},

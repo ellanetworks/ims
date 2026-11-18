@@ -8,7 +8,7 @@ import { identity, operator, policy, sip } from "@/test/fixtures";
 import { json, renderWithClient, stubApi } from "@/test/render";
 import { rememberReturnPath, returnPath } from "@/utils/returnPath";
 
-const serve = (role: RoleID | null = RoleID.Admin) => {
+const serve = (role: RoleID | null = RoleID.Admin, logoutURL?: string) => {
   let session = role;
   vi.stubGlobal(
     "fetch",
@@ -22,7 +22,9 @@ const serve = (role: RoleID | null = RoleID.Admin) => {
               }),
         "/api/v1/auth/logout": () => {
           session = null;
-          return new Response(null, { status: 204 });
+          return logoutURL
+            ? json(200, { result: { redirect_url: logoutURL } })
+            : new Response(null, { status: 204 });
         },
         "/api/v1/status": () =>
           json(200, {
@@ -233,5 +235,27 @@ describe("App", () => {
           ),
       ).toBe(true),
     );
+  });
+
+  it("logs out at the identity provider after a single sign-on session", async () => {
+    const assign = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({
+      ...window.location,
+      assign,
+    });
+    serve(RoleID.Admin, "https://idp.example.com/logout?client_id=ims");
+    renderAt("/diameter");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Account menu" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Log Out" }));
+
+    await waitFor(() =>
+      expect(assign).toHaveBeenCalledWith(
+        "https://idp.example.com/logout?client_id=ims",
+      ),
+    );
+    vi.restoreAllMocks();
   });
 });

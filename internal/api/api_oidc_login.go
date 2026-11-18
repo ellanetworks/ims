@@ -35,6 +35,7 @@ const (
 	OIDCNoGroup          = "no_group"
 	OIDCGroupsOverage    = "groups_overage"
 	OIDCTooManyUsers     = "too_many_users"
+	OIDCLinkRequired     = "link_required"
 	OIDCError            = "error"
 )
 
@@ -74,22 +75,34 @@ func StartOIDCLogin(a *auth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 
+		link := r.URL.Query().Get("link") == "1"
+
 		if !a.logins.allow(clientKey(r)) {
-			a.oidcDone(w, r, "", refuse(OIDCRateLimited, "too many login attempts"))
+			a.oidcDone(w, r, "", link, refuse(OIDCRateLimited, "too many login attempts"))
 			return
 		}
 
 		c, err := cfg.OIDC.Client(r.Context(), cfg.Now)
 		if err != nil {
-			a.oidcDone(w, r, "", refuse(OIDCUnavailable, "%v", err))
+			a.oidcDone(w, r, "", link, refuse(OIDCUnavailable, "%v", err))
 			return
 		}
 
 		l := c.NewLogin(cfg.Now())
 
+		if link {
+			s, err := a.cookieSession(r)
+			if err != nil {
+				a.oidcDone(w, r, "", link, refuse(OIDCFailed, "no session to link: %v", err))
+				return
+			}
+
+			l.LinkUser = s.UserID
+		}
+
 		value, err := oidc.Seal(cfg.OIDCCookieKey(), OIDCLoginCookieName, l)
 		if err != nil {
-			a.oidcDone(w, r, "", err)
+			a.oidcDone(w, r, "", link, err)
 			return
 		}
 
@@ -119,67 +132,78 @@ func OIDCCallback(a *auth) http.Handler {
 			SameSite: http.SameSiteLaxMode,
 		})
 
-		c, cl, err := a.oidcAuthenticate(r)
+		c, l, cl, err := a.oidcAuthenticate(r)
+		link := l.LinkUser != 0
+
 		if err != nil {
-			a.oidcDone(w, r, "", err)
+			a.oidcDone(w, r, "", link, err)
+			return
+		}
+
+		if link {
+			email, err := a.oidcLink(r, c, l, cl)
+			a.oidcDone(w, r, email, link, err)
+
 			return
 		}
 
 		if err := cfg.Auth.DeleteExpiredSessions(r.Context(), cfg.Now()); err != nil {
-			a.oidcDone(w, r, actor(cl), err)
+			a.oidcDone(w, r, actor(cl), link, err)
 			return
 		}
 
 		u, err := a.oidcLogIn(w, r, c, cl)
 		if err != nil {
-			a.oidcDone(w, r, actor(cl), err)
+			a.oidcDone(w, r, actor(cl), link, err)
 			return
 		}
 
-		a.oidcDone(w, r, u.Email, nil)
+		a.oidcDone(w, r, u.Email, link, nil)
 	})
 }
 
-func (a *auth) oidcAuthenticate(r *http.Request) (*oidc.Client, oidc.Claims, error) {
+func (a *auth) oidcAuthenticate(r *http.Request) (*oidc.Client, oidc.Login, oidc.Claims, error) {
 	cfg := a.cfg
+
+	var l oidc.Login
 
 	cookie, err := r.Cookie(OIDCLoginCookieName)
 	if err != nil {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "no login in progress")
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "no login in progress")
 	}
 
-	l, err := oidc.Open(cfg.OIDCCookieKey(), OIDCLoginCookieName, cookie.Value, cfg.Now())
+	l, err = oidc.Open(cfg.OIDCCookieKey(), OIDCLoginCookieName, cookie.Value, cfg.Now())
 	if err != nil {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
 	}
 
 	q := r.URL.Query()
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(l.State)) != 1 {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "the state does not match the login")
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "the state does not match the login")
 	}
 
 	state := sha256.Sum256([]byte(l.State))
 
 	err = cfg.Auth.UseOIDCState(r.Context(), state[:], time.Unix(l.ExpiresAt, 0), cfg.Now())
 	if errors.Is(err, db.ErrStateUsed) {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "the login was already used")
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "the login was already used")
 	}
 
 	if err != nil {
-		return nil, oidc.Claims{}, err
+		return nil, l, oidc.Claims{}, err
 	}
 
 	c, err := cfg.OIDC.Client(r.Context(), cfg.Now)
 	if err != nil {
-		return nil, oidc.Claims{}, refuse(OIDCUnavailable, "%v", err)
+		return nil, l, oidc.Claims{}, refuse(OIDCUnavailable, "%v", err)
 	}
 
 	if !c.Owns(l) {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "the OIDC settings changed during the login")
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "the OIDC settings changed during the login")
 	}
 
 	if err := c.CheckIssuer(q.Get("iss"), q.Has("iss")); err != nil {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
 	}
 
 	if e := q.Get("error"); e != "" {
@@ -188,20 +212,59 @@ func (a *auth) oidcAuthenticate(r *http.Request) (*oidc.Client, oidc.Claims, err
 			outcome = OIDCDenied
 		}
 
-		return nil, oidc.Claims{}, refuse(outcome, "the identity provider returned %s: %s", e, q.Get("error_description"))
+		return nil, l, oidc.Claims{}, refuse(outcome, "the identity provider returned %s: %s", e, q.Get("error_description"))
 	}
 
 	code := q.Get("code")
 	if code == "" {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "no authorization code")
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "no authorization code")
 	}
 
 	cl, err := c.Exchange(r.Context(), code, l.Verifier, l.Nonce)
 	if err != nil {
-		return nil, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
+		return nil, l, oidc.Claims{}, refuse(OIDCFailed, "%v", err)
 	}
 
-	return c, cl, nil
+	return c, l, cl, nil
+}
+
+func (a *auth) oidcLink(r *http.Request, c *oidc.Client, l oidc.Login, cl oidc.Claims) (string, error) {
+	cfg := a.cfg
+
+	s, err := a.cookieSession(r)
+	if err != nil || s.UserID != l.LinkUser {
+		return "", refuse(OIDCFailed, "the session that started the link has ended")
+	}
+
+	u, err := cfg.Auth.GetUserByID(r.Context(), s.UserID)
+	if err != nil {
+		return "", refuse(OIDCFailed, "the user that started the link no longer exists")
+	}
+
+	o := c.Settings()
+
+	err = cfg.Auth.LinkOIDCIdentity(r.Context(), db.OIDCLink{
+		Issuer: o.Issuer, ClientID: o.ClientID, Subject: cl.Subject, Email: cl.Email, UserID: u.ID, At: cfg.Now(),
+	})
+
+	switch {
+	case errors.Is(err, db.ErrOIDCDisabled):
+		return u.Email, refuse(OIDCUnavailable, "%v", oidc.ErrDisabled)
+	case errors.Is(err, db.ErrOIDCChanged):
+		return u.Email, refuse(OIDCFailed, "the OIDC settings changed during the login")
+	case errors.Is(err, db.ErrLinkedElsewhere):
+		return u.Email, refuse(OIDCLinkedElsewhere, "the account at the identity provider, or %s, is already linked", u.Email)
+	case errors.Is(err, db.ErrNotFound):
+		return u.Email, refuse(OIDCFailed, "the user that started the link no longer exists")
+	case errors.Is(err, db.ErrUpgradePending):
+		return u.Email, refuse(OIDCUnavailable, "%v", err)
+	case err != nil:
+		return u.Email, err
+	}
+
+	a.audit(r, "link_user_oidc", u.Email, "User linked to the identity provider account "+cl.Subject)
+
+	return u.Email, nil
 }
 
 func (a *auth) oidcLogIn(w http.ResponseWriter, r *http.Request, c *oidc.Client, cl oidc.Claims) (db.User, error) {
@@ -244,6 +307,8 @@ func (a *auth) oidcLogIn(w http.ResponseWriter, r *http.Request, c *oidc.Client,
 		return db.User{}, groupErr
 	case errors.Is(err, db.ErrLinkedElsewhere):
 		return db.User{}, refuse(OIDCLinkedElsewhere, "%s is linked to another account at the identity provider", email)
+	case errors.Is(err, db.ErrLinkRequired):
+		return db.User{}, refuse(OIDCLinkRequired, "%s has a password, so the account must be linked from the profile", email)
 	case errors.Is(err, db.ErrTooManyUsers):
 		return db.User{}, refuse(OIDCTooManyUsers, "%d users exist", MaxNumUsers)
 	case err != nil:
@@ -293,12 +358,16 @@ func groupRole(c *oidc.Client, cl oidc.Claims) (db.Role, error) {
 	return role, nil
 }
 
-func (a *auth) oidcDone(w http.ResponseWriter, r *http.Request, who string, err error) {
-	outcome, target := OIDCSuccess, "/"
+func (a *auth) oidcDone(w http.ResponseWriter, r *http.Request, who string, link bool, err error) {
+	outcome, target, failure := OIDCSuccess, "/", "/login?"
+	if link {
+		target, failure = "/profile", "/profile?"
+	}
 
 	var refusal oidcRefusal
 
 	switch {
+	case err == nil && link:
 	case err == nil:
 		a.audit(r, "auth_oidc_login", who, "User logged in through OIDC")
 	case errors.As(err, &refusal):
@@ -314,7 +383,7 @@ func (a *auth) oidcDone(w http.ResponseWriter, r *http.Request, who string, err 
 	a.cfg.Requests.oidcLogin(outcome)
 
 	if outcome != OIDCSuccess {
-		target = "/login?" + url.Values{"error": {outcome}}.Encode()
+		target = failure + url.Values{"error": {outcome}}.Encode()
 	}
 
 	http.Redirect(w, r, target, http.StatusSeeOther)

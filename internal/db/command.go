@@ -75,6 +75,7 @@ const (
 	cmdClaimMCPTTGroupCall
 	cmdReleaseMCPTTGroupCall
 	cmdReleaseMCPTTGroupCallsOf
+	cmdLinkOIDCIdentity
 )
 
 const entryBatch uint16 = 1
@@ -165,6 +166,7 @@ var resultCodes = []struct {
 	{"no_user", ErrNoUser},
 	{"no_role", ErrNoRole},
 	{"linked_elsewhere", ErrLinkedElsewhere},
+	{"link_required", ErrLinkRequired},
 	{"state_used", ErrStateUsed},
 	{"settings_conflict", settings.ErrConflict},
 	{"settings_not_found", settings.ErrNotFound},

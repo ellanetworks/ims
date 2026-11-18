@@ -10,6 +10,7 @@ export interface OIDCSettings {
   enabled: boolean;
   external_url: string;
   redirect_url: string;
+  post_logout_redirect_url: string;
   issuer: string;
   client_id: string;
   client_secret_set: boolean;
@@ -18,8 +19,14 @@ export interface OIDCSettings {
   session_lifetime_seconds: number;
   trust_unverified_email: boolean;
   ca_certificate: string;
+  ca_certificates: OIDCCACertificate[];
   groups_claim: string;
   group_roles: GroupRole[];
+}
+
+export interface OIDCCACertificate {
+  subject: string;
+  not_after: string;
 }
 
 export interface UpdateOIDCSettings {
@@ -37,19 +44,6 @@ export interface UpdateOIDCSettings {
   group_roles: GroupRole[];
 }
 
-export interface OIDCDiscovery {
-  issuer: string;
-  authorization_endpoint: string;
-  token_endpoint: string;
-  jwks_uri: string;
-  signing_algorithms: string[];
-  keys: number;
-  pkce: boolean;
-  issuer_parameter: boolean;
-  token_endpoint_auth_method: "client_secret_basic" | "client_secret_post";
-  userinfo_endpoint: string;
-}
-
 export interface OIDCLogin {
   enabled: boolean;
   display_name?: string;
@@ -65,18 +59,12 @@ export const MAX_URL_BYTES = 2048;
 export const MAX_CA_CERTIFICATE_BYTES = 64 * 1024;
 export const REQUIRED_SCOPES = ["openid", "email"];
 export const OIDC_LOGIN_PATH = "/api/v1/auth/oidc/login";
-export const OIDC_CALLBACK_PATH = "/api/v1/auth/oidc/callback";
+export const OIDC_LINK_PATH = `${OIDC_LOGIN_PATH}?link=1`;
 
 export const getOIDC = () => apiFetch<OIDCSettings>("/api/v1/oidc");
 
 export const updateOIDC = (settings: UpdateOIDCSettings) =>
   apiFetch<OIDCSettings>("/api/v1/oidc", { method: "PUT", body: settings });
-
-export const discoverOIDC = (issuer: string, caCertificate: string) =>
-  apiFetch<OIDCDiscovery>("/api/v1/oidc/discovery", {
-    method: "POST",
-    body: { issuer, ca_certificate: caCertificate },
-  });
 
 export const currentUpdate = (settings: OIDCSettings): UpdateOIDCSettings => ({
   enabled: settings.enabled,
@@ -96,8 +84,7 @@ export const currentUpdate = (settings: OIDCSettings): UpdateOIDCSettings => ({
 export const roleFromGroups = (user: User, settings?: OIDCSettings) =>
   settings?.enabled === true &&
   settings.group_roles.length > 0 &&
-  user.oidc_linked &&
-  !user.role_pinned;
+  user.oidc_linked;
 
 export const getOIDCLogin = () =>
   apiFetch<OIDCLogin>("/api/v1/auth/oidc", { anonymous: true });
@@ -123,10 +110,45 @@ const oidcLoginErrors: Record<string, string> = {
   error: "Single sign-on failed. Try again, or contact an administrator.",
 };
 
-export const oidcLoginError = (code: string) =>
-  Object.hasOwn(oidcLoginErrors, code)
+export const oidcLoginError = (code: string, displayName?: string) => {
+  if (code === "link_required") {
+    return `This account has a password. Log in with it, then link your ${displayName || "identity provider"} account from your profile.`;
+  }
+  return Object.hasOwn(oidcLoginErrors, code)
     ? oidcLoginErrors[code]
     : oidcLoginErrors.error;
+};
+
+export const oidcLinkError = (code: string) =>
+  code === "linked_elsewhere"
+    ? "That account at your identity provider, or yours, is already linked."
+    : oidcLoginError(code);
+
+const LINKING_KEY = "ims.oidcLinking";
+
+export function rememberLinking() {
+  try {
+    sessionStorage.setItem(LINKING_KEY, "1");
+  } catch {
+    return;
+  }
+}
+
+export function isLinking(): boolean {
+  try {
+    return sessionStorage.getItem(LINKING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function forgetLinking() {
+  try {
+    sessionStorage.removeItem(LINKING_KEY);
+  } catch {
+    return;
+  }
+}
 
 const byteLength = (value: string) => new TextEncoder().encode(value).length;
 
