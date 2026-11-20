@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "image",
+    "replicas",
+    "sip",
+    "cluster",
+    "service",
+    "persistence"
+  ],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": [
+        "repository"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Image repository."
+        },
+        "tag": {
+          "type": "string",
+          "description": "Image tag. Defaults to the chart appVersion."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$",
+          "description": "Image digest. Takes precedence over tag."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ],
+          "description": "Image pull policy."
+        }
+      },
+      "description": "Ella IMS container image."
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "Image pull secrets."
+    },
+    "nameOverride": {
+      "type": "string",
+      "description": "Overrides the chart name."
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Overrides the resource name prefix."
+    },
+    "clusterDomain": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Kubernetes cluster domain, used in the cluster addresses of high-availability pods."
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 1,
+      "not": {
+        "const": 2
+      },
+      "description": "Number of Ella IMS pods. 1 deploys a standalone node. 3 or more deploy a high-availability cluster, with one pod per Kubernetes node."
+    },
+    "sip": {
+      "type": "object",
+      "required": [
+        "interface",
+        "networkAttachment"
+      ],
+      "properties": {
+        "interface": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the SIP interface in the pod. The CSCFs listen on its addresses."
+        },
+        "address": {
+          "type": "string",
+          "description": "SIP address of the pod, in CIDR notation, set through the Multus network annotation. Empty for none. Must be empty with more than one replica."
+        },
+        "networkAttachment": {
+          "type": "object",
+          "properties": {
+            "create": {
+              "type": "boolean",
+              "description": "Create a macvlan NetworkAttachmentDefinition with static IPAM. Set to false to use your own."
+            },
+            "name": {
+              "type": "string",
+              "description": "Name of the NetworkAttachmentDefinition. With create false and an empty name, the pod gets no Multus network."
+            },
+            "master": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Host interface on the network that phones reach Ella IMS on."
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "bridge",
+                "private",
+                "vepa",
+                "passthru"
+              ],
+              "description": "macvlan mode."
+            },
+            "routes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "dst"
+                ],
+                "properties": {
+                  "dst": {
+                    "type": "string"
+                  },
+                  "gw": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "description": "Routes through the SIP interface, such as the phones' IP pool through the core's N6 or SGi address."
+            }
+          },
+          "description": "NetworkAttachmentDefinition for the SIP interface."
+        }
+      },
+      "description": "SIP network of the pods."
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "secretName": {
+          "type": "string",
+          "description": "Name of the Secret that holds the cluster secret in its secret key. Required with more than one replica."
+        }
+      },
+      "description": "High-availability cluster settings."
+    },
+    "config": {
+      "type": "object",
+      "description": "Ella IMS configuration file content, merged over the database, API, SIP, Diameter and cluster settings that the chart sets."
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ],
+          "description": "Service type."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Service port."
+        },
+        "nodePort": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Node port, when type is NodePort."
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Service annotations."
+        }
+      },
+      "description": "Service that exposes the API and UI."
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create a NetworkPolicy that limits the cluster port to the Ella IMS pods, with more than one replica."
+        }
+      },
+      "description": "NetworkPolicy of the pods."
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Size of each pod's data volume."
+        },
+        "storageClassName": {
+          "type": "string",
+          "description": "StorageClass of the data volumes. Empty uses the default StorageClass."
+        }
+      },
+      "description": "Data volume of each pod."
+    },
+    "resources": {
+      "type": "object",
+      "description": "Container resources."
+    },
+    "podAnnotations": {
+      "type": "object",
+      "description": "Extra pod annotations."
+    },
+    "podLabels": {
+      "type": "object",
+      "description": "Extra pod labels."
+    },
+    "nodeSelector": {
+      "type": "object",
+      "description": "Node selector."
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Tolerations."
+    },
+    "affinity": {
+      "type": "object",
+      "description": "Affinity. Replaces the default one-pod-per-Kubernetes-node anti-affinity in high availability."
+    },
+    "priorityClassName": {
+      "type": "string",
+      "description": "Priority class."
+    },
+    "extraInitContainers": {
+      "type": "array",
+      "description": "Init containers that run before Ella IMS, such as one that sets the SIP address."
+    },
+    "extraVolumes": {
+      "type": "array",
+      "description": "Extra pod volumes, for extraInitContainers."
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "description": "Image of the test pod."
+        }
+      },
+      "description": "helm test settings."
+    }
+  }
+}

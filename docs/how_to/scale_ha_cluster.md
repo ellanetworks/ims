@@ -9,6 +9,7 @@ This guide walks through adding a node to an existing Ella IMS high-availability
 ## Prerequisites
 
 - A running HA cluster deployed (see [Deploy a High Availability Cluster](deploy_ha_cluster.md)).
+- On Kubernetes, the `values.yaml` of the release, and its chart version, `<version>`, from `helm list -n ella`.
 
 ## Add a node
 
@@ -25,10 +26,10 @@ This guide walks through adding a node to an existing Ella IMS high-availability
 === "Kubernetes"
 
     1. Add a Kubernetes node for the new pod, with a second interface, as for the others.
-    2. Add a pod:
+    2. In `values.yaml`, set `replicas` to `4`, and upgrade the release:
 
         ```shell
-        kubectl scale statefulset ella-ims -n ella --replicas=4
+        helm upgrade ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --version <version> --namespace ella -f values.yaml
         ```
 
     3. On the HSS and the PCRF, accept the new pod's Diameter host. Add its SIP address to the P-CSCF addresses of the core network.
@@ -48,10 +49,10 @@ This guide walks through adding a node to an existing Ella IMS high-availability
     1. Open the leader's **Cluster** page.
     2. In the **Node actions** menu of the node with the highest pod number, click **Drain this node**. Wait until its **Drain** column shows **Drained**.
     3. In the same menu, click **Remove from cluster**.
-    4. Remove its pod and volume:
+    4. In `values.yaml`, set `replicas` to `3`, upgrade the release, and delete the pod's volume:
 
         ```shell
-        kubectl scale statefulset ella-ims -n ella --replicas=3
+        helm upgrade ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --version <version> --namespace ella -f values.yaml
         kubectl delete pvc data-ella-ims-3 -n ella
         ```
 

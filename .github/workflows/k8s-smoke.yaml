@@ -11,13 +11,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [multus, ha]
+        mode: [standalone, ha]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       KIND_VERSION: v0.33.0
       KUBECTL_VERSION: v1.37.1
       KUBECONFORM_VERSION: v0.8.0
+      HELM_VERSION: v4.3.1
+      HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,13 +40,16 @@ jobs:
       - name: Raise the inotify limits
         run: sudo sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288
 
-      - name: Install kind, kubectl and kubeconform
+      - name: Install kind, kubectl, kubeconform and Helm
         run: |
           mkdir -p "${RUNNER_TEMP}/bin"
           cd "${RUNNER_TEMP}/bin"
           curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
           curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
           curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar -xz kubeconform
+          curl -fsSLo "${RUNNER_TEMP}/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "${HELM_SHA256}" "${RUNNER_TEMP}/helm.tgz" | sha256sum --check
+          tar -xzf "${RUNNER_TEMP}/helm.tgz" --strip-components 1 linux-amd64/helm
           chmod +x kind kubectl kubeconform
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 

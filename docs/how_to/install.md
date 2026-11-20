@@ -132,51 +132,40 @@ Choose one of the installation methods below.
 
 === "Kubernetes"
 
-    Ensure your Kubernetes cluster nodes meet the [system requirements](../reference/system_reqs.md).
+    Ensure your Kubernetes cluster meets the [Kubernetes requirements](../reference/system_reqs.md#kubernetes).
 
-    Download the Ella IMS manifests:
-
-    ```shell
-    git clone --depth 1 https://github.com/ellanetworks/ims.git
-    ```
-
-    Create the namespace with the privileged Pod Security Standard:
+    Create the namespace:
 
     ```shell
     kubectl create namespace ella
-    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
+    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/warn=privileged
     ```
 
-    Choose an example:
+    Create `values.yaml`. Set `master` to the host interface on the network phones reach Ella IMS on, `address` to the P-CSCF address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address:
 
-    | Example | Second interface, `eth1` | Files to edit |
-    | ------- | ------------------------ | ------------- |
-    | `ims/k8s/examples/multus` | [Multus](https://github.com/k8snetworkplumbingwg/multus-cni), with the `macvlan` and `static` CNI plugins on the nodes | `ims-sip-nad.yaml`: set `master` to the node's interface on the network phones reach Ella IMS on, the P-CSCF address, and the route to the phones' IP pool through the core's N6 (5G) or SGi (4G) address. |
-    | `ims/k8s/examples/gke-netdevice` | [GKE multi-network](https://cloud.google.com/kubernetes-engine/docs/how-to/setup-multinetwork-support-for-pods) and an internal passthrough Network Load Balancer | `ims-sip-network.yaml`: set `vpc`, `vpcSubnet`, and the phones' IP pool in `routes`. Keep the routes for Google Cloud's health check ranges.<br>`ims.yaml`: set `sip.addresses` to the load balancer's address.<br>`kustomization.yaml`: set the same address in the `pcscf-address` init container. |
-
-    Give the pod its second interface, `eth1`, on the network phones reach Ella IMS on, as the example requires.
-
-    Edit the example's addresses in its files.
+    ```yaml
+    sip:
+      address: 10.6.0.5/24
+      networkAttachment:
+        master: eth1
+        routes:
+          - dst: 10.46.0.0/16
+            gw: 10.6.0.2
+    ```
 
     Deploy Ella IMS:
 
     ```shell
-    kubectl apply -k ims/k8s/examples/<example>
-    ```
-
-    Find the P-CSCF address, the `pcscf` entry of `sip`:
-
-    ```shell
-    kubectl logs -n ella ella-ims-0 | grep '"ims started"'
+    helm install ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --namespace ella -f values.yaml
     ```
 
     Open the UI and API on your machine:
 
     ```shell
-    kubectl port-forward -n ella svc/ella-ims 5020:5020
+    kubectl port-forward -n ella service/ella-ims 5020:5020
     ```
 
-    Ella IMS's UI and API are at `http://localhost:5020`.
+    Ella IMS's UI and API are at `http://localhost:5020`. See the [chart reference](https://github.com/ellanetworks/ims/tree/main/charts/ella-ims) for all values.
 
     On the HSS and the PCRF, set Ella IMS's Diameter host to `ella-ims-0.ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org`, and accept its connections from the pod's address, or from the node's where the cluster masquerades pod traffic.
 

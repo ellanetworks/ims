@@ -55,6 +55,8 @@ jobs:
   k8s-smoke:
     needs: [image-build]
     uses: ./.github/workflows/k8s-smoke.yaml
+  chart-lint:
+    uses: ./.github/workflows/chart-lint.yaml
   image-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, ui-e2e-oidc, e2e, image-build, k8s-smoke]

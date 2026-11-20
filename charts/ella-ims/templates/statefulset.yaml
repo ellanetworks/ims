@@ -1,0 +1,169 @@
+{{- $ha := include "ella-ims.ha" . }}
+{{- $networks := include "ella-ims.networks" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ella-ims.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ella-ims.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  serviceName: {{ include "ella-ims.headlessServiceName" . }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "ella-ims.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ella-ims.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include "ella-ims.config" . | sha256sum }}
+        {{- with $networks }}
+        k8s.v1.cni.cncf.io/networks: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 37
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or $ha .Values.affinity }}
+      affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "ella-ims.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+        {{- end }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ims
+          image: {{ include "ella-ims.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["ims"]
+          args: ["--config", "/config/ims.yaml"]
+          terminationMessagePolicy: FallbackToLogsOnError
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: IMS_DIAMETER_HOST_LABEL
+              value: $(POD_NAME)
+            {{- if $ha }}
+            - name: IMS_CLUSTER_ADVERTISE
+              value: {{ printf "$(POD_NAME).%s.%s.svc.%s:7000" (include "ella-ims.headlessServiceName" .) .Release.Namespace .Values.clusterDomain }}
+            {{- end }}
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN"]
+          ports:
+            - name: http
+              containerPort: 5020
+            {{- if $ha }}
+            - name: tcp-cluster
+              containerPort: 7000
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ ternary "/api/v1/livez" "/api/v1/readyz" (not (empty $ha)) }}
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /api/v1/readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/v1/livez
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if $ha }}
+            - name: cluster-secret
+              mountPath: /secrets/cluster
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "ella-ims.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        {{- if $ha }}
+        - name: cluster-secret
+          secret:
+            secretName: {{ .Values.cluster.secretName }}
+            defaultMode: 0440
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

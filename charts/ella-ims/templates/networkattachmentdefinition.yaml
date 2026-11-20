@@ -1,0 +1,20 @@
+{{- if .Values.sip.networkAttachment.create }}
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: {{ include "ella-ims.networkAttachmentName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ella-ims.labels" . | nindent 4 }}
+spec:
+  config: |
+    {{- dict
+      "cniVersion" "1.0.0"
+      "name" (include "ella-ims.networkAttachmentName" .)
+      "type" "macvlan"
+      "master" .Values.sip.networkAttachment.master
+      "mode" .Values.sip.networkAttachment.mode
+      "capabilities" (dict "ips" true)
+      "ipam" (dict "type" "static" "routes" .Values.sip.networkAttachment.routes)
+      | toPrettyJson | nindent 4 }}
+{{- end }}
