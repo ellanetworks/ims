@@ -36,6 +36,13 @@ service:
   nodePort: null
   annotations: {}
 
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
+
 networkPolicy:
   enabled: true
 
