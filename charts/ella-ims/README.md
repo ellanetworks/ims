@@ -107,6 +107,7 @@ extraInitContainers:
 | `service.port` | `5020` | Port of the API service. |
 | `service.nodePort` | | Node port, when `service.type` is `NodePort`. |
 | `service.annotations` | `{}` | Annotations of the API service. |
+| `api.tls.secretName` | | `kubernetes.io/tls` Secret for HTTPS served by the pod itself. The probes and `helm test` then use HTTPS. With an Ingress, set the controller's annotation for HTTPS to the backend. |
 | `ingress.enabled` | `false` | Create an Ingress that exposes the API and UI. |
 | `ingress.className` | | IngressClass name. Empty uses the cluster default. |
 | `ingress.host` | | Host name of the API and UI. Required when the Ingress is enabled. |

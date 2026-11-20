@@ -103,6 +103,7 @@ spec:
             {{- end }}
           startupProbe:
             httpGet:
+              scheme: {{ include "ella-ims.apiScheme" . }}
               path: {{ ternary "/api/v1/livez" "/api/v1/readyz" (not (empty $ha)) }}
               port: http
             periodSeconds: 2
@@ -110,12 +111,14 @@ spec:
             failureThreshold: 150
           readinessProbe:
             httpGet:
+              scheme: {{ include "ella-ims.apiScheme" . }}
               path: /api/v1/readyz
               port: http
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
             httpGet:
+              scheme: {{ include "ella-ims.apiScheme" . }}
               path: /api/v1/livez
               port: http
             periodSeconds: 20
@@ -130,6 +133,11 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            {{- if .Values.api.tls.secretName }}
+            - name: api-tls
+              mountPath: /tls/api
+              readOnly: true
+            {{- end }}
             - name: config
               mountPath: /config
               readOnly: true
@@ -143,6 +151,11 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if .Values.api.tls.secretName }}
+        - name: api-tls
+          secret:
+            secretName: {{ .Values.api.tls.secretName }}
+        {{- end }}
         - name: config
           configMap:
             name: {{ include "ella-ims.fullname" . }}

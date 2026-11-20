@@ -43,6 +43,7 @@ jobs:
         run: |
           helm template ella-ims charts/ella-ims --namespace ella > /dev/null
           helm template ella-ims charts/ella-ims --namespace ella --set ingress.enabled=true --set ingress.host=ella.example.com > /dev/null
+          helm template ella-ims charts/ella-ims --namespace ella --set api.tls.secretName=api-tls > /dev/null
           helm template ella-ims charts/ella-ims --namespace ella \
             --set replicas=3 --set cluster.secretName=ella-ims-cluster \
             --set sip.address= --set sip.networkAttachment.create=false --set sip.networkAttachment.name=ims-sip > /dev/null

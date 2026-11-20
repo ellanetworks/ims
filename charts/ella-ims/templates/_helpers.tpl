@@ -102,5 +102,12 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- $join := printf "%s.%s.svc.%s:7000" (include "ella-ims.headlessServiceName" .) .Release.Namespace .Values.clusterDomain }}
 {{- $_ := set $base "cluster" (dict "address" "0.0.0.0" "port" 7000 "join" (list $join) "bootstrap_expect" (int .Values.replicas) "secret_file" "/secrets/cluster/secret") }}
 {{- end }}
+{{- if .Values.api.tls.secretName }}
+{{- $_ := set $base.api "tls" (dict "cert" "/tls/api/tls.crt" "key" "/tls/api/tls.key") }}
+{{- end }}
 {{- toYaml (mustMergeOverwrite $base $user) }}
+{{- end }}
+
+{{- define "ella-ims.apiScheme" -}}
+{{- if .Values.api.tls.secretName }}HTTPS{{ else }}HTTP{{ end }}
 {{- end }}
