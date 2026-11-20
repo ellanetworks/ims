@@ -211,6 +211,42 @@
       "type": "object",
       "description": "Container resources."
     },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create a service account."
+        },
+        "name": {
+          "type": "string",
+          "description": "Service account name. Defaults to the release name when create is true, and to default otherwise."
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Service account annotations."
+        }
+      },
+      "description": "Service account of the pods."
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the ServiceMonitor."
+        },
+        "interval": {
+          "type": "string",
+          "description": "Scrape interval."
+        },
+        "labels": {
+          "type": "object",
+          "description": "Extra ServiceMonitor labels."
+        }
+      },
+      "description": "Prometheus Operator ServiceMonitor for /api/v1/metrics on the API Service."
+    },
     "podAnnotations": {
       "type": "object",
       "description": "Extra pod annotations."

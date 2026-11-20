@@ -45,3 +45,5 @@ jobs:
           helm template ella-ims charts/ella-ims --namespace ella \
             --set replicas=3 --set cluster.secretName=ella-ims-cluster \
             --set sip.address= --set sip.networkAttachment.create=false --set sip.networkAttachment.name=ims-sip > /dev/null
+          helm template ella-ims charts/ella-ims --namespace ella \
+            --set serviceMonitor.enabled=true --set serviceAccount.create=false > /dev/null

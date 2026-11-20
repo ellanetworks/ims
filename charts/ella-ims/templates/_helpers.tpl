@@ -55,6 +55,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 {{- end }}
 
+{{- define "ella-ims.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "ella-ims.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
 {{- define "ella-ims.image" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag }}
 {{- if .Values.image.digest }}

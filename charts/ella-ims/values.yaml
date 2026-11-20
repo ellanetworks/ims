@@ -51,6 +51,16 @@ resources:
     cpu: "16"
     memory: 1Gi
 
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}

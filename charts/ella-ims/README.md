@@ -116,6 +116,12 @@ extraInitContainers:
 | `tolerations` | `[]` | Tolerations. |
 | `affinity` | one pod per Kubernetes node in high availability | Affinity. Replaces the default anti-affinity. |
 | `priorityClassName` | | Priority class. |
+| `serviceAccount.create` | `true` | Create a service account. |
+| `serviceAccount.name` | `<release>` | Service account name. |
+| `serviceAccount.annotations` | `{}` | Service account annotations. |
+| `serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor for `/api/v1/metrics`. |
+| `serviceMonitor.interval` | `30s` | Scrape interval. |
+| `serviceMonitor.labels` | `{}` | Extra ServiceMonitor labels. |
 | `podAnnotations` | `{}` | Extra pod annotations. |
 | `podLabels` | `{}` | Extra pod labels. |
 | `extraInitContainers` | `[]` | Init containers that run before Ella IMS, such as one that sets the SIP address. |

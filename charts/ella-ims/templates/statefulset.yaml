@@ -31,6 +31,7 @@ spec:
         {{- end }}
     spec:
       terminationGracePeriodSeconds: 37
+      serviceAccountName: {{ include "ella-ims.serviceAccountName" . }}
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

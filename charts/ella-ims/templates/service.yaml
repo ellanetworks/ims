@@ -5,6 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "ella-ims.labels" . | nindent 4 }}
+    ellanetworks.com/service: api
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
