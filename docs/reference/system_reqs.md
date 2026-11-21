@@ -20,7 +20,7 @@ Both are measured, with room for registration bursts and calls: see the [perform
 
 ## Kubernetes
 
-Ella IMS should work on most Kubernetes distributions. It has been validated on **RKE2** and **kind**.
+Ella IMS should work on most Kubernetes distributions. It has been validated on **GKE**, **RKE2**, and **kind**.
 
 | Requirement | Value |
 |-------------|-------|
