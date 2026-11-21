@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE="${MODE:-multus}"
+MODE="${MODE:-standalone}"
 IMAGE="${IMAGE:-ella-ims:latest}"
 PREVIOUS_IMAGE="${PREVIOUS_IMAGE:-}"
 
@@ -10,7 +10,6 @@ NODE="${CLUSTER}-control-plane"
 NETWORK=ims-smoke
 CORE=ims-smoke-core
 N6="${N6_NET:-10.6.0}"
-SHIPPED_N6=10.6.0
 UE_POOL=10.46.0.0/16
 NS=ella
 
@@ -61,8 +60,8 @@ cleanup() {
 trap cleanup EXIT
 
 case "${MODE}" in
-multus | ha) ;;
-*) fail "MODE must be multus or ha, not ${MODE}" ;;
+standalone | ha) ;;
+*) fail "MODE must be standalone or ha, not ${MODE}" ;;
 esac
 
 SIP_ADDR="${N6}.5"
@@ -97,8 +96,9 @@ node_port() { k get service "$1" -o jsonpath="{.spec.ports[?(@.name==\"$2\")].no
 
 node_ip() { kubectl get node "${NODE}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'; }
 
-manifests() {
-  kubectl kustomize "${ROOT}/ci/k8s/multus" | sed -e "s/\b${SHIPPED_N6//./\\.}\./${N6}./g"
+create_namespace() {
+  kubectl create namespace "${NS}"
+  kubectl label namespace "${NS}" pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/warn=privileged
 }
 
 wait_ready() {
@@ -140,14 +140,14 @@ check_diameter() {
 }
 
 deploy() {
-  docker tag "$1" ella-ims:ci
-  kind load docker-image ella-ims:ci --name "${CLUSTER}"
-  manifests | kubectl apply -f -
-  local old=""
-  if [ "${2:-}" = restart ]; then
-    old="$(k get pod ella-ims-0 -o jsonpath='{.metadata.uid}')"
-    k rollout restart statefulset/ella-ims
-  fi
+  docker tag "$1" "ella-ims:$2"
+  kind load docker-image "ella-ims:$2" --name "${CLUSTER}"
+  local old
+  old="$(k get pod ella-ims-0 -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  helm upgrade --install ella-ims "${ROOT}/charts/ella-ims" --namespace "${NS}" \
+    --set image.repository=ella-ims --set image.tag="$2" --set service.type=NodePort \
+    --set sip.address="${SIP_ADDR}/24" \
+    --set-json "sip.networkAttachment.routes=[{\"dst\":\"${UE_POOL}\",\"gw\":\"${CORE_ADDR}\"}]"
   wait_ready "${old}"
   wait_api
 }
@@ -235,7 +235,7 @@ check_members() {
   done
   echo "${cluster}" | jq -c '.result.members[] | {node_id, address, diameter_host, suffrage, leader, healthy}' >&2
   [ "${healthy}" = true ] || fail "the cluster does not have the three pods as healthy voters"
-  echo "${cluster}" | jq -e '.result.members | length == 3 and all(.address | test("^ella-ims-[0-2]\\.ella-ims-internal\\.ella\\.svc\\.cluster\\.local:7000$"))' >/dev/null \
+  echo "${cluster}" | jq -e '.result.members | length == 3 and all(.address | test("^ella-ims-[0-2]\\.ella-ims-headless\\.ella\\.svc\\.cluster\\.local:7000$"))' >/dev/null \
     || fail "a member does not advertise its per-pod DNS name"
   echo "${cluster}" | jq -r '[.result.members[] | .diameter_label + "=" + .node_id] | sort | join(" ")'
 }
@@ -262,11 +262,12 @@ ha_smoke() {
   step "Deploy ${IMAGE}"
   docker tag "${IMAGE}" ella-ims:ci
   kind load docker-image ella-ims:ci --name "${CLUSTER}"
-  kubectl apply -k "${ROOT}/ci/k8s/namespace"
-  kubectl get namespace "${NS}" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -qx privileged \
-    || fail "the namespace does not allow privileged pods"
+  create_namespace
   k create secret generic ella-ims-cluster --from-literal=secret="$(head -c 32 /dev/urandom | base64)"
-  kubectl apply -k "${ROOT}/ci/k8s/ha"
+  k apply -f "${ROOT}/ci/k8s/ims-sip-nad.yaml"
+  helm install ella-ims "${ROOT}/charts/ella-ims" --namespace "${NS}" \
+    --set image.repository=ella-ims --set image.tag=ci --set replicas=3 --set cluster.secretName=ella-ims-cluster \
+    --set sip.address= --set sip.networkAttachment.create=false --set sip.networkAttachment.name=ims-sip
   endstep
 
   step "Form the cluster and create the first admin on ella-ims-0"
@@ -313,13 +314,20 @@ ha_smoke() {
   check_sip_interface
   k get pods -o wide
   endstep
+
+  step "Run the chart's tests"
+  helm test ella-ims --namespace "${NS}" --logs --timeout 3m
+  endstep
 }
 
 step "Lint the manifests"
 version="$(cat "${ROOT}/version/VERSION")"
-for dir in k8s/base k8s/ha k8s/examples/multus k8s/examples/gke-netdevice k8s/examples/gke-ha ci/k8s/multus ci/k8s/ha; do
-  kubectl kustomize "${ROOT}/${dir}" | kubeconform -strict -summary -skip NetworkAttachmentDefinition,Network,GKENetworkParamSet
-done
+helm template ella-ims "${ROOT}/charts/ella-ims" --namespace "${NS}" \
+  | kubeconform -strict -summary -skip NetworkAttachmentDefinition
+helm template ella-ims "${ROOT}/charts/ella-ims" --namespace "${NS}" \
+  --set replicas=3 --set cluster.secretName=ella-ims-cluster \
+  --set sip.address= --set sip.networkAttachment.create=false --set sip.networkAttachment.name=ims-sip \
+  | kubeconform -strict -summary
 endstep
 
 step "Create the cluster"
@@ -376,7 +384,7 @@ fi
 step "Check the Pod Security of the pod"
 kubectl create namespace pss-check >/dev/null
 kubectl label namespace pss-check pod-security.kubernetes.io/enforce=restricted >/dev/null
-violations="$(kubectl kustomize "${ROOT}/k8s/base" \
+violations="$(helm template ella-ims "${ROOT}/charts/ella-ims" --namespace pss-check --skip-tests \
   | kubectl create -n pss-check --dry-run=server -f - -o name 2>&1 >/dev/null \
   | grep -o 'would violate PodSecurity.*' || true)"
 echo "${violations}"
@@ -395,20 +403,24 @@ docker exec "${NODE}" ip route add "${CORE_DIAMETER}/32" via "${CORE_ADDR}"
 docker cp "${WORK}/loadtest.test" "${CORE}:/loadtest.test"
 endstep
 
+step "Create the namespace"
+create_namespace
+endstep
+
 if [ -n "${PREVIOUS_IMAGE}" ]; then
   step "Deploy the previous release, ${PREVIOUS_IMAGE}"
   docker image inspect "${PREVIOUS_IMAGE}" >/dev/null 2>&1 || docker pull "${PREVIOUS_IMAGE}"
-  deploy "${PREVIOUS_IMAGE}"
+  deploy "${PREVIOUS_IMAGE}" previous
   log_in
   endstep
 
   step "Upgrade to ${IMAGE}"
-  deploy "${IMAGE}" restart
+  deploy "${IMAGE}" ci
   api /users/me >/dev/null || fail "the API token created before the upgrade is gone"
   endstep
 else
   step "Deploy ${IMAGE}"
-  deploy "${IMAGE}"
+  deploy "${IMAGE}" ci
   log_in
   endstep
 fi
@@ -429,6 +441,10 @@ endstep
 
 step "Check the SIP address"
 check_sip
+endstep
+
+step "Run the chart's tests"
+helm test ella-ims --namespace "${NS}" --logs --timeout 3m
 endstep
 
 step "Register ${SUBS} phones over IPsec at ${SIP_ADDR}, and call"

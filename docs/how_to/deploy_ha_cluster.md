@@ -43,17 +43,38 @@ Ella IMS can be deployed as a high-availability cluster to provide redundancy an
 
     ## Prerequisites
 
-    - A Kubernetes cluster with three nodes meeting the [system requirements](../reference/system_reqs.md).
-    - A second interface, `eth1`, for each pod, as in [Install](install.md).
+    - A Kubernetes cluster with three nodes meeting the [Kubernetes requirements](../reference/system_reqs.md#kubernetes).
+    - [Multus](https://github.com/k8snetworkplumbingwg/multus-cni), with a CNI plugin and IPAM that give each pod its own address on the network phones reach Ella IMS on.
 
     ## 1. Deploy
 
+    Create the namespace and the cluster secret:
+
     ```shell
-    git clone --depth 1 https://github.com/ellanetworks/ims.git
     kubectl create namespace ella
-    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
+    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/warn=privileged
     kubectl create secret generic ella-ims-cluster -n ella --from-literal=secret="$(openssl rand -base64 32)"
-    kubectl apply -k ims/k8s/ha
+    ```
+
+    In namespace `ella`, create a NetworkAttachmentDefinition named `ims-sip` with that CNI plugin and IPAM.
+
+    Create `values.yaml`:
+
+    ```yaml
+    replicas: 3
+    sip:
+      address: ""
+      networkAttachment:
+        create: false
+        name: ims-sip
+    cluster:
+      secretName: ella-ims-cluster
+    ```
+
+    Deploy Ella IMS:
+
+    ```shell
+    helm install ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --namespace ella -f values.yaml
     ```
 
     ## 2. Initialize

@@ -14,12 +14,12 @@ In this tutorial, you run Ella IMS as a three-node cluster on managed Kubernetes
 === "Google Cloud"
 
     - A Google Cloud project and the `gcloud` CLI with the `gke-gcloud-auth-plugin` component
-    - `kubectl` and `git`.
+    - `kubectl` and `helm`.
 
 === "AWS"
 
     - An AWS account and the `aws` CLI
-    - `eksctl`, `kubectl` and `git`.
+    - `eksctl`, `kubectl` and `helm`.
 
 ## 1. Create a Kubernetes cluster
 
@@ -140,27 +140,121 @@ In this tutorial, you run Ella IMS as a three-node cluster on managed Kubernetes
 
 ## 4. Deploy Ella IMS
 
+Create the namespace and the cluster secret:
+
+```shell
+kubectl create namespace ella
+kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/warn=privileged
+kubectl create secret generic ella-ims-cluster -n ella --from-literal=secret="$(openssl rand -base64 32)"
+```
+
 === "Google Cloud"
 
+    Give the pods the SIP network:
+
     ```shell
-    git clone --depth 1 https://github.com/ellanetworks/ims.git
-    kubectl create namespace ella
-    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
-    kubectl create secret generic ella-ims-cluster -n ella --from-literal=secret="$(openssl rand -base64 32)"
-    kubectl apply -k ims/k8s/examples/gke-ha
-    kubectl get pods -n ella --watch
+    kubectl apply -f - <<'EOF'
+    apiVersion: networking.gke.io/v1
+    kind: GKENetworkParamSet
+    metadata:
+      name: ims-sip
+    spec:
+      vpc: ims-sip
+      vpcSubnet: ims-sip
+      deviceMode: NetDevice
+    ---
+    apiVersion: networking.gke.io/v1
+    kind: Network
+    metadata:
+      name: ims-sip
+    spec:
+      type: Device
+      parametersRef:
+        group: networking.gke.io
+        kind: GKENetworkParamSet
+        name: ims-sip
+      routes:
+      - to: 10.46.0.0/16
+      - to: 35.191.0.0/16
+      - to: 130.211.0.0/22
+    EOF
+    ```
+
+    Create `values.yaml`:
+
+    ```yaml
+    replicas: 3
+    sip:
+      address: ""
+      networkAttachment:
+        create: false
+    cluster:
+      secretName: ella-ims-cluster
+    nodeSelector:
+      cloud.google.com/gke-nodepool: ims-sip
+    podAnnotations:
+      networking.gke.io/default-interface: eth0
+      networking.gke.io/interfaces: '[{"interfaceName":"eth0","network":"default"},{"interfaceName":"eth1","network":"ims-sip"}]'
     ```
 
 === "AWS"
 
+    Give the pods the SIP network:
+
     ```shell
-    git clone --depth 1 https://github.com/ellanetworks/ims.git
-    kubectl create namespace ella
-    kubectl label namespace ella pod-security.kubernetes.io/enforce=privileged
-    kubectl create secret generic ella-ims-cluster -n ella --from-literal=secret="$(openssl rand -base64 32)"
-    kubectl apply -k ims/k8s/examples/eks-ha
-    kubectl get pods -n ella --watch
+    kubectl apply -n ella -f - <<'EOF'
+    apiVersion: k8s.cni.cncf.io/v1
+    kind: NetworkAttachmentDefinition
+    metadata:
+      name: ims-sip
+    spec:
+      config: '{"cniVersion": "1.0.0", "type": "host-device", "device": "ens7"}'
+    EOF
     ```
+
+    Create `values.yaml`:
+
+    ```yaml
+    replicas: 3
+    sip:
+      address: ""
+      networkAttachment:
+        create: false
+        name: ims-sip
+    cluster:
+      secretName: ella-ims-cluster
+    extraInitContainers:
+      - name: sip-address
+        image: busybox:1.36
+        command:
+          - sh
+          - -c
+          - |
+            printf '#!/bin/sh\n[ "$1" = bound ] && ip addr add "$ip/$mask" dev "$interface"\nexit 0\n' > /run/sip/dhcp.sh
+            chmod +x /run/sip/dhcp.sh
+            udhcpc -i eth1 -n -q -s /run/sip/dhcp.sh
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+            add: ["NET_ADMIN", "NET_RAW"]
+        volumeMounts:
+          - name: sip-run
+            mountPath: /run/sip
+    extraVolumes:
+      - name: sip-run
+        emptyDir: {}
+    ```
+
+Deploy Ella IMS:
+
+```shell
+helm install ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --namespace ella -f values.yaml
+kubectl get pods -n ella --watch
+```
 
 Wait until the three pods are `Running`, then press `Ctrl+C`.
 
@@ -208,10 +302,10 @@ Open the leader's **Cluster** page as in step 6: all three nodes are **Healthy**
 === "Google Cloud"
 
     ```shell
-    kubectl delete statefulset ella-ims -n ella --wait
-    kubectl wait --for=delete pod -l app.kubernetes.io/name=ella-ims -n ella --timeout=2m
-    kubectl delete -k ims/k8s/examples/gke-ha --ignore-not-found
+    helm uninstall ella-ims --namespace ella --wait
     kubectl delete pvc -n ella --all
+    kubectl delete network ims-sip
+    kubectl delete gkenetworkparamset ims-sip
     kubectl wait --for=delete pv --all --timeout=5m
     gcloud container clusters delete ella-ims --zone us-central1-a
     gcloud compute firewall-rules delete ims-sip-allow-internal
@@ -222,9 +316,7 @@ Open the leader's **Cluster** page as in step 6: all three nodes are **Healthy**
 === "AWS"
 
     ```shell
-    kubectl delete statefulset ella-ims -n ella --wait
-    kubectl wait --for=delete pod -l app.kubernetes.io/name=ella-ims -n ella --timeout=2m
-    kubectl delete -k ims/k8s/examples/eks-ha --ignore-not-found
+    helm uninstall ella-ims --namespace ella --wait
     kubectl delete pvc -n ella --all
     kubectl wait --for=delete pv --all --timeout=5m
     export AWS_REGION=us-east-1

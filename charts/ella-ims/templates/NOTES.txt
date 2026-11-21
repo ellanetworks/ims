@@ -1,0 +1,7 @@
+Ella IMS {{ .Chart.AppVersion }} is deployed in namespace {{ .Release.Namespace }} with {{ .Values.replicas }} pod(s).
+
+Open the API and UI:
+
+  kubectl -n {{ .Release.Namespace }} port-forward {{ if include "ella-ims.ha" . }}pod/{{ include "ella-ims.fullname" . }}-0{{ else }}service/{{ include "ella-ims.fullname" . }}{{ end }} 5020:{{ if include "ella-ims.ha" . }}5020{{ else }}{{ .Values.service.port }}{{ end }}
+
+Then browse to {{ lower (include "ella-ims.apiScheme" .) }}://localhost:5020 and create the first user.

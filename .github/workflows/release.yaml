@@ -36,3 +36,9 @@ jobs:
     uses: ./.github/workflows/image-publish.yaml
     with:
       release: true
+  chart-publish:
+    needs: [image-publish]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/chart-publish.yaml

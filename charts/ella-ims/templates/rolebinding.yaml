@@ -1,0 +1,17 @@
+{{- if include "ella-ims.openshiftSCC" . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ella-ims.fullname" . }}-scc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ella-ims.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ella-ims.fullname" . }}-scc
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ella-ims.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

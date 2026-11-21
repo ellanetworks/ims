@@ -32,10 +32,10 @@ description: Upgrade Ella IMS to the next release, on a standalone node or a hig
 
     === "Kubernetes"
 
-        1. Set the new image:
+        1. Upgrade the chart:
 
             ```shell
-            kubectl set image statefulset/ella-ims -n ella ims=ghcr.io/ellanetworks/ella-ims:<version>
+            helm upgrade ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --version <version> --namespace ella -f values.yaml
             ```
 
         2. Wait for the rollout:
@@ -60,10 +60,10 @@ description: Upgrade Ella IMS to the next release, on a standalone node or a hig
 
     === "Kubernetes"
 
-        1. Set the new image:
+        1. Upgrade the chart:
 
             ```shell
-            kubectl set image statefulset/ella-ims -n ella ims=ghcr.io/ellanetworks/ella-ims:<version>
+            helm upgrade ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --version <version> --namespace ella -f values.yaml
             ```
 
         2. Wait for the rollout:

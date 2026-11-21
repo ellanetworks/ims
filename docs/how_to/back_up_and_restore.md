@@ -108,17 +108,17 @@ Use this procedure when a cluster lost a majority of its nodes, or a standalone 
 
 === "Kubernetes"
 
-    1. Delete the cluster and its volumes:
+    1. Delete the release and its volumes:
 
         ```shell
-        kubectl delete -k ims/k8s/ha
+        helm uninstall ella-ims --namespace ella --wait
         kubectl delete pvc -n ella -l app.kubernetes.io/name=ella-ims
         ```
 
-    2. Deploy it again:
+    2. Deploy it again, with the same `values.yaml`:
 
         ```shell
-        kubectl apply -k ims/k8s/ha
+        helm install ella-ims oci://ghcr.io/ellanetworks/charts/ella-ims --version <version> --namespace ella -f values.yaml
         ```
 
     3. Initialize it with a temporary user, as in [Deploy a High Availability Cluster](deploy_ha_cluster.md), step 2.

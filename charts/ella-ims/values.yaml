@@ -1,0 +1,92 @@
+image:
+  repository: ghcr.io/ellanetworks/ella-ims
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+clusterDomain: cluster.local
+
+replicas: 1
+
+sip:
+  interface: eth1
+  address: 10.6.0.5/24
+  networkAttachment:
+    create: true
+    name: ""
+    master: eth1
+    mode: bridge
+    routes: []
+
+cluster:
+  secretName: ""
+
+config:
+  logging:
+    level: info
+
+service:
+  type: ClusterIP
+  port: 5020
+  nodePort: null
+  annotations: {}
+
+api:
+  tls:
+    secretName: ""
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
+
+networkPolicy:
+  enabled: true
+
+persistence:
+  size: 10Gi
+  storageClassName: ""
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 256Mi
+  limits:
+    cpu: "16"
+    memory: 1Gi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+openshift:
+  securityContextConstraints:
+    create: auto
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+extraInitContainers: []
+extraVolumes: []
+
+tests:
+  image:
+    repository: registry.access.redhat.com/ubi10/ubi-minimal
+    tag: "10.2"

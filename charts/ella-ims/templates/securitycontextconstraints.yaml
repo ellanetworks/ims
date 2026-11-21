@@ -1,0 +1,40 @@
+{{- if include "ella-ims.openshiftSCC" . }}
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: {{ include "ella-ims.fullname" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "ella-ims.labels" . | nindent 4 }}
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities:
+  - NET_ADMIN
+requiredDropCapabilities: []
+defaultAddCapabilities: []
+readOnlyRootFilesystem: false
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: MustRunAs
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+seccompProfiles:
+  - runtime/default
+volumes:
+  - configMap
+  - persistentVolumeClaim
+  - projected
+  - secret
+  - emptyDir
+  - downwardAPI
+users: []
+groups: []
+priority: null
+{{- end }}

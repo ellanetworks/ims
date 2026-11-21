@@ -1,0 +1,11 @@
+{{- include "ella-ims.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ella-ims.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ella-ims.labels" . | nindent 4 }}
+data:
+  ims.yaml: |
+    {{- include "ella-ims.config" . | nindent 4 }}

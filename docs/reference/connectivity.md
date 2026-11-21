@@ -18,7 +18,7 @@ Defaults are in parentheses. The cluster port listens only when the configuratio
 
 In a cluster, the I-CSCF of each node sends requests to the S-CSCF of the other nodes, on their SIP addresses, over TCP or UDP `scscf.port`. The MCPTT server of each node sends requests to the MCPTT server of the other nodes, on their SIP addresses, over UDP or TCP `mcptt.port`. MCPTT clients send media to the MCPTT media address of any node. Each node trusts the SIP addresses of the other members.
 
-On Kubernetes, the cluster address of node `<n>` is `ella-ims-<n>.ella-ims-internal.<namespace>.svc.cluster.local`.
+On Kubernetes, the cluster address of node `<n>` is `ella-ims-<n>.ella-ims-headless.<namespace>.svc.cluster.local`.
 
 ## Diameter identity
 
