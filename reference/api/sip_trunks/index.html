@@ -1,0 +1,4699 @@
+<!DOCTYPE html><html lang="en" class="no-js"><head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="RESTful API reference for managing SIP trunks and SIP routes.">
+      
+      
+      
+        <link rel="canonical" href="https://docs.ellanetworks.com/ims/reference/api/sip_trunks/">
+      
+      
+        <link rel="prev" href="../sip/">
+      
+      
+        <link rel="next" href="../registrations/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>SIP Trunks - Ella IMS Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Source+Code+Pro:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Source Code Pro";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  
+<meta property="og:type" content="website">
+<meta property="og:title" content="SIP Trunks - Ella IMS Documentation">
+<meta property="og:description" content="RESTful API reference for managing SIP trunks and SIP routes.">
+<meta property="og:image" content="https://docs.ellanetworks.com/ims/assets/images/social/reference/api/sip_trunks.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:url" content="https://docs.ellanetworks.com/ims/reference/api/sip_trunks/">
+<meta property="twitter:card" content="summary_large_image">
+<meta property="twitter:title" content="SIP Trunks - Ella IMS Documentation">
+<meta property="twitter:description" content="RESTful API reference for managing SIP trunks and SIP routes.">
+<meta property="twitter:image" content="https://docs.ellanetworks.com/ims/assets/images/social/reference/api/sip_trunks.png">
+<link href="../../../assets/stylesheets/glightbox.min.css" rel="stylesheet"><script src="../../../assets/javascripts/glightbox.min.js"></script><style id="glightbox-style">
+            html.glightbox-open { overflow: initial; height: 100%; }
+            .gslide-title { margin-top: 0px; user-select: text; }
+            .gslide-desc { color: #666; user-select: text; }
+            .gslide-image img { background: white; }
+            .gscrollbar-fixer { padding-right: 15px; }
+            .gdesc-inner { font-size: 0.75rem; }
+            body[data-md-color-scheme="slate"] .gdesc-inner { background: var(--md-default-bg-color); }
+            body[data-md-color-scheme="slate"] .gslide-title { color: var(--md-default-fg-color); }
+            body[data-md-color-scheme="slate"] .gslide-desc { color: var(--md-default-fg-color); }
+        </style></head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#sip-trunks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+        <aside class="md-banner">
+          <div class="md-banner__inner md-grid md-typeset">
+            
+            
+<div class="alert alert-info" role="alert">
+    <a href="https://www.ellanetworks.com/pricing" class="alert-link">
+        <strong>Get a production license</strong>.
+    </a>
+</div>
+
+          </div>
+          
+        </aside>
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Ella IMS Documentation" class="md-header__button md-logo" aria-label="Ella IMS Documentation" data-md-component="logo">
+      
+  <img src="../../../images/logo-mark.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"></path></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Ella IMS Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              SIP Trunks
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required="">
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"></path></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"></path></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix="">
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/ellanetworks/ims" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    ellanetworks/ims
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Ella IMS Documentation" class="md-nav__button md-logo" aria-label="Ella IMS Documentation" data-md-component="logo">
+      
+  <img src="../../../images/logo-mark.svg" alt="logo">
+
+    </a>
+    Ella IMS Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/ellanetworks/ims" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+  </div>
+  <div class="md-source__repository">
+    ellanetworks/ims
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix="">
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../tutorials/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/first_voice_call/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Make Your First Voice Call
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/ha_cluster_in_the_cloud/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run a High Availability Cluster in the Cloud
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../how_to/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How-to Guides
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How-to Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/integrate_with_ella_core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Integrate with Ella Core
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/integrate_with_open5gs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Integrate with Open5GS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/connect_a_core_at_another_site/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Connect a Core at Another Site
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/deploy_ha_cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy a High Availability Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/configure_single_sign_on/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configure Single Sign-On
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/connect_to_a_sip_trunk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Connect to a SIP Trunk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/integrate_with_application_server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Integrate with an Application Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/enable_sms_over_ip/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Enable SMS over IP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/enable_push_to_talk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Enable Push-to-Talk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/install_android_app/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install the Android MCPTT App
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/back_up_and_restore/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Back Up and Restore
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/upgrade/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrade
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/scale_ha_cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scale a High Availability Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how_to/manage_single_sign_on_users/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manage Single Sign-On Users
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked="">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_2" checked="">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../initialize/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Initialize
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../users/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Users
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oidc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single Sign-On
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../diameter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diameter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sip/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIP Trunks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIP Trunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#list-sip-trunks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        List SIP Trunks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="List SIP Trunks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#response-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#certificate-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Certificate Details
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#get-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Get a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Get a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Create a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-body" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request Body
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#addresses-and-dns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Addresses and DNS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TLS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request-with-tls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request with TLS
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#update-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Update a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delete-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delete a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Delete a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#list-sip-routes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        List SIP Routes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="List SIP Routes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#response-fields_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#get-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Get a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Get a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Create a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-body_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request Body
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#update-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Update a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delete-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delete a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Delete a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../registrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Registrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../call_records/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Call Records
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ip_sm_gw/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    IP-SM-GW
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../backup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcptt_service_configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCPTT Service Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcptt_users/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCPTT Users
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcptt_groups/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCPTT Groups
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcptt_live_state/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCPTT Live State
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Metrics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pprof/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pprof
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../config_file/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration File
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../environment_variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment Variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../connectivity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Connectivity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../system_reqs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System Requirements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../supported_mobile_equipment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Supported Mobile Equipment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5">
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../explanation/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Explanation
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Explanation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix="">
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/single_sign_on/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single Sign-On
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/push_to_talk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Push-to-Talk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/sms_over_ip/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SMS over IP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/sip_trunks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SIP Trunks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/high_availability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    High Availability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix="">
+      
+        <li class="md-nav__item">
+  <a href="#list-sip-trunks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        List SIP Trunks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="List SIP Trunks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#response-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#certificate-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Certificate Details
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#get-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Get a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Get a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Create a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-body" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request Body
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#addresses-and-dns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Addresses and DNS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TLS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request-with-tls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request with TLS
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#update-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Update a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delete-a-sip-trunk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delete a SIP Trunk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Delete a SIP Trunk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#list-sip-routes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        List SIP Routes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="List SIP Routes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#response-fields_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#get-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Get a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Get a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Create a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-body_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request Body
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#update-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Update a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-request_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Request
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delete-a-sip-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delete a SIP Route
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Delete a SIP Route">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-parameters_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-codes_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sample-response_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sample Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="sip-trunks">SIP Trunks<a class="headerlink" href="#sip-trunks" title="Permanent link">¶</a></h1>
+<p>SIP trunks connect Ella IMS to carriers. SIP routes pick the trunks of a call by the prefix of the number. See <a href="../../../explanation/sip_trunks/">SIP Trunks</a>.</p>
+<h2 id="list-sip-trunks">List SIP Trunks<a class="headerlink" href="#list-sip-trunks" title="Permanent link">¶</a></h2>
+<p>This path returns the list of SIP trunks, ordered by identifier.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/sip-trunks</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-fields">Response Fields<a class="headerlink" href="#response-fields" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Trunk identifier, a UUIDv7.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>Name of the trunk.</td>
+</tr>
+<tr>
+<td><code>addresses</code></td>
+<td>array</td>
+<td>Where requests to the carrier go, in order.</td>
+</tr>
+<tr>
+<td><code>addresses[].host</code></td>
+<td>string</td>
+<td>Domain name, or IPv4 or IPv6 address.</td>
+</tr>
+<tr>
+<td><code>addresses[].port</code></td>
+<td>int</td>
+<td>Port. Absent if not set.</td>
+</tr>
+<tr>
+<td><code>addresses[].transport</code></td>
+<td>string</td>
+<td><code>udp</code>, <code>tcp</code> or <code>tls</code>. Absent if not set.</td>
+</tr>
+<tr>
+<td><code>inbound_cidrs</code></td>
+<td>array</td>
+<td>Networks that requests from the carrier come from. Empty if not set.</td>
+</tr>
+<tr>
+<td><code>domain</code></td>
+<td>string</td>
+<td>Host of the Request-URI of requests to the carrier. Empty if not set.</td>
+</tr>
+<tr>
+<td><code>trusted</code></td>
+<td>boolean</td>
+<td>Whether the carrier is in the trust domain.</td>
+</tr>
+<tr>
+<td><code>keepalive_interval</code></td>
+<td>int</td>
+<td>Seconds between keepalives to the carrier. <code>0</code>: no OPTIONS requests.</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td>boolean</td>
+<td>Whether the trunk carries calls, in both directions.</td>
+</tr>
+<tr>
+<td><code>tls</code></td>
+<td>object</td>
+<td>TLS with the carrier. See <a href="#tls">TLS</a>.</td>
+</tr>
+<tr>
+<td><code>tls.required</code></td>
+<td>boolean</td>
+<td>Whether the carrier must use TLS, with a certificate.</td>
+</tr>
+<tr>
+<td><code>tls.ca_certificates</code></td>
+<td>string</td>
+<td>PEM-encoded CA certificates. Empty if none.</td>
+</tr>
+<tr>
+<td><code>tls.pins</code></td>
+<td>array</td>
+<td>SHA-256 fingerprints of pinned certificates, as upper-case hex bytes separated by colons.</td>
+</tr>
+<tr>
+<td><code>tls.identities</code></td>
+<td>array</td>
+<td>Domain names one of which the carrier's certificate must hold. Empty if not set.</td>
+</tr>
+<tr>
+<td><code>tls.ca_certificate_details</code></td>
+<td>array</td>
+<td>One entry per CA certificate, in order. See <a href="#certificate-details">Certificate Details</a>.</td>
+</tr>
+<tr>
+<td><code>effective.domain</code></td>
+<td>string</td>
+<td><code>domain</code> in use, default included.</td>
+</tr>
+<tr>
+<td><code>effective.inbound_cidrs</code></td>
+<td>array</td>
+<td><code>inbound_cidrs</code> in use, default included.</td>
+</tr>
+<tr>
+<td><code>effective.tls_identities</code></td>
+<td>array</td>
+<td><code>tls.identities</code> in use, default included.</td>
+</tr>
+<tr>
+<td><code>status.state</code></td>
+<td>string</td>
+<td><code>up</code>: the carrier answers OPTIONS requests. <code>down</code>: it does not; routes skip the trunk. <code>unknown</code>: not probed. <code>unusable</code>: conflicts with the configuration file or another trunk; carries no calls.</td>
+</tr>
+<tr>
+<td><code>status.since</code></td>
+<td>string</td>
+<td>Time of the last state change (RFC 3339). Absent while <code>unknown</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="certificate-details">Certificate Details<a class="headerlink" href="#certificate-details" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>subject</code></td>
+<td>string</td>
+<td>Subject distinguished name.</td>
+</tr>
+<tr>
+<td><code>issuer</code></td>
+<td>string</td>
+<td>Issuer distinguished name.</td>
+</tr>
+<tr>
+<td><code>dns_names</code></td>
+<td>array</td>
+<td>DNS names of the subjectAltName.</td>
+</tr>
+<tr>
+<td><code>uris</code></td>
+<td>array</td>
+<td>URIs of the subjectAltName.</td>
+</tr>
+<tr>
+<td><code>ip_addresses</code></td>
+<td>array</td>
+<td>IP addresses of the subjectAltName.</td>
+</tr>
+<tr>
+<td><code>identities</code></td>
+<td>array</td>
+<td>Identities matched against <code>tls.identities</code>.</td>
+</tr>
+<tr>
+<td><code>ca</code></td>
+<td>boolean</td>
+<td>Whether the certificate is a CA certificate.</td>
+</tr>
+<tr>
+<td><code>not_before</code></td>
+<td>string</td>
+<td>Start of validity (RFC 3339).</td>
+</tr>
+<tr>
+<td><code>not_after</code></td>
+<td>string</td>
+<td>End of validity (RFC 3339).</td>
+</tr>
+<tr>
+<td><code>sha256_fingerprint</code></td>
+<td>string</td>
+<td>SHA-256 fingerprint, as upper-case hex bytes separated by colons.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-response">Sample Response<a class="headerlink" href="#sample-response" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"items"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">                    </span><span class="p">{</span>
+<span class="w">                        </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">                        </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tcp"</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                </span><span class="p">],</span>
+<span class="w">                </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">                </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"keepalive_interval"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"tls"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">                    </span><span class="nt">"ca_certificates"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">                    </span><span class="nt">"pins"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">                    </span><span class="nt">"identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">                    </span><span class="nt">"ca_certificate_details"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">                </span><span class="p">},</span>
+<span class="w">                </span><span class="nt">"effective"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">                    </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">                    </span><span class="nt">"tls_identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">                </span><span class="p">},</span>
+<span class="w">                </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="s2">"up"</span><span class="p">,</span>
+<span class="w">                    </span><span class="nt">"since"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-11-06T10:00:00.000Z"</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="get-a-sip-trunk">Get a SIP Trunk<a class="headerlink" href="#get-a-sip-trunk" title="Permanent link">¶</a></h2>
+<p>This path returns the details of a specific SIP trunk.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/sip-trunks/{id}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-parameters">Path Parameters<a class="headerlink" href="#path-parameters" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Trunk identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes">Response Codes<a class="headerlink" href="#response-codes" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>404</code></td>
+<td>No trunk has this identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-response_1">Sample Response<a class="headerlink" href="#sample-response_1" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tcp"</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">],</span>
+<span class="w">        </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">        </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"keepalive_interval"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"tls"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"ca_certificates"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"pins"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"ca_certificate_details"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">"effective"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">            </span><span class="nt">"tls_identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="s2">"up"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"since"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-11-06T10:00:00.000Z"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="create-a-sip-trunk">Create a SIP Trunk<a class="headerlink" href="#create-a-sip-trunk" title="Permanent link">¶</a></h2>
+<p>This path creates a SIP trunk.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/sip-trunks</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="request-body">Request Body<a class="headerlink" href="#request-body" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>1 to 64 printable characters, without leading or trailing spaces. Unique among trunks, ignoring case.</td>
+</tr>
+<tr>
+<td><code>addresses</code></td>
+<td>array</td>
+<td>Yes</td>
+<td>At least one, each once, none reaching the same server as an address of another trunk: the same host, with a port and a transport that can match once their defaults apply. See <a href="#addresses-and-dns">Addresses and DNS</a>.</td>
+</tr>
+<tr>
+<td><code>addresses[].host</code></td>
+<td>string</td>
+<td>Yes</td>
+<td>Domain name, or specific IPv4 or IPv6 address.</td>
+</tr>
+<tr>
+<td><code>addresses[].port</code></td>
+<td>int</td>
+<td>No</td>
+<td>1–65535.</td>
+</tr>
+<tr>
+<td><code>addresses[].transport</code></td>
+<td>string</td>
+<td>No</td>
+<td><code>udp</code>, <code>tcp</code> or <code>tls</code>. <code>tls</code> needs <code>tls.ca_certificates</code> or <code>tls.pins</code>.</td>
+</tr>
+<tr>
+<td><code>inbound_cidrs</code></td>
+<td>array</td>
+<td>No</td>
+<td>Networks, such as <code>198.51.100.0/24</code>, or single addresses. No two may overlap, in this trunk or across trunks. None may overlap <code>sip.addresses</code> or <code>sip.trusted_networks</code> of the <a href="../../config_file/">configuration file</a>. Not <code>0.0.0.0/0</code> or <code>::/0</code>. Default: the IP addresses among the hosts of <code>addresses</code>.</td>
+</tr>
+<tr>
+<td><code>domain</code></td>
+<td>string</td>
+<td>No</td>
+<td>Domain name, or specific IPv4 or IPv6 address, without brackets. Default: the first domain name among the hosts of <code>addresses</code>. Required if every host is an IP address.</td>
+</tr>
+<tr>
+<td><code>trusted</code></td>
+<td>boolean</td>
+<td>No</td>
+<td>Default <code>false</code>. A trusted trunk never uses UDP: no address may have <code>udp</code> as transport.</td>
+</tr>
+<tr>
+<td><code>keepalive_interval</code></td>
+<td>int</td>
+<td>No</td>
+<td>5–3600 seconds, or <code>0</code> for no OPTIONS requests. Default <code>30</code>.</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td>boolean</td>
+<td>No</td>
+<td>Default <code>true</code>.</td>
+</tr>
+<tr>
+<td><code>tls</code></td>
+<td>object</td>
+<td>No</td>
+<td>Absent for a trunk without TLS. See <a href="#tls">TLS</a>.</td>
+</tr>
+<tr>
+<td><code>tls.required</code></td>
+<td>boolean</td>
+<td>No</td>
+<td>Default <code>false</code>. Every address must have <code>tls</code> as transport. Requires <code>ibcf.external.tls</code> in the <a href="../../config_file/">configuration file</a>.</td>
+</tr>
+<tr>
+<td><code>tls.ca_certificates</code></td>
+<td>string</td>
+<td>No</td>
+<td>PEM-encoded CA certificates, at most 32.</td>
+</tr>
+<tr>
+<td><code>tls.pins</code></td>
+<td>array</td>
+<td>No</td>
+<td>At most 32, each a PEM-encoded certificate, or a SHA-256 fingerprint as 32 hex bytes, with or without colons.</td>
+</tr>
+<tr>
+<td><code>tls.identities</code></td>
+<td>array</td>
+<td>No</td>
+<td>Domain names, at most 16. Default: <code>domain</code> and the domain names among the hosts of <code>addresses</code>. Required with <code>tls.ca_certificates</code> if there are none.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="addresses-and-dns">Addresses and DNS<a class="headerlink" href="#addresses-and-dns" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th><code>host</code></th>
+<th><code>transport</code></th>
+<th><code>port</code></th>
+<th>Requests go to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Domain name</td>
+<td>—</td>
+<td>—</td>
+<td>The NAPTR, then SRV, then A and AAAA records of the domain.</td>
+</tr>
+<tr>
+<td>Domain name</td>
+<td>Set</td>
+<td>—</td>
+<td>The SRV records for that transport, else the A and AAAA records at the default port.</td>
+</tr>
+<tr>
+<td>Domain name</td>
+<td>Set or —</td>
+<td>Set</td>
+<td>The A and AAAA records, at that port, over that transport, else UDP.</td>
+</tr>
+<tr>
+<td>IP address</td>
+<td>Set or —</td>
+<td>Set or —</td>
+<td>That address, at that port, else the default port, over that transport, else UDP.</td>
+</tr>
+</tbody>
+</table>
+<p>The default port is <code>5060</code> for <code>udp</code> and <code>tcp</code>, and <code>5061</code> for <code>tls</code>. A trusted trunk skips UDP records, and uses TCP instead of UDP.</p>
+<h3 id="tls">TLS<a class="headerlink" href="#tls" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Carrier authenticated by</th>
+<th>Field</th>
+<th>Carrier's certificate must hold</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A CA</td>
+<td><code>tls.ca_certificates</code></td>
+<td>One of <code>tls.identities</code></td>
+</tr>
+<tr>
+<td>Its own certificate</td>
+<td><code>tls.pins</code></td>
+<td>One of <code>tls.identities</code>, unless the address is an IP address</td>
+</tr>
+</tbody>
+</table>
+<p>An identity is the host of a <code>sip</code> URI or a DNS name in the certificate's subjectAltName, or its common name if it has none.</p>
+<table>
+<thead>
+<tr>
+<th>TLS connection opened by</th>
+<th>Extended key usage of each certificate of the carrier's chain, if present</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ella IMS</td>
+<td><code>serverAuth</code>, <code>anyExtendedKeyUsage</code> or <code>id-kp-sipDomain</code></td>
+</tr>
+<tr>
+<td>The carrier</td>
+<td><code>clientAuth</code>, <code>anyExtendedKeyUsage</code> or <code>id-kp-sipDomain</code></td>
+</tr>
+</tbody>
+</table>
+<p>With <code>tls.required</code>, the carrier must use TLS, and present a certificate on the TLS connections it opens.</p>
+<p>CA certificates and PEM pins must not be expired when added. Ella IMS keeps the fingerprint of a PEM pin only.</p>
+<p>Ella IMS's own certificate is <code>ibcf.external.tls</code> in the <a href="../../config_file/">configuration file</a>.</p>
+<h3 id="response-codes_1">Response Codes<a class="headerlink" href="#response-codes_1" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>400</code></td>
+<td>A field is invalid, an inbound network overlaps the networks of the configuration file, or <code>tls.required</code> is set without <code>ibcf.external.tls</code>.</td>
+</tr>
+<tr>
+<td><code>409</code></td>
+<td>Another trunk has the same name, an address that reaches the same server as one of this trunk's, or an inbound network that overlaps one of this trunk's.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-request">Sample Request<a class="headerlink" href="#sample-request" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tcp"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="sample-response_2">Sample Response<a class="headerlink" href="#sample-response_2" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tcp"</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">],</span>
+<span class="w">        </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">        </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"keepalive_interval"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"tls"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"ca_certificates"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"pins"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"ca_certificate_details"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">"effective"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">            </span><span class="nt">"tls_identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="s2">"unknown"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="sample-request-with-tls">Sample Request with TLS<a class="headerlink" href="#sample-request-with-tls" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tls"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"tls"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"ca_certificates"</span><span class="p">:</span><span class="w"> </span><span class="s2">"-----BEGIN CERTIFICATE-----\nMIIBczCCARigAwIBAgII...\n-----END CERTIFICATE-----\n"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The <code>tls</code> object of its response:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"ca_certificates"</span><span class="p">:</span><span class="w"> </span><span class="s2">"-----BEGIN CERTIFICATE-----\nMIIBczCCARigAwIBAgII...\n-----END CERTIFICATE-----\n"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"pins"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">    </span><span class="nt">"identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">    </span><span class="nt">"ca_certificate_details"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"subject"</span><span class="p">:</span><span class="w"> </span><span class="s2">"CN=Carrier CA,O=Carrier"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"issuer"</span><span class="p">:</span><span class="w"> </span><span class="s2">"CN=Carrier CA,O=Carrier"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"dns_names"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"uris"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"ip_addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"ca"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"not_before"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-01-01T00:00:00.000Z"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"not_after"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2036-01-01T00:00:00.000Z"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"sha256_fingerprint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2C:54:DF:66:29:19:96:C5:C8:A5:E8:4B:7A:32:FE:71:02:38:11:62:D4:D9:2E:2C:A1:C4:E7:8C:0D:D5:B1:C5"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="update-a-sip-trunk">Update a SIP Trunk<a class="headerlink" href="#update-a-sip-trunk" title="Permanent link">¶</a></h2>
+<p>This path replaces a SIP trunk. The request body is that of <a href="#create-a-sip-trunk">Create a SIP Trunk</a>. A field left out takes its default. A response is a valid request body without <code>id</code>, <code>effective</code>, <code>status</code> and <code>tls.ca_certificate_details</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PUT</td>
+<td><code>/api/v1/sip-trunks/{id}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-parameters_1">Path Parameters<a class="headerlink" href="#path-parameters_1" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Trunk identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes_2">Response Codes<a class="headerlink" href="#response-codes_2" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>400</code></td>
+<td>A field is invalid, an inbound network overlaps the networks of the configuration file, or <code>tls.required</code> is set without <code>ibcf.external.tls</code>.</td>
+</tr>
+<tr>
+<td><code>404</code></td>
+<td>No trunk has this identifier.</td>
+</tr>
+<tr>
+<td><code>409</code></td>
+<td>Another trunk has the same name, an address that reaches the same server as one of this trunk's, or an inbound network that overlaps one of this trunk's.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-request_1">Sample Request<a class="headerlink" href="#sample-request_1" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tcp"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="sample-response_3">Sample Response<a class="headerlink" href="#sample-response_3" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Carrier"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"addresses"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"transport"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tcp"</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">],</span>
+<span class="w">        </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">        </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"trusted"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"keepalive_interval"</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"tls"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"ca_certificates"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"pins"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">            </span><span class="nt">"ca_certificate_details"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">"effective"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"domain"</span><span class="p">:</span><span class="w"> </span><span class="s2">"sip.carrier.example"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"inbound_cidrs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"198.51.100.10/32"</span><span class="p">,</span><span class="w"> </span><span class="s2">"198.51.100.11/32"</span><span class="p">],</span>
+<span class="w">            </span><span class="nt">"tls_identities"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="w">        </span><span class="p">},</span>
+<span class="w">        </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="s2">"unknown"</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="delete-a-sip-trunk">Delete a SIP Trunk<a class="headerlink" href="#delete-a-sip-trunk" title="Permanent link">¶</a></h2>
+<p>This path deletes a SIP trunk that no route uses.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DELETE</td>
+<td><code>/api/v1/sip-trunks/{id}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-parameters_2">Path Parameters<a class="headerlink" href="#path-parameters_2" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Trunk identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes_3">Response Codes<a class="headerlink" href="#response-codes_3" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>404</code></td>
+<td>No trunk has this identifier.</td>
+</tr>
+<tr>
+<td><code>409</code></td>
+<td>A route uses the trunk.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-response_4">Sample Response<a class="headerlink" href="#sample-response_4" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"SIP trunk deleted"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="list-sip-routes">List SIP Routes<a class="headerlink" href="#list-sip-routes" title="Permanent link">¶</a></h2>
+<p>This path returns the list of SIP routes, ordered by identifier.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/sip-routes</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-fields_1">Response Fields<a class="headerlink" href="#response-fields_1" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Route identifier, a UUIDv7.</td>
+</tr>
+<tr>
+<td><code>prefix</code></td>
+<td>string</td>
+<td>Start of the E.164 numbers the route takes, with <code>+</code>. The longest matching prefix wins. Empty for the default route.</td>
+</tr>
+<tr>
+<td><code>trunks</code></td>
+<td>array</td>
+<td>Identifiers of the trunks of the route, in the order calls try them.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-response_5">Sample Response<a class="headerlink" href="#sample-response_5" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"items"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3f-0c1d-7e2f-9a3b-4c5d6e7f8091"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">]</span>
+<span class="w">            </span><span class="p">},</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3f-2a3b-7c4d-8e5f-60718293a4b5"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">"+1"</span><span class="p">,</span>
+<span class="w">                </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span><span class="w"> </span><span class="s2">"019a5a3e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"</span><span class="p">]</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="get-a-sip-route">Get a SIP Route<a class="headerlink" href="#get-a-sip-route" title="Permanent link">¶</a></h2>
+<p>This path returns the details of a specific SIP route.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/sip-routes/{id}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-parameters_3">Path Parameters<a class="headerlink" href="#path-parameters_3" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Route identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes_4">Response Codes<a class="headerlink" href="#response-codes_4" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>404</code></td>
+<td>No route has this identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-response_6">Sample Response<a class="headerlink" href="#sample-response_6" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3f-2a3b-7c4d-8e5f-60718293a4b5"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">"+1"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span><span class="w"> </span><span class="s2">"019a5a3e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"</span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="create-a-sip-route">Create a SIP Route<a class="headerlink" href="#create-a-sip-route" title="Permanent link">¶</a></h2>
+<p>This path creates a SIP route.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/sip-routes</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="request-body_1">Request Body<a class="headerlink" href="#request-body_1" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prefix</code></td>
+<td>string</td>
+<td>No</td>
+<td><code>+</code> followed by 1 to 15 digits, not starting with <code>0</code>. Absent or empty for the default route. Unique among routes.</td>
+</tr>
+<tr>
+<td><code>trunks</code></td>
+<td>array</td>
+<td>Yes</td>
+<td>Identifiers of existing trunks, at least one, each once.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes_5">Response Codes<a class="headerlink" href="#response-codes_5" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>400</code></td>
+<td>The prefix is invalid, or a trunk does not exist.</td>
+</tr>
+<tr>
+<td><code>409</code></td>
+<td>Another route has the same prefix.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-request_2">Sample Request<a class="headerlink" href="#sample-request_2" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">"+1"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span><span class="w"> </span><span class="s2">"019a5a3e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="sample-response_7">Sample Response<a class="headerlink" href="#sample-response_7" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3f-2a3b-7c4d-8e5f-60718293a4b5"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">"+1"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">,</span><span class="w"> </span><span class="s2">"019a5a3e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"</span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="update-a-sip-route">Update a SIP Route<a class="headerlink" href="#update-a-sip-route" title="Permanent link">¶</a></h2>
+<p>This path replaces a SIP route. The request body is that of <a href="#create-a-sip-route">Create a SIP Route</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PUT</td>
+<td><code>/api/v1/sip-routes/{id}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-parameters_4">Path Parameters<a class="headerlink" href="#path-parameters_4" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Route identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes_6">Response Codes<a class="headerlink" href="#response-codes_6" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>400</code></td>
+<td>The prefix is invalid, or a trunk does not exist.</td>
+</tr>
+<tr>
+<td><code>404</code></td>
+<td>No route has this identifier.</td>
+</tr>
+<tr>
+<td><code>409</code></td>
+<td>Another route has the same prefix.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-request_3">Sample Request<a class="headerlink" href="#sample-request_3" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">"+1"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"</span><span class="p">,</span><span class="w"> </span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="sample-response_8">Sample Response<a class="headerlink" href="#sample-response_8" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"019a5a3f-2a3b-7c4d-8e5f-60718293a4b5"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"prefix"</span><span class="p">:</span><span class="w"> </span><span class="s2">"+1"</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">"trunks"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"019a5a3e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"</span><span class="p">,</span><span class="w"> </span><span class="s2">"019a5a3e-1b2c-7d4e-8f60-1a2b3c4d5e6f"</span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h2 id="delete-a-sip-route">Delete a SIP Route<a class="headerlink" href="#delete-a-sip-route" title="Permanent link">¶</a></h2>
+<p>This path deletes a SIP route.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DELETE</td>
+<td><code>/api/v1/sip-routes/{id}</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="path-parameters_5">Path Parameters<a class="headerlink" href="#path-parameters_5" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Route identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="response-codes_7">Response Codes<a class="headerlink" href="#response-codes_7" title="Permanent link">¶</a></h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>404</code></td>
+<td>No route has this identifier.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sample-response_9">Sample Response<a class="headerlink" href="#sample-response_9" title="Permanent link">¶</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">    </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"SIP route deleted"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer">
+        
+          
+          <a href="../sip/" class="md-footer__link md-footer__link--prev" aria-label="Previous: SIP">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"></path></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                SIP
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../registrations/" class="md-footer__link md-footer__link--next" aria-label="Next: Registrations">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Registrations
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"></path></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright © 2026 Ella Networks
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://www.ellanetworks.com" target="_blank" rel="noopener" title="Ella Networks website" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M351.9 280H161c2.9 64.5 17.2 123.9 37.5 167.4 11.4 24.5 23.7 41.8 35.1 52.4 11.2 10.5 18.9 12.2 22.9 12.2s11.7-1.7 22.9-12.2c11.4-10.6 23.7-28 35.1-52.4 20.3-43.5 34.6-102.9 37.5-167.4zm-191-48h190.9c-2.8-64.5-17.1-123.9-37.4-167.4-11.4-24.4-23.7-41.8-35.1-52.4C268.1 1.7 260.4 0 256.4 0s-11.7 1.7-22.9 12.2c-11.4 10.6-23.7 28-35.1 52.4-20.3 43.5-34.6 102.9-37.5 167.4m-48 0c3.5-85.6 25.6-165.1 57.9-217.3C78.7 47.3 10.9 131.2 1.5 232zM1.5 280c9.4 100.8 77.2 184.7 169.3 217.3-32.3-52.2-54.4-131.7-57.9-217.3zm398.4 0c-3.5 85.6-25.6 165.1-57.9 217.3 92.1-32.7 159.9-116.5 169.3-217.3zm111.4-48C501.9 131.2 434.1 47.3 342 14.7c32.3 52.2 54.4 131.7 57.9 217.3z"></path></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://www.youtube.com/@ellanetworks" target="_blank" rel="noopener" title="Ella Networks on YouTube" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M549.7 124.1c-6.2-23.7-24.8-42.3-48.3-48.6C458.9 64 288.1 64 288.1 64S117.3 64 74.7 75.5c-23.5 6.3-42 24.9-48.3 48.6C15 167 15 256.4 15 256.4s0 89.4 11.4 132.3c6.3 23.6 24.8 41.5 48.3 47.8C117.3 448 288.1 448 288.1 448s170.8 0 213.4-11.5c23.5-6.3 42-24.2 48.3-47.8 11.4-42.9 11.4-132.3 11.4-132.3s0-89.4-11.4-132.3zM232.2 337.6V175.2l142.7 81.2z"></path></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://www.linkedin.com/company/ellanetworks" target="_blank" rel="noopener" title="Ella Networks on LinkedIn" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M416 32H31.9C14.3 32 0 46.5 0 64.3v383.4C0 465.5 14.3 480 31.9 480H416c17.6 0 32-14.5 32-32.3V64.3c0-17.8-14.4-32.3-32-32.3M135.4 416H69V202.2h66.5V416zM102.2 96a38.5 38.5 0 1 1 0 77 38.5 38.5 0 1 1 0-77m282.1 320h-66.4V312c0-24.8-.5-56.7-34.5-56.7-34.6 0-39.9 27-39.9 54.9V416h-66.4V202.2h63.7v29.2h.9c8.9-16.8 30.6-34.5 62.9-34.5 67.2 0 79.7 44.3 79.7 101.9z"></path></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://www.github.com/ellanetworks/ims" target="_blank" rel="noopener" title="Ella Networks on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"></path></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.sections", "navigation.footer", "navigation.indexes", "content.code.copy", "content.tabs.link"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  
+<script id="init-glightbox">const lightbox = GLightbox({"touchNavigation": true, "loop": false, "zoomable": true, "draggable": true, "openEffect": "zoom", "closeEffect": "zoom", "slideEffect": "slide"});
+document$.subscribe(()=>{ lightbox.reload(); });
+</script></body></html>
