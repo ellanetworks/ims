@@ -306,6 +306,26 @@
       },
       "description": "Prometheus Operator ServiceMonitor for /api/v1/metrics on the API Service."
     },
+    "openshift": {
+      "type": "object",
+      "properties": {
+        "securityContextConstraints": {
+          "type": "object",
+          "properties": {
+            "create": {
+              "enum": [
+                "auto",
+                true,
+                false
+              ],
+              "description": "auto creates it on OpenShift only."
+            }
+          },
+          "description": "SecurityContextConstraints that grants the pod its security context."
+        }
+      },
+      "description": "OpenShift settings."
+    },
     "podAnnotations": {
       "type": "object",
       "description": "Extra pod annotations."

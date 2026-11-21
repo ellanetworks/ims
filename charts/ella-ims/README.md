@@ -125,6 +125,7 @@ extraInitContainers:
 | `serviceAccount.create` | `true` | Create a service account. |
 | `serviceAccount.name` | `<release>` | Service account name. |
 | `serviceAccount.annotations` | `{}` | Service account annotations. |
+| `openshift.securityContextConstraints.create` | `auto` | Create a SecurityContextConstraints that grants the pod its security context. `auto` creates it on OpenShift only. |
 | `serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor for `/api/v1/metrics`. |
 | `serviceMonitor.interval` | `30s` | Scrape interval. |
 | `serviceMonitor.labels` | `{}` | Extra ServiceMonitor labels. |

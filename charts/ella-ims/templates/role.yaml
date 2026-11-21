@@ -1,0 +1,14 @@
+{{- if include "ella-ims.openshiftSCC" . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ella-ims.fullname" . }}-scc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ella-ims.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: [{{ printf "%s-%s" (include "ella-ims.fullname" .) .Release.Namespace | quote }}]
+    verbs: ["use"]
+{{- end }}

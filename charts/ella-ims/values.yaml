@@ -67,6 +67,10 @@ serviceAccount:
   name: ""
   annotations: {}
 
+openshift:
+  securityContextConstraints:
+    create: auto
+
 serviceMonitor:
   enabled: false
   interval: 30s

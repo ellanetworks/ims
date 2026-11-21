@@ -63,6 +63,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 {{- end }}
 
+{{- define "ella-ims.openshift" -}}
+{{- if .Capabilities.APIVersions.Has "security.openshift.io/v1/SecurityContextConstraints" }}true{{ end }}
+{{- end }}
+
+{{- define "ella-ims.openshiftSCC" -}}
+{{- $mode := toString .Values.openshift.securityContextConstraints.create }}
+{{- if or (eq $mode "true") (and (eq $mode "auto") (include "ella-ims.openshift" .)) }}true{{ end }}
+{{- end }}
+
 {{- define "ella-ims.image" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag }}
 {{- if .Values.image.digest }}

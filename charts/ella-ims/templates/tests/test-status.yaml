@@ -17,7 +17,9 @@ spec:
   automountServiceAccountToken: false
   securityContext:
     runAsNonRoot: true
+    {{- if not (include "ella-ims.openshift" .) }}
     runAsUser: 65532
+    {{- end }}
     seccompProfile:
       type: RuntimeDefault
   containers:
