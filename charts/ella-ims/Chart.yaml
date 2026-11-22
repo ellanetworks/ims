@@ -17,3 +17,7 @@ keywords:
 maintainers:
   - name: Ella Networks
     url: https://ellanetworks.com
+annotations:
+  charts.openshift.io/name: Ella IMS
+  charts.openshift.io/provider: Ella Networks
+  charts.openshift.io/supportURL: https://github.com/ellanetworks/ims/issues
