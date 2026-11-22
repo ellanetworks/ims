@@ -1,4 +1,4 @@
-import { Chip, Stack } from "@mui/material";
+import { Chip } from "@mui/material";
 import DomainName from "@/components/DomainName";
 import PeerStateChip from "@/components/PeerStateChip";
 import type { SettingRow } from "@/components/SettingsTable";
