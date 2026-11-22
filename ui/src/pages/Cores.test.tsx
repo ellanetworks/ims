@@ -420,8 +420,8 @@ describe("Cores", () => {
 
     await waitFor(() =>
       expect(settingRows("HSS")).toEqual([
-        ["HSS Realm", "ims.mnc001.mcc001.3gppnetwork.orghome domain"],
-        ["Sh Realm", "ims.mnc001.mcc001.3gppnetwork.orgHSS realm"],
+        ["HSS Realm", "ims.mnc001.mcc001.3gppnetwork.org"],
+        ["Sh Realm", "ims.mnc001.mcc001.3gppnetwork.org"],
       ]),
     );
     expect(settingRows("Voice QoS")).toEqual([

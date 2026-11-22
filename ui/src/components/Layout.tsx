@@ -26,9 +26,9 @@ import {
   Dashboard as DashboardIcon,
   DarkMode as DarkModeIcon,
   Feed as FeedIcon,
+  Cable as CableIcon,
   Hub as HubIcon,
   Info as InfoIcon,
-  AccountTree as AccountTreeIcon,
   Key as KeyIcon,
   Lan as LanIcon,
   LightMode as LightModeIcon,
@@ -108,7 +108,7 @@ const navSections: { title?: string; items: NavItem[] }[] = [
       {
         to: "/cores",
         label: "Cores",
-        icon: <HubIcon color="primary" />,
+        icon: <CableIcon color="primary" />,
         permission: "diameter:read",
       },
       {
@@ -166,7 +166,7 @@ const navSections: { title?: string; items: NavItem[] }[] = [
       {
         to: "/cluster",
         label: "Cluster",
-        icon: <AccountTreeIcon color="primary" />,
+        icon: <HubIcon color="primary" />,
         permission: "cluster:read",
       },
     ],

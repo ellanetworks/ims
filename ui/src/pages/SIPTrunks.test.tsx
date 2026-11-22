@@ -186,18 +186,18 @@ describe("SIP Trunks", () => {
     ).toBeInTheDocument();
     expect(cells(await rowOf("Telnyx"))).toEqual([
       "Telnyx",
-      "up",
       "Yes",
       "No",
       "sip.telnyx.com:5061 (TLS)192.0.2.10",
+      "up",
       "",
     ]);
     expect(cells(await rowOf("Twilio"))).toEqual([
       "Twilio",
-      "unknown",
       "No",
       "Yes",
       "ims.pstn.twilio.com (TCP)",
+      "unknown",
       "",
     ]);
     expect(

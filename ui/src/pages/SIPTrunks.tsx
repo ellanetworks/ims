@@ -178,13 +178,6 @@ export default function SIPTrunks() {
   const trunkColumns: GridColDef<SIPTrunk>[] = [
     { field: "name", headerName: "Name", flex: 0.6, minWidth: 140 },
     {
-      field: "state",
-      headerName: "State",
-      flex: 0.3,
-      minWidth: 100,
-      renderCell: ({ row }) => <TrunkStateChip state={row.status.state} />,
-    },
-    {
       field: "enabled",
       headerName: "Enabled",
       flex: 0.3,
@@ -210,6 +203,13 @@ export default function SIPTrunks() {
           ))}
         </Box>
       ),
+    },
+    {
+      field: "state",
+      headerName: "State",
+      flex: 0.3,
+      minWidth: 100,
+      renderCell: ({ row }) => <TrunkStateChip state={row.status.state} />,
     },
     {
       field: "actions",

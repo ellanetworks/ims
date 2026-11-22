@@ -16,19 +16,8 @@ export function realmRow(
 ): SettingRow {
   return {
     label: `${applicationLabels[application]} Realm`,
-    help,
-    value: route && (
-      <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
-        <DomainName name={route.destination_realm} />
-        {route.realm === "" && (
-          <Chip
-            label={defaultRealmLabel(application)}
-            size="small"
-            variant="outlined"
-          />
-        )}
-      </Stack>
-    ),
+    help: `${help} Default: the ${defaultRealmLabel(application)}.`,
+    value: route && <DomainName name={route.destination_realm} />,
     onEdit: route && onEdit ? () => onEdit(route) : undefined,
   };
 }

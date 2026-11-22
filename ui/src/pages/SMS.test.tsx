@@ -133,7 +133,7 @@ describe("SMS", () => {
     ]);
     await waitFor(() =>
       expect(settingRows("HSS")).toEqual([
-        ["S6c Realm", "ims.mnc001.mcc001.3gppnetwork.orgHSS realm"],
+        ["S6c Realm", "ims.mnc001.mcc001.3gppnetwork.org"],
       ]),
     );
   });
