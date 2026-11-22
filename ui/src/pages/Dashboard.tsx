@@ -22,7 +22,7 @@ import {
 import Grid from "@mui/material/Grid";
 import { useQuery } from "@tanstack/react-query";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
-import DomainName from "@/components/DomainName";
+import OneLine from "@/components/OneLine";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import { useAuth } from "@/contexts/AuthContext";
@@ -621,20 +621,7 @@ export default function Dashboard() {
                 {operator.data && `${operator.data.mcc} / ${operator.data.mnc}`}
               </Field>
               <Field label="Home Domain">
-                {sip.data && (
-                  <Box
-                    component="span"
-                    title={sip.data.home_domain}
-                    sx={{
-                      display: "block",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {sip.data.home_domain}
-                  </Box>
-                )}
+                {sip.data && <OneLine text={sip.data.home_domain} />}
               </Field>
               <Field label="P-CSCF Addresses">
                 {pcscfs.length > 0 ? (
@@ -831,9 +818,7 @@ export default function Dashboard() {
                           gap: 1,
                         }}
                       >
-                        <span>
-                          <DomainName name={peerName(p)} />
-                        </span>
+                        <OneLine text={peerName(p)} />
                         <PeerStateChip
                           state={p.status.state}
                           error={p.status.error}

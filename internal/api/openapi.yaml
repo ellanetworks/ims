@@ -3097,10 +3097,10 @@ components:
           description: Database schema version of the cluster.
         healthy:
           type: boolean
-          description: Only from the leader.
+          description: From the leader. Absent when it cannot be reached.
         failure_tolerance:
           type: integer
-          description: How many voters can fail without stopping writes. Only from the leader.
+          description: How many voters can fail without stopping writes. From the leader, absent when it cannot be reached.
         members:
           type: array
           items:
@@ -3173,10 +3173,10 @@ components:
           description: The member has applied the whole log at least once. Only a caught-up member becomes a voter.
         healthy:
           type: boolean
-          description: Only from the leader.
+          description: From the leader. Absent when it cannot be reached.
         last_contact:
           type: string
-          description: Time since the leader last heard from the member, as a Go duration. Only from the leader.
+          description: Time since the leader last heard from the member, as a Go duration. From the leader, absent when it cannot be reached.
     CreateJoinTokenParams:
       type: object
       properties:

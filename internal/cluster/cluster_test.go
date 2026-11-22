@@ -437,6 +437,21 @@ func TestEveryMemberReportsTheLeaderHealth(t *testing.T) {
 				return fmt.Errorf("failure tolerance %+v", got)
 			}
 
+			st, err := e.node.Status(timeout(t))
+			if err != nil {
+				return err
+			}
+
+			if st.Healthy == nil || !*st.Healthy {
+				return fmt.Errorf("status healthy %v", st.Healthy)
+			}
+
+			for _, m := range st.Members {
+				if m.Healthy == nil || !*m.Healthy {
+					return fmt.Errorf("member %s healthy %v", m.NodeID, m.Healthy)
+				}
+			}
+
 			return nil
 		})
 	}

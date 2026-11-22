@@ -28,8 +28,8 @@ This path returns the node that answered, its cluster, and every member.
 | `applied_index`               | int     | Last log entry applied by the node. |
 | `commit_index`                | int     | Last log entry committed by the cluster. |
 | `schema`                      | int     | Database schema version of the cluster. |
-| `healthy`                     | boolean | The cluster is healthy. Only from the leader. |
-| `failure_tolerance`           | int     | Voters that can fail without stopping writes. Only from the leader. |
+| `healthy`                     | boolean | The cluster is healthy. From the leader, absent when it cannot be reached. |
+| `failure_tolerance`           | int     | Voters that can fail without stopping writes. From the leader, absent when it cannot be reached. |
 | `members[].node_id`           | string  | ID of the member. |
 | `members[].address`           | string  | Cluster address of the member. |
 | `members[].diameter_label`    | string  | First label of the member's Diameter host. |
@@ -42,8 +42,8 @@ This path returns the node that answered, its cluster, and every member.
 | `members[].drain_state`       | string  | `active`, `draining` or `drained`. See [Drain a Member](#drain-a-member). |
 | `members[].suffrage`          | string  | `voter`, `nonvoter` (joining, or standby), or `none`. |
 | `members[].leader`            | boolean | The member is the leader. |
-| `members[].healthy`           | boolean | The member is healthy. Only from the leader. |
-| `members[].last_contact`      | string  | Time since the leader last heard from the member. Only from the leader. |
+| `members[].healthy`           | boolean | The member is healthy. From the leader, absent when it cannot be reached. |
+| `members[].last_contact`      | string  | Time since the leader last heard from the member. From the leader, absent when it cannot be reached. |
 
 ### Sample Response
 

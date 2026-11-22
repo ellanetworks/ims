@@ -34,7 +34,6 @@ import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import { useAuth } from "@/contexts/AuthContext";
 import {
-  answersAsLeader,
   getCluster,
   memberLabel,
   type ClusterMember,
@@ -365,7 +364,7 @@ export default function Cluster() {
             columns={columns(
               status.node_id,
               new Set(members.map((m) => m.version).filter(Boolean)).size > 1,
-              answersAsLeader(status),
+              status.leader_id !== undefined,
               manageable,
               (action, member) => setTarget({ action, member }),
             )}

@@ -160,7 +160,7 @@ const cells = (row: HTMLElement) =>
     .map((cell) => cell.textContent);
 
 const rowOf = async (text: string) =>
-  (await screen.findByText(text)).closest('[role="row"]') as HTMLElement;
+  (await screen.findAllByText(text))[0].closest('[role="row"]') as HTMLElement;
 
 const choose = (label: string, option: string, index = 0) => {
   fireEvent.mouseDown(
@@ -205,7 +205,8 @@ describe("SIP Trunks", () => {
     ).toBeInTheDocument();
     expect(cells(await rowOf("Default"))).toEqual([
       "Default",
-      "Telnyx, Twilio",
+      "TelnyxTwilio",
+      "upunknown",
       "",
     ]);
   });

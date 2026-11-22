@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
 import { Alert, Box, Button, IconButton, Link, Skeleton } from "@mui/material";
 import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
@@ -8,6 +8,8 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import DomainName from "@/components/DomainName";
 import EditIPSMGWDialog from "@/components/EditIPSMGWDialog";
 import EditRouteDialog from "@/components/EditRouteDialog";
+import Lines from "@/components/Lines";
+import OneLine from "@/components/OneLine";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import QueryAlert from "@/components/QueryAlert";
@@ -55,43 +57,6 @@ const routePeers = (ids: string[], peers: DiameterPeer[]) =>
   peers
     .filter((p) => ids.includes(p.id))
     .toSorted((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
-
-const PEER_LINE_SX = {
-  minHeight: 24,
-  display: "flex",
-  alignItems: "center",
-  minWidth: 0,
-};
-
-function PeerLines({
-  ids,
-  peers,
-  render,
-}: {
-  ids: string[];
-  peers: DiameterPeer[];
-  render: (peer: DiameterPeer) => ReactNode;
-}) {
-  return (
-    <Box
-      component="ul"
-      sx={{
-        m: 0,
-        p: 0,
-        listStyle: "none",
-        display: "grid",
-        gap: 0.5,
-        width: "100%",
-      }}
-    >
-      {routePeers(ids, peers).map((p) => (
-        <Box component="li" key={p.id} sx={PEER_LINE_SX}>
-          {render(p)}
-        </Box>
-      ))}
-    </Box>
-  );
-}
 
 export default function SMS() {
   const queryClient = useQueryClient();
@@ -155,34 +120,22 @@ export default function SMS() {
       flex: 1,
       minWidth: 240,
       renderCell: ({ row }) => (
-        <PeerLines
-          ids={row.peers}
-          peers={peers.data ?? []}
-          render={(p) => (
-            <Box
-              component="span"
-              title={peerName(p)}
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {peerName(p)}
-            </Box>
-          )}
+        <Lines
+          items={routePeers(row.peers, peers.data ?? [])}
+          itemKey={(p) => p.id}
+          render={(p) => <OneLine text={peerName(p)} />}
         />
       ),
     },
     {
       field: "status",
-      headerName: "Status",
+      headerName: "State",
       width: 120,
       sortable: false,
       renderCell: ({ row }) => (
-        <PeerLines
-          ids={row.peers}
-          peers={peers.data ?? []}
+        <Lines
+          items={routePeers(row.peers, peers.data ?? [])}
+          itemKey={(p) => p.id}
           render={(p) => (
             <PeerStateChip state={p.status.state} error={p.status.error} />
           )}

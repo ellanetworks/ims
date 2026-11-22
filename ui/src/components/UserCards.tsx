@@ -22,14 +22,13 @@ import {
 } from "@mui/material";
 import {
   Close as CloseIcon,
-  ContentCopy as ContentCopyIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
 } from "@mui/icons-material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import CopyButton from "@/components/CopyButton";
 import EditDialog from "@/components/EditDialog";
 import {
   createAPIToken,
@@ -234,7 +233,6 @@ export function UserAPITokensCard({
   const [created, setCreated] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<APIToken | null>(null);
   const { showSnackbar } = useSnackbar();
-  const copy = useCopyToClipboard();
   const [now] = useState(() => Date.now());
 
   const remove = useMutation({
@@ -306,14 +304,7 @@ export function UserAPITokensCard({
               sx={{ alignItems: "center", mb: 2 }}
               action={
                 <Stack direction="row" spacing={1}>
-                  <IconButton
-                    aria-label="Copy token"
-                    title="Copy"
-                    size="small"
-                    onClick={() => void copy(created, "API token")}
-                  >
-                    <ContentCopyIcon fontSize="inherit" />
-                  </IconButton>
+                  <CopyButton value={created} label="token" />
                   <IconButton
                     aria-label="Dismiss"
                     size="small"

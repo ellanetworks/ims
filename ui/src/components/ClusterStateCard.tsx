@@ -1,12 +1,7 @@
 import { Box, Chip, Link, Tooltip, Typography } from "@mui/material";
 import { OpenInNew as OpenInNewIcon } from "@mui/icons-material";
 import SettingsTable from "@/components/SettingsTable";
-import {
-  answersAsLeader,
-  leaderOf,
-  memberLabel,
-  type ClusterStatus,
-} from "@/queries/cluster";
+import { type ClusterStatus } from "@/queries/cluster";
 
 function ToleranceChip({ failureTolerance }: { failureTolerance: number }) {
   if (failureTolerance < 1) {
@@ -56,27 +51,9 @@ function HealthValue({ status }: { status: ClusterStatus }) {
     );
   }
 
-  if (!answersAsLeader(status)) {
-    const leader = leaderOf(status);
-    return (
-      <Typography variant="body2" sx={{ color: "text.secondary" }}>
-        Shown on the leader
-        {leader ? ` (node ${memberLabel(leader)})` : ""}
-        {leader?.api_address ? (
-          <>
-            {": "}
-            <LeaderLink address={leader.api_address} />
-          </>
-        ) : (
-          "."
-        )}
-      </Typography>
-    );
-  }
-
   if (status.healthy === undefined) {
     return (
-      <Tooltip title="The leader has not reported yet. This is normal for a moment after a leadership change.">
+      <Tooltip title="The leader has not reported yet, or could not be reached. This is normal for a moment after a leadership change.">
         <Chip label="Unknown" size="small" variant="outlined" />
       </Tooltip>
     );
@@ -141,7 +118,7 @@ export default function ClusterStateCard({
         },
         {
           label: "Health",
-          help: "Reported by the leader only: whether every voter is healthy, and how many voters can fail without stopping writes.",
+          help: "As the leader sees it: whether every voter is healthy, and how many voters can fail without stopping writes.",
           value: status && <HealthValue status={status} />,
         },
         {

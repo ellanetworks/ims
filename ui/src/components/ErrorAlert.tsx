@@ -5,12 +5,10 @@ import {
   Box,
   Button,
   Collapse,
-  IconButton,
   Link,
   Typography,
 } from "@mui/material";
-import { ContentCopy as ContentCopyIcon } from "@mui/icons-material";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import CopyButton from "@/components/CopyButton";
 import { ApiError } from "@/queries/utils";
 
 const primaryMessage = (error: unknown): string =>
@@ -35,7 +33,6 @@ export default function ErrorAlert({
 }) {
   const [showDetail, setShowDetail] = useState(false);
   const detail = technicalDetail(error);
-  const copy = useCopyToClipboard();
 
   return (
     <Alert
@@ -84,13 +81,7 @@ export default function ErrorAlert({
               >
                 {detail}
               </Typography>
-              <IconButton
-                size="small"
-                onClick={() => void copy(detail, "Error details")}
-                aria-label={`Copy ${resource} error details`}
-              >
-                <ContentCopyIcon fontSize="inherit" />
-              </IconButton>
+              <CopyButton value={detail} label={`${resource} error details`} />
             </Box>
           </Collapse>
         </Box>

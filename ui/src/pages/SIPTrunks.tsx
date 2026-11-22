@@ -15,6 +15,8 @@ import {
 } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import Lines from "@/components/Lines";
+import OneLine from "@/components/OneLine";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import SIPRouteDialog from "@/components/SIPRouteDialog";
@@ -170,6 +172,8 @@ export default function SIPTrunks() {
 
   const trunkName = (id: string) =>
     trunks.data?.find((t) => t.id === id)?.name ?? id;
+  const trunkState = (id: string) =>
+    trunks.data?.find((t) => t.id === id)?.status.state;
 
   const trunkColumns: GridColDef<SIPTrunk>[] = [
     { field: "name", headerName: "Name", flex: 0.6, minWidth: 140 },
@@ -241,6 +245,29 @@ export default function SIPTrunks() {
       flex: 1,
       minWidth: 200,
       valueGetter: (_value, row) => row.trunks.map(trunkName).join(", "),
+      renderCell: ({ row }) => (
+        <Lines
+          items={row.trunks}
+          itemKey={(id) => id}
+          render={(id) => <OneLine text={trunkName(id)} />}
+        />
+      ),
+    },
+    {
+      field: "state",
+      headerName: "State",
+      width: 120,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Lines
+          items={row.trunks}
+          itemKey={(id) => id}
+          render={(id) => {
+            const state = trunkState(id);
+            return state && <TrunkStateChip state={state} />;
+          }}
+        />
+      ),
     },
     {
       field: "actions",
