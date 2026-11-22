@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
+import { Alert, Box, Typography } from "@mui/material";
 import DomainName from "@/components/DomainName";
 import QueryAlert from "@/components/QueryAlert";
 import SettingsTable from "@/components/SettingsTable";
@@ -90,17 +90,8 @@ export function SettingsTab({ status }: { status: MCPTTStatus }) {
         rows={[
           {
             label: "Organisation Domain",
-            help: "The domain of your MCPTT IDs and group IDs.",
-            value: c && (
-              <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
-                <span style={{ overflowWrap: "anywhere" }}>
-                  <DomainName name={c.domain} />
-                </span>
-                {c.domain === homeDomain && (
-                  <Chip label="home domain" size="small" variant="outlined" />
-                )}
-              </Stack>
-            ),
+            help: "The domain of your MCPTT IDs and group IDs. Default: the home domain.",
+            value: c && <DomainName name={c.domain} />,
             onEdit: editable ? () => setEditing("domain") : undefined,
           },
           {

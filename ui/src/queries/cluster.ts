@@ -107,6 +107,3 @@ export const nodeLabel = (
 
 export const memberLabel = (member: ClusterMember) =>
   nodeLabel(member.display_name, member.diameter_label, member.node_id);
-
-export const GENERATED_HOST_HINT =
-  "Generated from the node ID. A reinstalled node gets a new host. Set diameter.host_label in the node's configuration file to keep it.";

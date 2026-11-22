@@ -29,7 +29,7 @@ import {
   ResumeNodeDialog,
 } from "@/components/ClusterDialogs";
 import ClusterStateCard from "@/components/ClusterStateCard";
-import DiameterHost from "@/components/DiameterHost";
+import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import { useAuth } from "@/contexts/AuthContext";
@@ -188,10 +188,9 @@ const columns = (
     minWidth: 220,
     renderCell: ({ row }) => (
       <CenteredCell>
-        <DiameterHost
-          host={row.diameter_host}
-          generated={row.label_generated}
-        />
+        <Typography variant="body2" component="span">
+          <DomainName name={row.diameter_host} />
+        </Typography>
       </CenteredCell>
     ),
   },
