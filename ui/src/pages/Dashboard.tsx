@@ -290,7 +290,7 @@ function Section({
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <Box>
+    <Box sx={{ minWidth: 0 }}>
       <Typography variant="body2" color="textSecondary">
         {label}
       </Typography>
@@ -306,7 +306,19 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function Fields({ children }: { children: ReactNode }) {
-  return <Box sx={{ display: "grid", gap: 2, width: "100%" }}>{children}</Box>;
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr)",
+        gap: 2,
+        width: "100%",
+        minWidth: 0,
+      }}
+    >
+      {children}
+    </Box>
+  );
 }
 
 function ServiceState({ enabled }: { enabled: boolean }) {
@@ -609,7 +621,20 @@ export default function Dashboard() {
                 {operator.data && `${operator.data.mcc} / ${operator.data.mnc}`}
               </Field>
               <Field label="Home Domain">
-                {sip.data && <DomainName name={sip.data.home_domain} />}
+                {sip.data && (
+                  <Box
+                    component="span"
+                    title={sip.data.home_domain}
+                    sx={{
+                      display: "block",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {sip.data.home_domain}
+                  </Box>
+                )}
               </Field>
               <Field label="P-CSCF Addresses">
                 {pcscfs.length > 0 ? (
@@ -800,7 +825,11 @@ export default function Dashboard() {
                         component="li"
                         key={p.id}
                         direction="row"
-                        sx={{ alignItems: "center", gap: 1 }}
+                        sx={{
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 1,
+                        }}
                       >
                         <span>
                           <DomainName name={peerName(p)} />

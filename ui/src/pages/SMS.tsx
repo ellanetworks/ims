@@ -1,19 +1,10 @@
-import { useState } from "react";
-import {
-  Alert,
-  Box,
-  Button,
-  IconButton,
-  Link,
-  Skeleton,
-  Stack,
-} from "@mui/material";
+import { type ReactNode, useState } from "react";
+import { Alert, Box, Button, IconButton, Link, Skeleton } from "@mui/material";
 import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link as RouterLink } from "react-router-dom";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import Copyable from "@/components/Copyable";
 import DomainName from "@/components/DomainName";
 import EditIPSMGWDialog from "@/components/EditIPSMGWDialog";
 import EditRouteDialog from "@/components/EditRouteDialog";
@@ -60,27 +51,43 @@ const byServiceCentre = (a: SMSRoute, b: SMSRoute) =>
     ? Number(a.service_centre === "") - Number(b.service_centre === "")
     : a.service_centre.localeCompare(b.service_centre);
 
-function RoutePeers({ ids, peers }: { ids: string[]; peers: DiameterPeer[] }) {
-  const known = peers
+const routePeers = (ids: string[], peers: DiameterPeer[]) =>
+  peers
     .filter((p) => ids.includes(p.id))
     .toSorted((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+
+const PEER_LINE_SX = {
+  minHeight: 24,
+  display: "flex",
+  alignItems: "center",
+  minWidth: 0,
+};
+
+function PeerLines({
+  ids,
+  peers,
+  render,
+}: {
+  ids: string[];
+  peers: DiameterPeer[];
+  render: (peer: DiameterPeer) => ReactNode;
+}) {
   return (
     <Box
       component="ul"
-      sx={{ m: 0, p: 0, listStyle: "none", display: "grid", gap: 0.5 }}
+      sx={{
+        m: 0,
+        p: 0,
+        listStyle: "none",
+        display: "grid",
+        gap: 0.5,
+        width: "100%",
+      }}
     >
-      {known.map((p) => (
-        <Stack
-          component="li"
-          key={p.id}
-          direction="row"
-          sx={{ alignItems: "center", gap: 1 }}
-        >
-          <span>
-            <DomainName name={peerName(p)} />
-          </span>
-          <PeerStateChip state={p.status.state} error={p.status.error} />
-        </Stack>
+      {routePeers(ids, peers).map((p) => (
+        <Box component="li" key={p.id} sx={PEER_LINE_SX}>
+          {render(p)}
+        </Box>
       ))}
     </Box>
   );
@@ -148,14 +155,46 @@ export default function SMS() {
       flex: 1,
       minWidth: 240,
       renderCell: ({ row }) => (
-        <RoutePeers ids={row.peers} peers={peers.data ?? []} />
+        <PeerLines
+          ids={row.peers}
+          peers={peers.data ?? []}
+          render={(p) => (
+            <Box
+              component="span"
+              title={peerName(p)}
+              sx={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {peerName(p)}
+            </Box>
+          )}
+        />
+      ),
+    },
+    {
+      field: "status",
+      headerName: "Status",
+      width: 120,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <PeerLines
+          ids={row.peers}
+          peers={peers.data ?? []}
+          render={(p) => (
+            <PeerStateChip state={p.status.state} error={p.status.error} />
+          )}
+        />
       ),
     },
     {
       field: "actions",
-      headerName: "",
+      headerName: "Actions",
       width: 96,
       align: "right",
+      headerAlign: "right",
       sortable: false,
       renderCell: ({ row }) => (
         <>
@@ -213,9 +252,11 @@ export default function SMS() {
           {
             label: "Name",
             help: "The application server of your iFCs for SMS over IP.",
-            value: ipsmgw.data && (
-              <Copyable value={ipsmgw.data.name} label="IP-SM-GW Name" />
-            ),
+            value: ipsmgw.data && <DomainName name={ipsmgw.data.name} />,
+            copy: ipsmgw.data && {
+              value: ipsmgw.data.name,
+              label: "IP-SM-GW Name",
+            },
           },
           {
             label: "Number",
@@ -229,16 +270,20 @@ export default function SMS() {
           {
             label: "Diameter Host",
             help: "This IMS's Diameter name, which the SMSC sends short messages to.",
-            value: identity.data && (
-              <Copyable value={identity.data.host} label="Diameter Host" />
-            ),
+            value: identity.data && <DomainName name={identity.data.host} />,
+            copy: identity.data && {
+              value: identity.data.host,
+              label: "Diameter Host",
+            },
           },
           {
             label: "Diameter Realm",
             help: "This IMS's Diameter realm.",
-            value: identity.data && (
-              <Copyable value={identity.data.realm} label="Diameter Realm" />
-            ),
+            value: identity.data && <DomainName name={identity.data.realm} />,
+            copy: identity.data && {
+              value: identity.data.realm,
+              label: "Diameter Realm",
+            },
           },
         ]}
       />

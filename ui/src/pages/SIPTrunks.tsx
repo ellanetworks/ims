@@ -209,9 +209,10 @@ export default function SIPTrunks() {
     },
     {
       field: "actions",
-      headerName: "",
+      headerName: "Actions",
       width: 96,
       align: "right",
+      headerAlign: "right",
       sortable: false,
       renderCell: ({ row }) => (
         <ActionButtons
@@ -243,9 +244,10 @@ export default function SIPTrunks() {
     },
     {
       field: "actions",
-      headerName: "",
+      headerName: "Actions",
       width: 96,
       align: "right",
+      headerAlign: "right",
       sortable: false,
       renderCell: ({ row }) => (
         <ActionButtons

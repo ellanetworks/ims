@@ -132,9 +132,10 @@ export function GroupsTab() {
     },
     {
       field: "actions",
-      headerName: "",
+      headerName: "Actions",
       width: 96,
       align: "right",
+      headerAlign: "right",
       sortable: false,
       renderCell: ({ row }) => (
         <>

@@ -14,7 +14,6 @@ import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import Copyable from "@/components/Copyable";
 import DiameterPeerDialog from "@/components/DiameterPeerDialog";
 import DomainName from "@/components/DomainName";
 import EditPolicyDialog from "@/components/EditPolicyDialog";
@@ -26,7 +25,10 @@ import { realmRow, RouteStatus } from "@/components/RealmRow";
 import SectionHeader from "@/components/SectionHeader";
 import { useAuth } from "@/contexts/AuthContext";
 import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
-import SettingsTable, { type SettingRow } from "@/components/SettingsTable";
+import SettingsTable, {
+  LINE_SX,
+  type SettingRow,
+} from "@/components/SettingsTable";
 import {
   deleteDiameterPeer,
   type DiameterPeer,
@@ -192,9 +194,10 @@ export default function Cores() {
     },
     {
       field: "actions",
-      headerName: "",
+      headerName: "Actions",
       width: 96,
       align: "right",
+      headerAlign: "right",
       sortable: false,
       renderCell: ({ row }) => (
         <>
@@ -239,26 +242,30 @@ export default function Cores() {
     {
       label: "P-CSCF Addresses",
       help: "Phones send their SIP traffic here.",
+      copy: sip.data
+        ? pcscfAddresses(sip.data.listeners).map(({ ip }) => ({
+            value: ip,
+            label: ip,
+          }))
+        : undefined,
       value:
         sip.data &&
         (pcscfAddresses(sip.data.listeners).length > 0 ? (
-          <Box component="ul" sx={{ m: 0, p: 0, listStyle: "none" }}>
+          <Stack
+            component="ul"
+            sx={{ m: 0, p: 0, listStyle: "none", gap: 0.5 }}
+          >
             {pcscfAddresses(sip.data.listeners).map(({ ip, port }) => (
-              <Stack
-                component="li"
-                key={ip}
-                direction="row"
-                sx={{ alignItems: "center", gap: 1 }}
-              >
-                <Copyable value={ip} label={ip} />
+              <Box component="li" key={ip} sx={LINE_SX}>
+                {ip}
                 {port !== SIP_PORT && (
                   <Tooltip title={`Phones expect port ${SIP_PORT}.`} arrow>
                     <Chip label={`port ${port}`} color="warning" size="small" />
                   </Tooltip>
                 )}
-              </Stack>
+              </Box>
             ))}
-          </Box>
+          </Stack>
         ) : (
           "—"
         )),
@@ -266,25 +273,28 @@ export default function Cores() {
     {
       label: "Diameter Host",
       help: "This IMS's Diameter name: its host label, then the home network domain. Set the label with diameter.host_label in the configuration file. Default ims.",
-      value: identity.data && (
-        <Copyable value={identity.data.host} label="Diameter Host" />
-      ),
+      value: identity.data && <DomainName name={identity.data.host} />,
+      copy: identity.data && {
+        value: identity.data.host,
+        label: "Diameter Host",
+      },
     },
     {
       label: "Diameter Realm",
       help: "This IMS's Diameter realm. Set by the Operator ID.",
-      value: identity.data && (
-        <Copyable value={identity.data.realm} label="Diameter Realm" />
-      ),
+      value: identity.data && <DomainName name={identity.data.realm} />,
+      copy: identity.data && {
+        value: identity.data.realm,
+        label: "Diameter Realm",
+      },
     },
   ];
   if (policy.data?.status.notify) {
     imsRows.push({
       label: "Notification URI",
       help: "Where the PCF sends its notifications.",
-      value: (
-        <Copyable value={policy.data.status.notify} label="Notification URI" />
-      ),
+      value: <DomainName name={policy.data.status.notify} />,
+      copy: { value: policy.data.status.notify, label: "Notification URI" },
     });
   }
 

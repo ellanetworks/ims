@@ -1,6 +1,5 @@
 import { Box, Chip, Link, Tooltip, Typography } from "@mui/material";
 import { OpenInNew as OpenInNewIcon } from "@mui/icons-material";
-import CopyButton from "@/components/CopyButton";
 import SettingsTable from "@/components/SettingsTable";
 import {
   answersAsLeader,
@@ -132,11 +131,13 @@ export default function ClusterStateCard({
               >
                 {status.cluster_id}
               </Typography>
-              <CopyButton value={status.cluster_id} label="Cluster ID" />
             </Box>
           ) : (
             "—"
           ),
+          copy: status?.cluster_id
+            ? { value: status.cluster_id, label: "Cluster ID" }
+            : undefined,
         },
         {
           label: "Health",

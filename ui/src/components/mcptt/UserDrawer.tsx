@@ -48,7 +48,11 @@ function UserDetail({
   const rows: [string, ReactNode][] = [
     [
       "MCPTT ID",
-      <Stack key="id" direction="row" sx={{ alignItems: "center", gap: 0.5 }}>
+      <Stack
+        key="id"
+        direction="row"
+        sx={{ alignItems: "center", justifyContent: "space-between", gap: 0.5 }}
+      >
         <span>{user.mcptt_id}</span>
         <CopyButton value={user.mcptt_id} label="MCPTT ID" />
       </Stack>,
