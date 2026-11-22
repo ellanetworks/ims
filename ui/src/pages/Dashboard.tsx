@@ -29,9 +29,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useMCPTTStatus } from "@/hooks/useMCPTT";
 import { countCallRecords, type CallOutcome } from "@/queries/callRecords";
 import {
-  answersAsLeader,
-  getCluster,
-  type ClusterStatus,
+  type ClusterHealth,
+  type ClusterHealthState,
+  getClusterHealth,
 } from "@/queries/cluster";
 import {
   type DiameterPeer,
@@ -395,46 +395,37 @@ function ShareBar({
   );
 }
 
-const HA_HINTS = {
-  single: "A single node. Add nodes to keep the IMS working when one fails.",
+const SINGLE_NODE_HINT =
+  "A single node. Add nodes to keep the IMS working when one fails.";
+
+const HA_HINTS: Record<ClusterHealthState, string> = {
   healthy: "Healthy voters out of the cluster's total.",
-  degraded: "At least one node is unhealthy.",
-  noLeader:
+  degraded: "At least one voter is unhealthy.",
+  no_leader:
     "No node holds leadership. The cluster cannot accept writes until enough voters recover.",
-  follower: "Cluster health is shown on the leader.",
-  unknown: "Cluster health could not be read from this node.",
+  unknown: "Cluster health could not be read from the leader.",
 };
 
-function clusterHealth(status?: ClusterStatus): {
+function clusterHealth(health?: ClusterHealth): {
   hint: string;
   value: ReactNode;
 } {
-  if (!status) {
+  if (!health || health.state === "unknown") {
     return { hint: HA_HINTS.unknown, value: <Chip label="Unknown" /> };
   }
-  if (!status.clustered) {
-    return { hint: HA_HINTS.single, value: <Ratio value="1/1" /> };
-  }
-  if (!status.leader_id) {
+  if (health.state === "no_leader") {
     return {
-      hint: HA_HINTS.noLeader,
+      hint: HA_HINTS.no_leader,
       value: <Chip label="No leader" color="error" />,
     };
   }
-  if (!answersAsLeader(status)) {
-    return { hint: HA_HINTS.follower, value: <Chip label="Follower" /> };
-  }
-  if (status.healthy === undefined) {
-    return { hint: HA_HINTS.unknown, value: <Chip label="Unknown" /> };
-  }
-  const voters = (status.members ?? []).filter((m) => m.suffrage === "voter");
-  const healthy = voters.filter((m) => m.healthy).length;
+  const single = health.state === "healthy" && health.total_voters === 1;
   return {
-    hint: status.healthy ? HA_HINTS.healthy : HA_HINTS.degraded,
+    hint: single ? SINGLE_NODE_HINT : HA_HINTS[health.state],
     value: (
       <Ratio
-        value={`${healthy}/${voters.length}`}
-        color={status.healthy ? undefined : "error.main"}
+        value={`${health.healthy_voters ?? 0}/${health.total_voters}`}
+        color={health.state === "healthy" ? undefined : "error.main"}
       />
     ),
   };
@@ -531,8 +522,8 @@ export default function Dashboard() {
     refetchInterval: DASHBOARD_REFRESH_MS,
   });
   const cluster = useQuery({
-    queryKey: ["cluster"],
-    queryFn: getCluster,
+    queryKey: ["cluster-health"],
+    queryFn: getClusterHealth,
     enabled: auth.can("cluster:read"),
     refetchInterval: DASHBOARD_REFRESH_MS,
   });

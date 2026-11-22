@@ -54,6 +54,7 @@ func (n *Node) serveRPC() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /cluster/v1/propose", n.leaderOnly(n.handlePropose))
 	mux.HandleFunc("POST /cluster/v1/join", n.leaderOnly(n.handleJoin))
+	mux.HandleFunc("GET /cluster/v1/health", n.leaderOnly(n.handleHealth))
 	mux.HandleFunc("POST /cluster/v1/probe", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, struct{}{})
 	})

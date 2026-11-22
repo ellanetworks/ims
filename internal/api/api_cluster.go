@@ -17,6 +17,7 @@ type Cluster interface {
 	ID() string
 	Clustered() bool
 	Status(ctx context.Context) (cluster.Status, error)
+	HealthSummary(ctx context.Context) cluster.HealthSummary
 	MintToken(ctx context.Context, ttl time.Duration) (cluster.Token, error)
 	Join(ctx context.Context, token string) error
 	RemoveMember(ctx context.Context, nodeID string, force bool) error
@@ -117,6 +118,16 @@ func GetCluster(cfg Config) http.Handler {
 		}
 
 		writeResponse(r.Context(), w, st, http.StatusOK, cfg.Logger)
+	})
+}
+
+func GetClusterHealth(cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if noCluster(w, r, cfg) {
+			return
+		}
+
+		writeResponse(r.Context(), w, cfg.Cluster.HealthSummary(r.Context()), http.StatusOK, cfg.Logger)
 	})
 }
 

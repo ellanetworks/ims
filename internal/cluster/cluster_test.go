@@ -418,3 +418,50 @@ func TestJoinRetriesAfterAHalfCompletedAdmission(t *testing.T) {
 	waitMember(t, joiner, joiner.node.ID())
 	waitMember(t, joiner, leader.node.ID())
 }
+
+func TestEveryMemberReportsTheLeaderHealth(t *testing.T) {
+	c := newCluster(t, 3)
+
+	waitVoters(t, c, 3)
+
+	for _, e := range c.nodes {
+		eventually(t, "health on "+e.node.ID(), func() error {
+			got := e.node.HealthSummary(timeout(t))
+
+			switch {
+			case got.State != HealthHealthy:
+				return fmt.Errorf("state %s", got.State)
+			case got.TotalVoters != 3 || got.HealthyVoters == nil || *got.HealthyVoters != 3:
+				return fmt.Errorf("voters %+v", got)
+			case got.FailureTolerance == nil || *got.FailureTolerance != 1:
+				return fmt.Errorf("failure tolerance %+v", got)
+			}
+
+			return nil
+		})
+	}
+}
+
+func TestHealthWithoutALeader(t *testing.T) {
+	c := newCluster(t, 3)
+
+	waitVoters(t, c, 3)
+
+	survivor := c.follower()
+
+	for i, e := range c.nodes {
+		if e != survivor {
+			_ = e.node.Close()
+			_ = e.db.Close()
+			c.nodes[i] = nil
+		}
+	}
+
+	eventually(t, "no leader on the survivor", func() error {
+		if got := survivor.node.HealthSummary(timeout(t)); got.State != HealthNoLeader || got.TotalVoters != 3 {
+			return fmt.Errorf("%+v", got)
+		}
+
+		return nil
+	})
+}

@@ -3,6 +3,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import Dashboard, { formatBytes } from "@/pages/Dashboard";
 import type { CallRecordCounts } from "@/queries/callRecords";
+import type { ClusterHealth } from "@/queries/cluster";
 import type { DiameterPeer } from "@/queries/diameter";
 import { identity, operator, page, peer, sip } from "@/test/fixtures";
 import { mcpttStatus } from "@/test/mcptt";
@@ -62,6 +63,7 @@ interface Setup {
   counts?: CallRecordCounts;
   metrics?: () => Response;
   trunks?: unknown[];
+  health?: ClusterHealth;
 }
 
 const serve = ({
@@ -71,6 +73,12 @@ const serve = ({
   counts: byOutcome = counts,
   metrics = () => new Response(METRICS, { status: 200 }),
   trunks = TRUNKS,
+  health = {
+    state: "healthy",
+    total_voters: 3,
+    healthy_voters: 3,
+    failure_tolerance: 1,
+  },
 }: Setup = {}) => {
   const urls: URL[] = [];
   const track =
@@ -114,6 +122,7 @@ const serve = ({
         ),
         "/api/v1/metrics": metrics,
         "/api/v1/sip-trunks": () => json(200, { result: { items: trunks } }),
+        "/api/v1/cluster/health": () => json(200, { result: health }),
         "/api/v1/call-records/counts": track(() =>
           json(200, { result: byOutcome }),
         ),
@@ -421,6 +430,42 @@ describe("Dashboard", () => {
     expect(urls.some((u) => u.pathname.startsWith("/api/v1/mcptt/"))).toBe(
       false,
     );
+  });
+
+  it("shows the healthy voters of the cluster", async () => {
+    serve();
+    renderDashboard();
+
+    const card = await findPanel("High Availability");
+    const ratio = await within(card).findByText("3/3");
+    expect(colorOf(ratio)).not.toBe(ALERT_COLOR);
+    expect(card.closest("a")).toHaveAttribute("href", "/cluster");
+  });
+
+  it("alerts when a voter is unhealthy", async () => {
+    serve({
+      health: {
+        state: "degraded",
+        total_voters: 3,
+        healthy_voters: 2,
+        failure_tolerance: 0,
+      },
+    });
+    renderDashboard();
+
+    const card = await findPanel("High Availability");
+    expect(colorOf(await within(card).findByText("2/3"))).toBe(ALERT_COLOR);
+  });
+
+  it.each([
+    ["no_leader", "No leader"],
+    ["unknown", "Unknown"],
+  ] as const)("shows %s cluster health", async (state, label) => {
+    serve({ health: { state, total_voters: 3 } });
+    renderDashboard();
+
+    const card = await findPanel("High Availability");
+    expect(await within(card).findByText(label)).toBeInTheDocument();
   });
 
   it("warns when SMS over IP has no SMSC peer", async () => {

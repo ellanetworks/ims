@@ -2362,6 +2362,31 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /api/v1/cluster/health:
+    get:
+      tags: [Cluster]
+      operationId: getClusterHealth
+      summary: Get the cluster health
+      description: >-
+        The health of the cluster, as the leader sees it. Any member answers: a follower reads it from the leader.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    $ref: "#/components/schemas/ClusterHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /api/v1/cluster/tokens:
     post:
       tags: [Cluster]
@@ -3080,6 +3105,25 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ClusterMember"
+    ClusterHealth:
+      type: object
+      required: [state, total_voters]
+      properties:
+        state:
+          type: string
+          enum: [healthy, degraded, no_leader, unknown]
+          description: >-
+            unknown when the leader cannot be reached or has no health yet.
+        total_voters:
+          type: integer
+          description: Voters in the cluster.
+        healthy_voters:
+          type: integer
+          description: Healthy voters. Absent when the state is no_leader or unknown.
+        failure_tolerance:
+          type: integer
+          description: >-
+            How many voters can fail without stopping writes. Absent when the state is no_leader or unknown.
     ClusterMember:
       type: object
       required: [node_id, address, diameter_label, diameter_host, label_generated, display_name, version, joined_at, drain_state, suffrage, leader, caught_up]

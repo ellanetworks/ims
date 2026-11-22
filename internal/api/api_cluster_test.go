@@ -25,6 +25,11 @@ func (fakeCluster) Clustered() bool { return true }
 
 func (f fakeCluster) Status(context.Context) (cluster.Status, error) { return cluster.Status{}, f.err }
 
+func (fakeCluster) HealthSummary(context.Context) cluster.HealthSummary {
+	healthy, tolerance := 2, 0
+	return cluster.HealthSummary{State: cluster.HealthDegraded, TotalVoters: 3, HealthyVoters: &healthy, FailureTolerance: &tolerance}
+}
+
 func (f fakeCluster) MintToken(context.Context, time.Duration) (cluster.Token, error) {
 	return cluster.Token{}, f.err
 }
@@ -131,5 +136,28 @@ func TestLeaderOnlyActionsOnAFollower(t *testing.T) {
 				t.Fatalf("leader = %q, want %q", body.Leader, tt.wantLeader)
 			}
 		})
+	}
+}
+
+func TestGetClusterHealth(t *testing.T) {
+	h := clusterHandler(t, nil)
+	token := initialize(t, h)
+
+	rec := serve(h, request(http.MethodGet, "/api/v1/cluster/health", ``, token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/cluster/health = %d %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Result map[string]any `json:"result"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]any{"state": "degraded", "total_voters": 3.0, "healthy_voters": 2.0, "failure_tolerance": 0.0}
+	if fmt.Sprint(body.Result) != fmt.Sprint(want) {
+		t.Fatalf("result = %v, want %v", body.Result, want)
 	}
 }

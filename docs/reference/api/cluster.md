@@ -97,6 +97,38 @@ This path returns the node that answered, its cluster, and every member.
 }
 ```
 
+## Get the Cluster Health
+
+This path returns the health of the cluster, as the leader sees it. Any member answers.
+
+| Method | Path                     |
+| ------ | ------------------------ |
+| GET    | `/api/v1/cluster/health` |
+
+### Response Fields
+
+| Field               | Type   | Description |
+| ------------------- | ------ | ----------- |
+| `state`             | string | `healthy`, `degraded` (at least one voter is unhealthy), `no_leader`, or `unknown` (the leader cannot be reached or has no health yet). |
+| `total_voters`      | int    | Voters in the cluster. |
+| `healthy_voters`    | int    | Healthy voters. Absent when `state` is `no_leader` or `unknown`. |
+| `failure_tolerance` | int    | Voters that can fail without stopping writes. Absent when `state` is `no_leader` or `unknown`. |
+
+A node without a `cluster` block returns `healthy`, with one voter.
+
+### Sample Response
+
+```json
+{
+    "result": {
+        "state": "healthy",
+        "total_voters": 3,
+        "healthy_voters": 3,
+        "failure_tolerance": 1
+    }
+}
+```
+
 ## Create a Join Token
 
 This path returns a token that lets one node join the cluster, once.

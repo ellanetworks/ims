@@ -35,6 +35,16 @@ export interface ClusterStatus {
   members: ClusterMember[] | null;
 }
 
+export type ClusterHealthState =
+  "healthy" | "degraded" | "no_leader" | "unknown";
+
+export interface ClusterHealth {
+  state: ClusterHealthState;
+  total_voters: number;
+  healthy_voters?: number;
+  failure_tolerance?: number;
+}
+
 export interface JoinToken {
   token: string;
   expires_at: string;
@@ -47,6 +57,9 @@ const memberPath = (nodeId: string) =>
 
 export const getCluster = (): Promise<ClusterStatus> =>
   apiFetch<ClusterStatus>("/api/v1/cluster");
+
+export const getClusterHealth = (): Promise<ClusterHealth> =>
+  apiFetch<ClusterHealth>("/api/v1/cluster/health");
 
 export const createJoinToken = (ttlSeconds: number): Promise<JoinToken> =>
   apiFetch<JoinToken>("/api/v1/cluster/tokens", {
