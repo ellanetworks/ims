@@ -151,6 +151,57 @@ describe("MCPTT pages", () => {
     );
   });
 
+  it("add a user of a number entered with Enter", async () => {
+    const fetch = serve({
+      "/api/v1/mcptt/users": (_url, init) =>
+        init?.method === "POST"
+          ? json(201, { result: JSON.parse(String(init.body)) })
+          : json(200, {
+              result: {
+                items: [alice, bob],
+                page: 1,
+                per_page: 100,
+                total_count: 2,
+              },
+            }),
+    });
+    renderAt("users");
+
+    await screen.findByText("Alice");
+    fireEvent.click(await screen.findByRole("button", { name: "Create User" }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByRole("textbox", { name: "MCPTT ID" }),
+      { target: { value: "carol" } },
+    );
+
+    const impus = within(dialog).getByRole("combobox", {
+      name: "IMS Identities",
+    });
+    fireEvent.change(impus, { target: { value: "15550000003" } });
+    fireEvent.keyDown(impus, { key: "Enter" });
+    expect(
+      await within(dialog).findByText(
+        "sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org",
+      ),
+    ).toBeInTheDocument();
+    expect(impus).toHaveValue("");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(requests(fetch, "POST", "/api/v1/mcptt/users")).toEqual([
+        {
+          mcptt_id: "sip:carol@mcptt.example.com",
+          alias: "",
+          impus: ["sip:mcptt-15550000003@ims.mnc001.mcc001.3gppnetwork.org"],
+          implicit_affiliations: [],
+        },
+      ]),
+    );
+  });
+
   it("make a member always affiliated from its group", async () => {
     const memberPath = `/api/v1/mcptt/groups/${encodeURIComponent(fire.group_id)}/members/${encodeURIComponent(bob.mcptt_id)}`;
     const fetch = serve({ [memberPath]: () => json(200, { result: fire }) });

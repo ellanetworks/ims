@@ -180,7 +180,10 @@ export default function UserDialog({
           <TextField
             {...params}
             label="IMS Identities"
-            required
+            slotProps={{
+              ...params.slotProps,
+              inputLabel: { ...params.slotProps.inputLabel, required: true },
+            }}
             error={
               errors.impus !== undefined &&
               (impus.length > 0 || impuInput !== "")
