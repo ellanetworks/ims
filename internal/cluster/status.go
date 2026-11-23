@@ -87,8 +87,11 @@ func (n *Node) Status(ctx context.Context) (Status, error) {
 	}
 
 	h := Health{}
-	if leading, _ := n.Leader(); leading {
-		h = n.health.snapshot()
+
+	if r != nil && leaderID != "" {
+		if fetched, err := n.leaderHealth(ctx, r); err == nil {
+			h = fetched
+		}
 	}
 
 	if h.Servers != nil {

@@ -28,8 +28,8 @@ This path returns the node that answered, its cluster, and every member.
 | `applied_index`               | int     | Last log entry applied by the node. |
 | `commit_index`                | int     | Last log entry committed by the cluster. |
 | `schema`                      | int     | Database schema version of the cluster. |
-| `healthy`                     | boolean | The cluster is healthy. Only from the leader. |
-| `failure_tolerance`           | int     | Voters that can fail without stopping writes. Only from the leader. |
+| `healthy`                     | boolean | The cluster is healthy. From the leader, absent when it cannot be reached. |
+| `failure_tolerance`           | int     | Voters that can fail without stopping writes. From the leader, absent when it cannot be reached. |
 | `members[].node_id`           | string  | ID of the member. |
 | `members[].address`           | string  | Cluster address of the member. |
 | `members[].diameter_label`    | string  | First label of the member's Diameter host. |
@@ -42,8 +42,8 @@ This path returns the node that answered, its cluster, and every member.
 | `members[].drain_state`       | string  | `active`, `draining` or `drained`. See [Drain a Member](#drain-a-member). |
 | `members[].suffrage`          | string  | `voter`, `nonvoter` (joining, or standby), or `none`. |
 | `members[].leader`            | boolean | The member is the leader. |
-| `members[].healthy`           | boolean | The member is healthy. Only from the leader. |
-| `members[].last_contact`      | string  | Time since the leader last heard from the member. Only from the leader. |
+| `members[].healthy`           | boolean | The member is healthy. From the leader, absent when it cannot be reached. |
+| `members[].last_contact`      | string  | Time since the leader last heard from the member. From the leader, absent when it cannot be reached. |
 
 ### Sample Response
 
@@ -93,6 +93,38 @@ This path returns the node that answered, its cluster, and every member.
                 "last_contact": "0s"
             }
         ]
+    }
+}
+```
+
+## Get the Cluster Health
+
+This path returns the health of the cluster, as the leader sees it. Any member answers.
+
+| Method | Path                     |
+| ------ | ------------------------ |
+| GET    | `/api/v1/cluster/health` |
+
+### Response Fields
+
+| Field               | Type   | Description |
+| ------------------- | ------ | ----------- |
+| `state`             | string | `healthy`, `degraded` (at least one voter is unhealthy), `no_leader`, or `unknown` (the leader cannot be reached or has no health yet). |
+| `total_voters`      | int    | Voters in the cluster. |
+| `healthy_voters`    | int    | Healthy voters. Absent when `state` is `no_leader` or `unknown`. |
+| `failure_tolerance` | int    | Voters that can fail without stopping writes. Absent when `state` is `no_leader` or `unknown`. |
+
+A node without a `cluster` block returns `healthy`, with one voter.
+
+### Sample Response
+
+```json
+{
+    "result": {
+        "state": "healthy",
+        "total_voters": 3,
+        "healthy_voters": 3,
+        "failure_tolerance": 1
     }
 }
 ```

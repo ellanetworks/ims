@@ -22,16 +22,16 @@ import {
 import Grid from "@mui/material/Grid";
 import { useQuery } from "@tanstack/react-query";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
-import DomainName from "@/components/DomainName";
+import OneLine from "@/components/OneLine";
 import PageHeader from "@/components/PageHeader";
 import PeerStateChip from "@/components/PeerStateChip";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMCPTTStatus } from "@/hooks/useMCPTT";
 import { countCallRecords, type CallOutcome } from "@/queries/callRecords";
 import {
-  answersAsLeader,
-  getCluster,
-  type ClusterStatus,
+  type ClusterHealth,
+  type ClusterHealthState,
+  getClusterHealth,
 } from "@/queries/cluster";
 import {
   type DiameterPeer,
@@ -290,7 +290,7 @@ function Section({
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <Box>
+    <Box sx={{ minWidth: 0 }}>
       <Typography variant="body2" color="textSecondary">
         {label}
       </Typography>
@@ -306,7 +306,19 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function Fields({ children }: { children: ReactNode }) {
-  return <Box sx={{ display: "grid", gap: 2, width: "100%" }}>{children}</Box>;
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr)",
+        gap: 2,
+        width: "100%",
+        minWidth: 0,
+      }}
+    >
+      {children}
+    </Box>
+  );
 }
 
 function ServiceState({ enabled }: { enabled: boolean }) {
@@ -395,46 +407,37 @@ function ShareBar({
   );
 }
 
-const HA_HINTS = {
-  single: "A single node. Add nodes to keep the IMS working when one fails.",
+const SINGLE_NODE_HINT =
+  "A single node. Add nodes to keep the IMS working when one fails.";
+
+const HA_HINTS: Record<ClusterHealthState, string> = {
   healthy: "Healthy voters out of the cluster's total.",
-  degraded: "At least one node is unhealthy.",
-  noLeader:
+  degraded: "At least one voter is unhealthy.",
+  no_leader:
     "No node holds leadership. The cluster cannot accept writes until enough voters recover.",
-  follower: "Cluster health is shown on the leader.",
-  unknown: "Cluster health could not be read from this node.",
+  unknown: "Cluster health could not be read from the leader.",
 };
 
-function clusterHealth(status?: ClusterStatus): {
+function clusterHealth(health?: ClusterHealth): {
   hint: string;
   value: ReactNode;
 } {
-  if (!status) {
+  if (!health || health.state === "unknown") {
     return { hint: HA_HINTS.unknown, value: <Chip label="Unknown" /> };
   }
-  if (!status.clustered) {
-    return { hint: HA_HINTS.single, value: <Ratio value="1/1" /> };
-  }
-  if (!status.leader_id) {
+  if (health.state === "no_leader") {
     return {
-      hint: HA_HINTS.noLeader,
+      hint: HA_HINTS.no_leader,
       value: <Chip label="No leader" color="error" />,
     };
   }
-  if (!answersAsLeader(status)) {
-    return { hint: HA_HINTS.follower, value: <Chip label="Follower" /> };
-  }
-  if (status.healthy === undefined) {
-    return { hint: HA_HINTS.unknown, value: <Chip label="Unknown" /> };
-  }
-  const voters = (status.members ?? []).filter((m) => m.suffrage === "voter");
-  const healthy = voters.filter((m) => m.healthy).length;
+  const single = health.state === "healthy" && health.total_voters === 1;
   return {
-    hint: status.healthy ? HA_HINTS.healthy : HA_HINTS.degraded,
+    hint: single ? SINGLE_NODE_HINT : HA_HINTS[health.state],
     value: (
       <Ratio
-        value={`${healthy}/${voters.length}`}
-        color={status.healthy ? undefined : "error.main"}
+        value={`${health.healthy_voters ?? 0}/${health.total_voters}`}
+        color={health.state === "healthy" ? undefined : "error.main"}
       />
     ),
   };
@@ -531,8 +534,8 @@ export default function Dashboard() {
     refetchInterval: DASHBOARD_REFRESH_MS,
   });
   const cluster = useQuery({
-    queryKey: ["cluster"],
-    queryFn: getCluster,
+    queryKey: ["cluster-health"],
+    queryFn: getClusterHealth,
     enabled: auth.can("cluster:read"),
     refetchInterval: DASHBOARD_REFRESH_MS,
   });
@@ -618,7 +621,7 @@ export default function Dashboard() {
                 {operator.data && `${operator.data.mcc} / ${operator.data.mnc}`}
               </Field>
               <Field label="Home Domain">
-                {sip.data && <DomainName name={sip.data.home_domain} />}
+                {sip.data && <OneLine text={sip.data.home_domain} />}
               </Field>
               <Field label="P-CSCF Addresses">
                 {pcscfs.length > 0 ? (
@@ -809,11 +812,13 @@ export default function Dashboard() {
                         component="li"
                         key={p.id}
                         direction="row"
-                        sx={{ alignItems: "center", gap: 1 }}
+                        sx={{
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 1,
+                        }}
                       >
-                        <span>
-                          <DomainName name={peerName(p)} />
-                        </span>
+                        <OneLine text={peerName(p)} />
                         <PeerStateChip
                           state={p.status.state}
                           error={p.status.error}

@@ -192,6 +192,7 @@ func routes(cfg Config, a *auth) []route {
 		{"GET " + oidc.CallbackPath, public, OIDCCallback(a)},
 
 		{"GET /api/v1/cluster", PermReadCluster, GetCluster(cfg)},
+		{"GET /api/v1/cluster/health", PermReadCluster, GetClusterHealth(cfg)},
 		{"POST /api/v1/cluster/tokens", PermManageCluster, a.needsLogin(CreateJoinToken(a))},
 		{"POST /api/v1/cluster/join", public, JoinCluster(a)},
 		{"PUT /api/v1/cluster/members/{node_id}", PermManageCluster, a.needsLogin(UpdateMember(a))},

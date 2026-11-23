@@ -133,7 +133,7 @@ describe("SMS", () => {
     ]);
     await waitFor(() =>
       expect(settingRows("HSS")).toEqual([
-        ["S6c Realm", "ims.mnc001.mcc001.3gppnetwork.orgHSS realm"],
+        ["S6c Realm", "ims.mnc001.mcc001.3gppnetwork.org"],
       ]),
     );
   });
@@ -172,12 +172,23 @@ describe("SMS", () => {
 
     const def = await routeRow("Default");
     expect(def).toHaveTextContent(
-      "backup.epc.mnc001.mcc001.3gppnetwork.orgdownsmsc.epc.mnc001.mcc001.3gppnetwork.orgopen",
+      "Defaultbackup.epc.mnc001.mcc001.3gppnetwork.orgsmsc.epc.mnc001.mcc001.3gppnetwork.orgdownopen",
     );
     const sc = await routeRow("15550000000");
     expect(
       sc.compareDocumentPosition(def) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("shows the state of each peer of a route", async () => {
+    serve({ routes: [{ ...scRoute, peers: [backup.id] }] });
+
+    renderWithClient(<SMS />);
+
+    const row = await routeRow("15550000000");
+    expect(
+      row.querySelector('[data-field="status"]') as HTMLElement,
+    ).toHaveTextContent(/^down$/);
   });
 
   it("creates a route to the SMSC peers", async () => {

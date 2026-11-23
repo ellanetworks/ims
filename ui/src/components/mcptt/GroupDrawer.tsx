@@ -177,7 +177,11 @@ function GroupDetail({
   const rows: [string, ReactNode][] = [
     [
       "Group ID",
-      <Stack key="id" direction="row" sx={{ alignItems: "center", gap: 0.5 }}>
+      <Stack
+        key="id"
+        direction="row"
+        sx={{ alignItems: "center", justifyContent: "space-between", gap: 0.5 }}
+      >
         <span>{group.group_id}</span>
         <CopyButton value={group.group_id} label="Group ID" />
       </Stack>,

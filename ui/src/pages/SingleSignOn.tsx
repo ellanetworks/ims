@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import {
   Box,
   Button,
-  IconButton,
   FormControlLabel,
   Link,
   Skeleton,
@@ -12,10 +11,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import {
-  ContentCopy as ContentCopyIcon,
-  OpenInNew as OpenInNewIcon,
-} from "@mui/icons-material";
+import { OpenInNew as OpenInNewIcon } from "@mui/icons-material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import {
@@ -28,7 +24,6 @@ import QueryAlert from "@/components/QueryAlert";
 import SettingsTable from "@/components/SettingsTable";
 import { useAuth } from "@/contexts/AuthContext";
 import { errorMessage, useSnackbar } from "@/contexts/SnackbarContext";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
   currentUpdate,
   getOIDC,
@@ -88,32 +83,18 @@ export default function SingleSignOn() {
   >(null);
   const queryClient = useQueryClient();
   const { showSnackbar } = useSnackbar();
-  const copy = useCopyToClipboard();
-  const copyableURL = (url: string, name: string) => (
-    <Stack
-      direction="row"
-      spacing={1}
-      sx={{ alignItems: "center", justifyContent: "space-between" }}
+  const urlValue = (url: string) => (
+    <Typography
+      variant="body2"
+      sx={{ fontFamily: "monospace", overflowWrap: "anywhere" }}
     >
-      <Typography
-        variant="body2"
-        sx={{ fontFamily: "monospace", overflowWrap: "anywhere" }}
-      >
-        {url || "Set the external URL first."}
-      </Typography>
-      {url && (
-        <Tooltip title="Copy">
-          <IconButton
-            size="small"
-            aria-label={`Copy the ${name[0].toLowerCase()}${name.slice(1)}`}
-            onClick={() => void copy(url, name)}
-          >
-            <ContentCopyIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      )}
-    </Stack>
+      {url || "Set the external URL first."}
+    </Typography>
   );
+  const urlCopy = (url: string | undefined, name: string) =>
+    url
+      ? { value: url, label: `the ${name[0].toLowerCase()}${name.slice(1)}` }
+      : undefined;
   const oidc = useQuery({ queryKey: ["oidc"], queryFn: getOIDC });
   const { data, isPending } = oidc;
 
@@ -229,17 +210,17 @@ export default function SingleSignOn() {
             {
               label: "Redirect URL",
               help: "Where the identity provider sends users after they log in.",
-              value: data && copyableURL(data.redirect_url, "Redirect URL"),
+              value: data && urlValue(data.redirect_url),
+              copy: urlCopy(data?.redirect_url, "Redirect URL"),
             },
             {
               label: "Post-logout redirect URL",
               help: "Where the identity provider sends users after they log out.",
-              value:
-                data &&
-                copyableURL(
-                  data.post_logout_redirect_url,
-                  "Post-logout redirect URL",
-                ),
+              value: data && urlValue(data.post_logout_redirect_url),
+              copy: urlCopy(
+                data?.post_logout_redirect_url,
+                "Post-logout redirect URL",
+              ),
             },
           ]}
         />
@@ -292,37 +273,18 @@ export default function SingleSignOn() {
                 (data.ca_certificates.length === 0 ? (
                   "System"
                 ) : (
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    sx={{
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <Stack spacing={0.5}>
-                      {data.ca_certificates.map((c) => (
-                        <Typography
-                          key={c.subject + c.not_after}
-                          variant="body2"
-                        >
-                          {c.subject} · expires {c.not_after.slice(0, 10)}
-                        </Typography>
-                      ))}
-                    </Stack>
-                    <Tooltip title="Copy">
-                      <IconButton
-                        size="small"
-                        aria-label="Copy the CA certificate"
-                        onClick={() =>
-                          void copy(data.ca_certificate, "CA certificate")
-                        }
-                      >
-                        <ContentCopyIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
+                  <Stack spacing={0.5}>
+                    {data.ca_certificates.map((c) => (
+                      <Typography key={c.subject + c.not_after} variant="body2">
+                        {c.subject} · expires {c.not_after.slice(0, 10)}
+                      </Typography>
+                    ))}
                   </Stack>
                 )),
+              copy:
+                data && data.ca_certificates.length > 0
+                  ? { value: data.ca_certificate, label: "the CA certificate" }
+                  : undefined,
             },
             {
               label: "Trust email addresses",

@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
-import CopyButton from "@/components/CopyButton";
+import { Alert, Box, Typography } from "@mui/material";
 import DomainName from "@/components/DomainName";
 import QueryAlert from "@/components/QueryAlert";
 import SettingsTable from "@/components/SettingsTable";
@@ -13,17 +12,6 @@ import {
 import { useMCPTTSettings } from "@/hooks/useMCPTT";
 import type { MCPTTStatus } from "@/queries/mcptt";
 import { formatDuration } from "@/utils/mcptt";
-
-function Copyable({ value, label }: { value: string; label: string }) {
-  return (
-    <Stack direction="row" sx={{ alignItems: "center", gap: 0.5 }}>
-      <span style={{ overflowWrap: "anywhere" }}>
-        <DomainName name={value} />
-      </span>
-      <CopyButton value={value} label={label} />
-    </Stack>
-  );
-}
 
 function Section({
   id,
@@ -75,17 +63,17 @@ export function SettingsTab({ status }: { status: MCPTTStatus }) {
           {
             label: "Server Name",
             help: "The application server's name in your HSS and its filter criteria.",
-            value: <Copyable value={status.name} label="Server Name" />,
+            value: <DomainName name={status.name} />,
+            copy: { value: status.name, label: "Server Name" },
           },
           {
             label: "Participating PSI",
             help: "Where phones send their MCPTT requests. Phones default to it.",
-            value: (
-              <Copyable
-                value={status.participating_psi}
-                label="Participating PSI"
-              />
-            ),
+            value: <DomainName name={status.participating_psi} />,
+            copy: {
+              value: status.participating_psi,
+              label: "Participating PSI",
+            },
           },
         ]}
       />
@@ -102,17 +90,8 @@ export function SettingsTab({ status }: { status: MCPTTStatus }) {
         rows={[
           {
             label: "Organisation Domain",
-            help: "The domain of your MCPTT IDs and group IDs.",
-            value: c && (
-              <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
-                <span style={{ overflowWrap: "anywhere" }}>
-                  <DomainName name={c.domain} />
-                </span>
-                {c.domain === homeDomain && (
-                  <Chip label="home domain" size="small" variant="outlined" />
-                )}
-              </Stack>
-            ),
+            help: "The domain of your MCPTT IDs and group IDs. Default: the home domain.",
+            value: c && <DomainName name={c.domain} />,
             onEdit: editable ? () => setEditing("domain") : undefined,
           },
           {

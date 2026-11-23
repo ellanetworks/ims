@@ -29,12 +29,11 @@ import {
   ResumeNodeDialog,
 } from "@/components/ClusterDialogs";
 import ClusterStateCard from "@/components/ClusterStateCard";
-import DiameterHost from "@/components/DiameterHost";
+import DomainName from "@/components/DomainName";
 import PageHeader from "@/components/PageHeader";
 import QueryAlert from "@/components/QueryAlert";
 import { useAuth } from "@/contexts/AuthContext";
 import {
-  answersAsLeader,
   getCluster,
   memberLabel,
   type ClusterMember,
@@ -189,10 +188,9 @@ const columns = (
     minWidth: 220,
     renderCell: ({ row }) => (
       <CenteredCell>
-        <DiameterHost
-          host={row.diameter_host}
-          generated={row.label_generated}
-        />
+        <Typography variant="body2" component="span">
+          <DomainName name={row.diameter_host} />
+        </Typography>
       </CenteredCell>
     ),
   },
@@ -365,7 +363,7 @@ export default function Cluster() {
             columns={columns(
               status.node_id,
               new Set(members.map((m) => m.version).filter(Boolean)).size > 1,
-              answersAsLeader(status),
+              status.leader_id !== undefined,
               manageable,
               (action, member) => setTarget({ action, member }),
             )}

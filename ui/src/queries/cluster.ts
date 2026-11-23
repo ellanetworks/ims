@@ -35,6 +35,16 @@ export interface ClusterStatus {
   members: ClusterMember[] | null;
 }
 
+export type ClusterHealthState =
+  "healthy" | "degraded" | "no_leader" | "unknown";
+
+export interface ClusterHealth {
+  state: ClusterHealthState;
+  total_voters: number;
+  healthy_voters?: number;
+  failure_tolerance?: number;
+}
+
 export interface JoinToken {
   token: string;
   expires_at: string;
@@ -47,6 +57,9 @@ const memberPath = (nodeId: string) =>
 
 export const getCluster = (): Promise<ClusterStatus> =>
   apiFetch<ClusterStatus>("/api/v1/cluster");
+
+export const getClusterHealth = (): Promise<ClusterHealth> =>
+  apiFetch<ClusterHealth>("/api/v1/cluster/health");
 
 export const createJoinToken = (ttlSeconds: number): Promise<JoinToken> =>
   apiFetch<JoinToken>("/api/v1/cluster/tokens", {
@@ -94,12 +107,3 @@ export const nodeLabel = (
 
 export const memberLabel = (member: ClusterMember) =>
   nodeLabel(member.display_name, member.diameter_label, member.node_id);
-
-export const leaderOf = (status: ClusterStatus) =>
-  status.members?.find((m) => m.node_id === status.leader_id);
-
-export const answersAsLeader = (status: ClusterStatus) =>
-  status.leader_id !== undefined && status.leader_id === status.node_id;
-
-export const GENERATED_HOST_HINT =
-  "Generated from the node ID. A reinstalled node gets a new host. Set diameter.host_label in the node's configuration file to keep it.";

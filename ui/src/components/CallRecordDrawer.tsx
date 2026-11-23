@@ -28,7 +28,10 @@ const identityRow = (party: string, impi?: string): [string, ReactNode] => {
 
 function Copyable({ value, label }: { value: string; label: string }) {
   return (
-    <Stack direction="row" sx={{ alignItems: "center", gap: 0.5 }}>
+    <Stack
+      direction="row"
+      sx={{ alignItems: "center", justifyContent: "space-between", gap: 0.5 }}
+    >
       <span>{value}</span>
       <CopyButton value={value} label={label} />
     </Stack>
