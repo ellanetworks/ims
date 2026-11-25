@@ -11,6 +11,14 @@ on:
         description: Tag the image with version/VERSION instead of sha-<commit>.
         type: boolean
         required: true
+      artifact:
+        description: Prefix of the image artifacts, one per architecture.
+        type: string
+        default: ellaims-image
+      tag-suffix:
+        description: Suffix appended to every tag, e.g. -ubi.
+        type: string
+        default: ""
 
 jobs:
   publish-image:
@@ -33,13 +41,15 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: ellaims-image-${{ matrix.arch }}
+          name: ${{ inputs.artifact }}-${{ matrix.arch }}
 
       - name: Import and push to github package (${{ matrix.arch }})
+        env:
+          SUFFIX: ${{ inputs.tag-suffix }}
         run: |
-          tag="sha-${GITHUB_SHA::12}"
+          tag="sha-${GITHUB_SHA::12}${SUFFIX}"
           if [ "${{ inputs.release }}" = true ]; then
-            tag="$(cat version/VERSION)"
+            tag="$(cat version/VERSION)${SUFFIX}"
           fi
 
           docker load -i ellaims_latest-${{ matrix.arch }}.tar
@@ -64,19 +74,21 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push manifest
+        env:
+          SUFFIX: ${{ inputs.tag-suffix }}
         run: |
-          tag="sha-${GITHUB_SHA::12}"
+          tag="sha-${GITHUB_SHA::12}${SUFFIX}"
           if [ "${{ inputs.release }}" = true ]; then
-            tag="$(cat version/VERSION)"
+            tag="$(cat version/VERSION)${SUFFIX}"
           fi
 
           docker manifest create ghcr.io/ellanetworks/ella-ims:${tag} \
             ghcr.io/ellanetworks/ella-ims:${tag}-amd64 \
             ghcr.io/ellanetworks/ella-ims:${tag}-arm64
 
-          docker manifest create ghcr.io/ellanetworks/ella-ims:latest \
+          docker manifest create ghcr.io/ellanetworks/ella-ims:latest${SUFFIX} \
             ghcr.io/ellanetworks/ella-ims:${tag}-amd64 \
             ghcr.io/ellanetworks/ella-ims:${tag}-arm64
 
           docker manifest push ghcr.io/ellanetworks/ella-ims:${tag}
-          docker manifest push ghcr.io/ellanetworks/ella-ims:latest
+          docker manifest push ghcr.io/ellanetworks/ella-ims:latest${SUFFIX}

@@ -1,0 +1,42 @@
+FROM node:24-bookworm-slim AS ui
+
+WORKDIR /src/ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+FROM golang:1.27.3-bookworm AS build
+
+ARG GIT_COMMIT
+
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY sip/go.mod sip/go.sum ./sip/
+RUN go mod download
+COPY . .
+RUN rm -rf ui/dist
+COPY --from=ui /src/ui/dist ./ui/dist
+RUN CGO_ENABLED=1 go build -o /ims -ldflags "-s -w -X github.com/ellanetworks/ims/version.GitCommit=${GIT_COMMIT}" ./cmd/ims
+
+FROM registry.access.redhat.com/ubi10/ubi-minimal
+
+ARG VERSION
+ARG RELEASE
+
+LABEL name="ella-ims" \
+      maintainer="Ella Networks Inc." \
+      vendor="Ella Networks Inc." \
+      version="${VERSION}" \
+      release="${RELEASE}" \
+      summary="Ella IMS, an IP Multimedia Subsystem for private 4G and 5G networks." \
+      description="Ella IMS is a secure, reliable, and easy to operate IP Multimedia Subsystem." \
+      io.k8s.display-name="Ella IMS" \
+      io.k8s.description="Ella IMS, an IP Multimedia Subsystem for private 4G and 5G networks." \
+      url="https://docs.ellanetworks.com/ims/"
+
+COPY LICENSE /licenses/
+COPY --from=build /ims /usr/bin/ims
+
+ENTRYPOINT ["/usr/bin/ims"]
+CMD ["--config", "/ims.yaml"]
