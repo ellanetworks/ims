@@ -63,9 +63,9 @@ jobs:
       - name: Find the previous release
         run: |
           version="$(cat version/VERSION)"
-          previous="$(git tag --list 'v*' --merged HEAD --sort=-v:refname | grep -vxF "${version}" | head -n 1 || true)"
+          previous="$(git tag --list 'v*' --merged HEAD --sort=-v:refname | grep -vxF "${version}" | grep -v '^v0\.0\.' | head -n 1 || true)"
           if [ -n "${previous}" ]; then
-            echo "PREVIOUS_IMAGE=ghcr.io/ellanetworks/ella-ims:${previous}" >> "${GITHUB_ENV}"
+            echo "PREVIOUS_IMAGE=ghcr.io/ellanetworks/ella-ims:${previous}-amd64" >> "${GITHUB_ENV}"
             echo "upgrading from ${previous}"
           else
             echo "no previous release to upgrade from"
