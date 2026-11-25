@@ -66,6 +66,20 @@ jobs:
     uses: ./.github/workflows/image-publish.yaml
     with:
       release: false
+  image-build-ubi:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/image-build-ubi.yaml
+  image-publish-ubi:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [go-unit-test, go-lint, go-fuzz, ui-lint, ui-typecheck, ui-test, ui-e2e-oidc, e2e, image-build-ubi, k8s-smoke]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/image-publish.yaml
+    with:
+      release: false
+      artifact: ellaims-ubi-image
+      tag-suffix: -ubi
   android-publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [android]
