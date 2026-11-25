@@ -36,7 +36,6 @@ LABEL name="ella-ims" \
       url="https://docs.ellanetworks.com/ims/"
 
 COPY LICENSE /licenses/
-COPY ims.yaml /ims.yaml
 COPY --from=build /ims /usr/bin/ims
 
 ENTRYPOINT ["/usr/bin/ims"]

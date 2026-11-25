@@ -77,25 +77,18 @@ jobs:
         env:
           SUFFIX: ${{ inputs.tag-suffix }}
         run: |
-          version="$(cat version/VERSION)"
+          tag="sha-${GITHUB_SHA::12}${SUFFIX}"
           if [ "${{ inputs.release }}" = true ]; then
-            tag="${version}${SUFFIX}"
-            tags=("${tag}" "latest${SUFFIX}")
-            if [ -n "${SUFFIX}" ]; then
-              tags+=("${version%.*}${SUFFIX}")
-            fi
-          else
-            tag="sha-${GITHUB_SHA::12}${SUFFIX}"
-            if [ -n "${SUFFIX}" ]; then
-              tags=("${tag}" "main${SUFFIX}")
-            else
-              tags=("${tag}" latest)
-            fi
+            tag="$(cat version/VERSION)${SUFFIX}"
           fi
 
-          for t in "${tags[@]}"; do
-            docker manifest create ghcr.io/ellanetworks/ella-ims:${t} \
-              ghcr.io/ellanetworks/ella-ims:${tag}-amd64 \
-              ghcr.io/ellanetworks/ella-ims:${tag}-arm64
-            docker manifest push ghcr.io/ellanetworks/ella-ims:${t}
-          done
+          docker manifest create ghcr.io/ellanetworks/ella-ims:${tag} \
+            ghcr.io/ellanetworks/ella-ims:${tag}-amd64 \
+            ghcr.io/ellanetworks/ella-ims:${tag}-arm64
+
+          docker manifest create ghcr.io/ellanetworks/ella-ims:latest${SUFFIX} \
+            ghcr.io/ellanetworks/ella-ims:${tag}-amd64 \
+            ghcr.io/ellanetworks/ella-ims:${tag}-arm64
+
+          docker manifest push ghcr.io/ellanetworks/ella-ims:${tag}
+          docker manifest push ghcr.io/ellanetworks/ella-ims:latest${SUFFIX}
