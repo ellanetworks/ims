@@ -27,7 +27,7 @@ func TestGetStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if want := (Status{Version: version.Get().Version, Revision: version.Get().Revision, Initialized: true}); resp.Result != want || want.Version != "v0.0.1" {
-		t.Fatalf("status = %+v, want %+v at v0.0.1", resp.Result, want)
+	if want := (Status{Version: version.Get().Version, Revision: version.Get().Revision, Initialized: true}); resp.Result != want || want.Version != "v0.0.2" {
+		t.Fatalf("status = %+v, want %+v at v0.0.2", resp.Result, want)
 	}
 }
