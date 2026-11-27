@@ -5,6 +5,7 @@
 </p>
 
 [![ella-ims](https://snapcraft.io/ella-ims/badge.svg)](https://snapcraft.io/ella-ims)
+<a href="https://catalog.redhat.com/en/software/container-stacks/detail/6b09c11520dcf6e2298b9059"><img src="docs/images/certified-for-red-hat-openshift.svg" alt="Certified for Red Hat OpenShift" height="20"></a>
 
 **Ella IMS** lets subscribers of a private 4G or 5G network make voice and video calls. It is an IP Multimedia Subsystem (IMS) that runs as a single application. It is designed to be easy to operate, reliable, and secure.
 
