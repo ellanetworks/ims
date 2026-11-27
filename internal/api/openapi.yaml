@@ -3009,7 +3009,7 @@ components:
       properties:
         version:
           type: string
-          examples: [v0.0.1]
+          examples: [v0.0.2]
         revision:
           type: string
           description: Git commit of the build, empty in development builds.

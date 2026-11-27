@@ -32,7 +32,7 @@ This path returns the version of the IMS, whether it has been initialized, and t
 ```json
 {
     "result": {
-        "version": "v0.0.1",
+        "version": "v0.0.2",
         "revision": "",
         "initialized": true,
         "clustered": false,
